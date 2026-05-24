@@ -3,6 +3,7 @@
 from qgis.core import QgsProcessingProvider
 
 from .algorithms.run_temporal_accessibility import RunTemporalAccessibility
+from .algorithms.test_otp_server import TestOtpServer
 
 
 class EasyOtpProvider(QgsProcessingProvider):
@@ -17,3 +18,4 @@ class EasyOtpProvider(QgsProcessingProvider):
 
     def loadAlgorithms(self) -> None:  # noqa: N802 — Qt API name
         self.addAlgorithm(RunTemporalAccessibility())
+        self.addAlgorithm(TestOtpServer())
