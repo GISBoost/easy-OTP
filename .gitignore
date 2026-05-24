@@ -1,0 +1,44 @@
+# --- Input data (per CLAUDE.md: data is not versioned) ---
+*.osm.pbf
+*.zip
+*.gtfs
+
+# --- OTP runtime artifacts ---
+*.jar
+Graph.obj
+graphs/
+router-config.json
+build-config.json
+
+# --- Intermediate and output rasters ---
+*.tif
+*.tiff
+*.vrt
+
+# --- Working / cache directories ---
+work/
+workdir/
+cache/
+tmp/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# --- QGIS artifacts ---
+*.qgz~
+*.qgs~
+.qgis2/
+*.qmd
+
+# --- IDE / editors ---
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

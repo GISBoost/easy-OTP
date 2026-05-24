@@ -1,0 +1,18 @@
+[general]
+name=easy-OTP
+qgisMinimumVersion=3.40
+qgisMaximumVersion=3.99
+description=Automated temporal accessibility analysis using OpenTripPlanner.
+about=Generates per-minute travel-time surfaces through OpenTripPlanner for a configurable time window and aggregates them into a service-time hexagonal grid with 4-category classification. Requires OpenTripPlanner 1.5.0 (otp-1.5.0-shaded.jar) and Java 8, both provided by the user.
+version=0.1.0
+author=Michal Kaczorowski
+email=michal.kaczorowsx@gmail.com
+license=GPL-2.0-or-later
+category=Analysis
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,travel time
+homepage=
+repository=
+tracker=
