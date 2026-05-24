@@ -5,7 +5,7 @@ Subsequent milestones add OTP server management, surface generation, raster
 stacking, zonal statistics and 4-category classification.
 """
 
-from qgis.PyQt.QtCore import QDate, QDateTime, QTime
+from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QTime
 from qgis.core import (
     QgsProcessing,
     QgsProcessingAlgorithm,
@@ -57,6 +57,9 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
     OUTPUT_COUNT_RASTER = "OUTPUT_COUNT_RASTER"
 
     INTERVAL_CHOICES = ["1 min", "15 min", "60 min"]
+
+    def tr(self, string: str) -> str:
+        return QCoreApplication.translate("Processing", string)
 
     def name(self) -> str:
         return "runtemporalaccessibility"
