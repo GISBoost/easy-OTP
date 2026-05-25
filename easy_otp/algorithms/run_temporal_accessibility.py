@@ -450,7 +450,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                     min_transfer_time=self.parameterAsInt(parameters, self.MIN_TRANSFER_TIME, context),
                     walk_speed=self.parameterAsDouble(parameters, self.WALK_SPEED, context),
                 )
-                client.download_surface_raster(surface_id, out_path)
+                client.download_surface_raster(surface_id, out_path, timeout_s=180.0)
             except OtpClientError as e:
                 raise QgsProcessingException(self.tr(
                     f"OTP surface generation failed: {e}. "

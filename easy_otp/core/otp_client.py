@@ -59,7 +59,10 @@ class OtpClient:
         mode: str = "TRANSIT",
     ) -> int:
         # OTP expects fromPlace="lat,lon". Caller passes (lat, lon).
+        # routerId MUST be sent: SurfaceResource defaults to "default" router
+        # when omitted, and our server runs with --router <sha256>.
         params = {
+            "routerId": self.router,
             "fromPlace": f"{from_place_lat_lon[0]},{from_place_lat_lon[1]}",
             "mode": mode,
             "date": date_mmddyyyy,
@@ -97,10 +100,22 @@ class OtpClient:
             )
         return int(data["id"])
 
-    def download_surface_raster(self, surface_id: int, output_path: Path) -> None:
-        url = f"{self.base_url}/surfaces/{surface_id}/raster"
+    def download_surface_raster(
+        self,
+        surface_id: int,
+        output_path: Path,
+        timeout_s: Optional[float] = None,
+    ) -> None:
+        # routerId is defensive — some OTP versions key surfaces per-router.
+        # Bigger timeout default than the class field: analyst raster
+        # computation for a large city can take a couple of minutes.
+        url = (
+            f"{self.base_url}/surfaces/{surface_id}/raster"
+            f"?routerId={urllib.parse.quote(self.router)}"
+        )
+        effective_timeout = timeout_s if timeout_s is not None else self.timeout_s
         try:
-            with urllib.request.urlopen(url, timeout=self.timeout_s) as resp, open(output_path, "wb") as fh:
+            with urllib.request.urlopen(url, timeout=effective_timeout) as resp, open(output_path, "wb") as fh:
                 shutil.copyfileobj(resp, fh)
         except urllib.error.HTTPError as e:
             raise OtpClientError(
