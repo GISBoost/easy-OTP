@@ -1,9 +1,10 @@
 """Main algorithm: temporal accessibility pipeline via OpenTripPlanner.
 
-Milestone 2 scope: validate paths, build (or cache-hit) the OTP graph,
-start --analyst --pointSets serve, wait for the router, generate ONE travel
--time surface for ANALYSIS_DATE + TIME_START, and tear down cleanly.
-Multi-surface loop, raster stacking and zonal stats arrive in milestones 3-5.
+Milestone 3 scope: validate paths, build (or cache-hit) the OTP graph,
+start --analyst --pointSets serve, wait for the router, and generate ONE
+travel-time surface per timestamp across the configured time window
+(TIME_START..TIME_END at 1/15/60 min interval) with progress reporting
+and cancellation. Raster stacking and zonal stats arrive in milestones 4-5.
 """
 
 from pathlib import Path
@@ -42,6 +43,8 @@ from ..core.otp_server import (
     wait_until_ready,
     write_meta,
 )
+from ..core.surface_runner import SurfaceJobParams, run_surface_loop
+from ..core.time_utils import INTERVAL_MINUTES, build_time_list
 
 
 class RunTemporalAccessibility(QgsProcessingAlgorithm):
@@ -388,9 +391,32 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         ))
 
         qdt_date = self.parameterAsDateTime(parameters, self.ANALYSIS_DATE, context)
-        qdt_time = self.parameterAsDateTime(parameters, self.TIME_START, context)
+        qdt_start = self.parameterAsDateTime(parameters, self.TIME_START, context)
+        qdt_end = self.parameterAsDateTime(parameters, self.TIME_END, context)
         date_s = qdt_date.date().toString("MM-dd-yyyy")
-        time_s = qdt_time.time().toString("HH:mm:ss")
+        start_t = qdt_start.time()
+        end_t = qdt_end.time()
+        interval_idx = self.parameterAsEnum(parameters, self.INTERVAL, context)
+        try:
+            interval_min = INTERVAL_MINUTES[interval_idx]
+        except KeyError as e:
+            raise QgsProcessingException(self.tr(
+                f"Unsupported sampling interval index: {interval_idx}."
+            )) from e
+        try:
+            time_list = build_time_list(
+                start_t.hour(), start_t.minute(),
+                end_t.hour(), end_t.minute(),
+                interval_min,
+            )
+        except ValueError as e:
+            raise QgsProcessingException(self.tr(
+                f"Invalid time window: {e}"
+            )) from e
+        feedback.pushInfo(self.tr(
+            f"Time window: {len(time_list)} timestamp(s) from "
+            f"{time_list[0]} to {time_list[-1]}, every {interval_min} min."
+        ))
 
         router_id = compute_router_id(pbf, gtfs_files)
         feedback.pushInfo(self.tr(f"Router ID: {router_id}"))
@@ -454,29 +480,31 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             self._log_router_diagnostic(client, feedback)
 
             surfaces_dir = work_dir / "surfaces"
-            surfaces_dir.mkdir(parents=True, exist_ok=True)
-            out_path = surfaces_dir / f"surface_{time_s.replace(':', '-')}.tiff"
+            job = SurfaceJobParams(
+                from_place_lat_lon=from_place_lat_lon,
+                date_mmddyyyy=date_s,
+                max_walk_distance=self.parameterAsInt(parameters, self.MAX_WALK_DISTANCE, context),
+                walk_reluctance=self.parameterAsDouble(parameters, self.WALK_RELUCTANCE, context),
+                wait_reluctance=self.parameterAsDouble(parameters, self.WAIT_RELUCTANCE, context),
+                transfer_penalty=self.parameterAsInt(parameters, self.TRANSFER_PENALTY, context),
+                min_transfer_time=self.parameterAsInt(parameters, self.MIN_TRANSFER_TIME, context),
+                walk_speed=self.parameterAsDouble(parameters, self.WALK_SPEED, context),
+            )
             feedback.pushInfo(self.tr(
-                f"Requesting surface for date={date_s} time={time_s}…"
+                f"Generating {len(time_list)} surface(s) for date={date_s}…"
             ))
             try:
-                surface_id = client.create_surface(
-                    from_place_lat_lon=from_place_lat_lon,
-                    date_mmddyyyy=date_s,
-                    time_hhmmss=time_s,
-                    max_walk_distance=self.parameterAsInt(parameters, self.MAX_WALK_DISTANCE, context),
-                    walk_reluctance=self.parameterAsDouble(parameters, self.WALK_RELUCTANCE, context),
-                    wait_reluctance=self.parameterAsDouble(parameters, self.WAIT_RELUCTANCE, context),
-                    transfer_penalty=self.parameterAsInt(parameters, self.TRANSFER_PENALTY, context),
-                    min_transfer_time=self.parameterAsInt(parameters, self.MIN_TRANSFER_TIME, context),
-                    walk_speed=self.parameterAsDouble(parameters, self.WALK_SPEED, context),
-                    log_fn=feedback.pushInfo,
+                surfaces = run_surface_loop(
+                    client=client,
+                    time_list=time_list,
+                    job=job,
+                    surfaces_dir=surfaces_dir,
+                    feedback=feedback,
                 )
-                client.download_surface_raster(surface_id, out_path, timeout_s=180.0, log_fn=feedback.pushInfo)
-            except OtpClientError as e:
+            except QgsProcessingException as e:
                 err_text = str(e)
                 if "VertexNotFoundException" in err_text:
-                    msg = self.tr(
+                    raise QgsProcessingException(self.tr(
                         f"OTP could not snap the origin point to any vertex in the graph.\n"
                         f"Common causes:\n"
                         f"- ORIGIN_POINT is outside the OSM coverage area "
@@ -485,19 +513,15 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                         f"- Coordinates entered with swapped lat/lon — check "
                         f"the 'Origin (lat, lon) sent to OTP' line above.\n"
                         f"Original error: {err_text}"
-                    )
-                else:
-                    msg = self.tr(
-                        f"OTP surface generation failed: {err_text}. "
-                        f"Verify ORIGIN_POINT is inside the graph extent and "
-                        f"that ANALYSIS_DATE falls within the GTFS service calendar."
-                    )
-                raise QgsProcessingException(msg) from e
+                    )) from e
+                raise
 
-            feedback.pushInfo(self.tr(f"Test surface written: {out_path}"))
             feedback.pushInfo(self.tr(
-                "Milestone 2 complete: one surface generated. "
-                "Multi-surface loop, raster stacking and zonal stats arrive in milestones 3-5."
+                f"Generated {len(surfaces)} surface(s) in {surfaces_dir}."
+            ))
+            feedback.pushInfo(self.tr(
+                "Milestone 3 complete: time-window surface loop done. "
+                "Raster stacking and zonal stats arrive in milestones 4-5."
             ))
             if server_ctx is not None:
                 server_ctx.__exit__(None, None, None)
