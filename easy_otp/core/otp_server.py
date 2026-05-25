@@ -29,6 +29,13 @@ ROUTER_ID_LEN = 8
 _LOG_TAIL_BYTES = 2048
 _HASH_CHUNK = 1 << 20  # 1 MiB
 
+_OTP_EXIT_HINT = (
+    "Common causes: wrong Java version (OTP 1.5.0 needs Java 8 — run "
+    "TestOtpServer to verify), port already in use (pick a different "
+    "OTP_PORT), or corrupt/wrong-version jar (re-download "
+    "otp-1.5.0-shaded.jar from Maven Central)."
+)
+
 
 # ---------- pure helpers ----------
 
@@ -71,8 +78,79 @@ def ensure_pointsets_dir(work_dir: Path) -> Path:
     return pointsets
 
 
+# Embedded fallback router config — matches the Marcus Young OTP-1.5.0 tutorial
+# defaults. Without a router-config.json present in the router dir, OTP's
+# built-in defaults leave the analyst SPT collapsed to a handful of vertices
+# (confirmed by user log comparison 2026-05-25).
+DEFAULT_ROUTER_CONFIG = {
+    "routingDefaults": {
+        "walkSpeed": 1.3,
+        "walkReluctance": 5.0,
+        "waitReluctance": 4.0,
+        "stairsReluctance": 4.0,
+        "carDropoffTime": 240,
+    }
+}
+
+
+def ensure_router_config(
+    router_dir: Path,
+    source_dir: Optional[Path],
+    feedback,
+) -> None:
+    """Ensure router-config.json (and build-config.json if user-supplied) exist.
+
+    OTP reads router-config at server start; without it, analyst surface
+    routing degenerates (SPT does not expand). Logic:
+
+    - If ``source_dir/router-config.json`` exists → copy it (user override).
+    - Else, if router_dir has no router-config.json yet → write the embedded
+      default.
+    - Else, leave the existing one untouched (user may have manually
+      customised it inside the router dir).
+
+    build-config.json is only copied from source_dir if present — never
+    auto-generated, since OTP's defaults produce a working graph and a wrong
+    embedded build-config could break things at build time.
+    """
+    router_cfg = router_dir / "router-config.json"
+    build_cfg = router_dir / "build-config.json"
+
+    src_router = (source_dir / "router-config.json") if source_dir else None
+    src_build = (source_dir / "build-config.json") if source_dir else None
+
+    if src_router is not None and src_router.is_file():
+        shutil.copy2(src_router, router_cfg)
+        feedback.pushInfo(f"router-config.json copied from {src_router}")
+    elif not router_cfg.is_file():
+        router_cfg.write_text(json.dumps(DEFAULT_ROUTER_CONFIG, indent=2))
+        feedback.pushInfo(
+            "router-config.json generated with built-in defaults "
+            "(walkSpeed=1.3, walkReluctance=5.0, waitReluctance=4.0, "
+            "stairsReluctance=4.0, carDropoffTime=240)"
+        )
+    else:
+        feedback.pushInfo(f"Using existing router-config.json at {router_cfg}")
+
+    if src_build is not None and src_build.is_file():
+        shutil.copy2(src_build, build_cfg)
+        feedback.pushInfo(f"build-config.json copied from {src_build}")
+
+
 def graph_obj_exists(work_dir: Path, router_id: str) -> bool:
     return (work_dir / "graphs" / router_id / "Graph.obj").is_file()
+
+
+def graph_build_complete(work_dir: Path, router_id: str) -> bool:
+    """True only when a build finished cleanly.
+
+    Sentinel-pair invariant: Graph.obj AND easy_otp_meta.json both present
+    ⇔ build completed. write_meta() is called only after a successful
+    build, and build_graph() defensively wipes both files at start, so a
+    cancelled/crashed build can never produce a state that looks complete.
+    """
+    router_dir = work_dir / "graphs" / router_id
+    return (router_dir / "Graph.obj").is_file() and (router_dir / "easy_otp_meta.json").is_file()
 
 
 def write_meta(router_dir: Path, jar_path: Path, inputs: list[Path]) -> None:
@@ -85,15 +163,26 @@ def write_meta(router_dir: Path, jar_path: Path, inputs: list[Path]) -> None:
     (router_dir / "easy_otp_meta.json").write_text(json.dumps(meta, indent=2))
 
 
-def port_is_free(port: int) -> bool:
+def port_is_listening(port: int) -> bool:
+    """True if some process accepts TCP connections on 127.0.0.1:port.
+
+    More reliable than bind-based detection on Windows, where bind to
+    127.0.0.1:port can succeed even when another process holds 0.0.0.0:port.
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
     try:
-        s.bind(("127.0.0.1", port))
-    except OSError:
+        s.connect(("127.0.0.1", port))
+        return True
+    except (ConnectionRefusedError, socket.timeout, OSError):
         return False
     finally:
         s.close()
-    return True
+
+
+def port_is_free(port: int) -> bool:
+    """Inverse of port_is_listening — kept for readability at call sites."""
+    return not port_is_listening(port)
 
 
 # ---------- subprocess ----------
@@ -125,6 +214,14 @@ def build_graph(
 ) -> None:
     """Run OTP --build for the router. Blocks the algorithm thread."""
     router_dir = work_dir / "graphs" / router_id
+    # Defensive: wipe any stale completion markers so a cancelled/crashed
+    # build cannot leave the dir in a state that graph_build_complete()
+    # treats as cached.
+    for stale in (router_dir / "Graph.obj", router_dir / "easy_otp_meta.json"):
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
     log_path = work_dir / f"otp_build_{router_id}.log"
     cmd = [
         str(java_path),
@@ -157,8 +254,8 @@ def build_graph(
             raise
     if proc.returncode != 0:
         raise RuntimeError(
-            f"OTP --build failed (exit {proc.returncode}). Last log:\n"
-            f"{_log_tail(log_path)}"
+            f"OTP --build failed (exit {proc.returncode}). {_OTP_EXIT_HINT}\n"
+            f"Last log:\n{_log_tail(log_path)}"
         )
     feedback.pushInfo(f"Graph build finished in {int(time.monotonic() - start)}s.")
 
@@ -172,8 +269,15 @@ def start_server(
     port: int,
     pointsets_dir: Path,
     feedback,
+    show_console: bool = False,
 ) -> tuple[subprocess.Popen, Path]:
-    """Spawn OTP --server --analyst --pointSets. Returns (process, log_path)."""
+    """Spawn OTP --server --analyst --pointSets. Returns (process, log_path).
+
+    When show_console=True on Windows, the Java process is spawned in its own
+    console window with live stdout/stderr visible (no logfile in that mode).
+    Useful for diagnosing routing problems where OTP only reports the failure
+    via its own logging.
+    """
     log_path = work_dir / f"otp_server_{router_id}.log"
     cmd = [
         str(java_path),
@@ -192,15 +296,22 @@ def start_server(
         str(pointsets_dir),
     ]
     feedback.pushInfo(f"$ {' '.join(cmd)}")
-    feedback.pushInfo(f"Server log: {log_path}")
-    log_fh = open(log_path, "wb")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        **_popen_kwargs(),
-    )
-    # log_fh stays open; closed implicitly by OS when proc exits / we kill it.
+    if show_console and sys.platform == "win32":
+        feedback.pushInfo("Server output will appear in a separate console window (SHOW_OTP_CONSOLE=True).")
+        proc = subprocess.Popen(
+            cmd,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+    else:
+        feedback.pushInfo(f"Server log: {log_path}")
+        log_fh = open(log_path, "wb")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            **_popen_kwargs(),
+        )
+        # log_fh stays open; closed implicitly by OS when proc exits / we kill it.
     return proc, log_path
 
 
@@ -221,7 +332,8 @@ def wait_until_ready(
         if proc is not None and proc.poll() is not None:
             tail = _log_tail(log_path) if log_path else "(no log path)"
             raise RuntimeError(
-                f"OTP server exited prematurely (code {proc.returncode}). Last log:\n{tail}"
+                f"OTP server exited prematurely (code {proc.returncode}). "
+                f"{_OTP_EXIT_HINT}\nLast log:\n{tail}"
             )
         try:
             client.get_router_info()
@@ -286,6 +398,7 @@ class OtpServer:
         pointsets_dir: Path,
         keep_alive: bool,
         feedback,
+        show_console: bool = False,
     ):
         self.java_path = java_path
         self.jar_path = jar_path
@@ -296,6 +409,7 @@ class OtpServer:
         self.pointsets_dir = pointsets_dir
         self.keep_alive = keep_alive
         self.feedback = feedback
+        self.show_console = show_console
         self.proc: Optional[subprocess.Popen] = None
         self.log_path: Optional[Path] = None
 
@@ -309,6 +423,7 @@ class OtpServer:
             self.port,
             self.pointsets_dir,
             self.feedback,
+            show_console=self.show_console,
         )
         return self
 
@@ -332,8 +447,11 @@ __all__ = [
     "compute_router_id",
     "discover_gtfs_files",
     "ensure_pointsets_dir",
+    "ensure_router_config",
     "ensure_router_dir",
+    "graph_build_complete",
     "graph_obj_exists",
+    "port_is_listening",
     "port_is_free",
     "probe_otp",
     "start_server",

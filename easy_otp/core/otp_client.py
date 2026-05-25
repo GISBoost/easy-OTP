@@ -20,7 +20,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+LogFn = Callable[[str], None]
 
 
 class OtpClientError(Exception):
@@ -56,7 +58,8 @@ class OtpClient:
         transfer_penalty: int,
         min_transfer_time: int,
         walk_speed: float,
-        mode: str = "TRANSIT",
+        mode: str = "TRANSIT,WALK",
+        log_fn: Optional[LogFn] = None,
     ) -> int:
         # OTP expects fromPlace="lat,lon". Caller passes (lat, lon).
         # routerId MUST be sent: SurfaceResource defaults to "default" router
@@ -77,6 +80,8 @@ class OtpClient:
             "batch": "true",
         }
         url = f"{self.base_url}/surfaces?{urllib.parse.urlencode(params)}"
+        if log_fn is not None:
+            log_fn(f"POST {url}")
         req = urllib.request.Request(url, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
@@ -98,13 +103,17 @@ class OtpClient:
             raise OtpClientError(
                 f"OTP /surfaces response missing 'id' field: {data!r}"
             )
-        return int(data["id"])
+        surface_id = int(data["id"])
+        if log_fn is not None:
+            log_fn(f"OTP returned surface_id={surface_id}, full response: {data!r}")
+        return surface_id
 
     def download_surface_raster(
         self,
         surface_id: int,
         output_path: Path,
         timeout_s: Optional[float] = None,
+        log_fn: Optional[LogFn] = None,
     ) -> None:
         # routerId is defensive — some OTP versions key surfaces per-router.
         # Bigger timeout default than the class field: analyst raster
@@ -113,6 +122,8 @@ class OtpClient:
             f"{self.base_url}/surfaces/{surface_id}/raster"
             f"?routerId={urllib.parse.quote(self.router)}"
         )
+        if log_fn is not None:
+            log_fn(f"GET {url}")
         effective_timeout = timeout_s if timeout_s is not None else self.timeout_s
         try:
             with urllib.request.urlopen(url, timeout=effective_timeout) as resp, open(output_path, "wb") as fh:

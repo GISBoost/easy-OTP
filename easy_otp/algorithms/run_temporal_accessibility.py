@@ -34,8 +34,10 @@ from ..core.otp_server import (
     compute_router_id,
     discover_gtfs_files,
     ensure_pointsets_dir,
+    ensure_router_config,
     ensure_router_dir,
-    graph_obj_exists,
+    graph_build_complete,
+    port_is_listening,
     probe_otp,
     wait_until_ready,
     write_meta,
@@ -45,7 +47,7 @@ from ..core.otp_server import (
 class RunTemporalAccessibility(QgsProcessingAlgorithm):
     OSM_PBF = "OSM_PBF"
     GTFS_FILES = "GTFS_FILES"
-    DESTINATION = "DESTINATION"
+    ORIGIN_POINT = "ORIGIN_POINT"
     HEX_GRID = "HEX_GRID"
     GENERATE_GRID = "GENERATE_GRID"
     GRID_CELL_SIZE = "GRID_CELL_SIZE"
@@ -70,6 +72,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
     OTP_PORT = "OTP_PORT"
     EXISTING_GRAPH_DIR = "EXISTING_GRAPH_DIR"
     KEEP_SERVER_ALIVE = "KEEP_SERVER_ALIVE"
+    SHOW_OTP_CONSOLE = "SHOW_OTP_CONSOLE"
 
     WORK_DIR = "WORK_DIR"
     OUTPUT_HEX = "OUTPUT_HEX"
@@ -125,8 +128,8 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         )
         self.addParameter(
             QgsProcessingParameterPoint(
-                self.DESTINATION,
-                self.tr("Destination point"),
+                self.ORIGIN_POINT,
+                self.tr("Origin point (where travel-time analysis starts; OTP fromPlace)"),
             )
         )
         self.addParameter(
@@ -311,6 +314,13 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 defaultValue=True,
             )
         )
+        self._add_advanced(
+            QgsProcessingParameterBoolean(
+                self.SHOW_OTP_CONSOLE,
+                self.tr("Show OTP server in a separate console window (Windows; debugging)"),
+                defaultValue=False,
+            )
+        )
 
         # --- Working directory and outputs ---
         self.addParameter(
@@ -366,13 +376,14 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         xmx_build = self.parameterAsString(parameters, self.OTP_XMX_BUILD, context) or "2G"
         xmx_serve = self.parameterAsString(parameters, self.OTP_XMX_SERVE, context) or "4G"
         keep_alive = self.parameterAsBool(parameters, self.KEEP_SERVER_ALIVE, context)
+        show_console = self.parameterAsBool(parameters, self.SHOW_OTP_CONSOLE, context)
 
         wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
-        pt = self.parameterAsPoint(parameters, self.DESTINATION, context, wgs84)
+        pt = self.parameterAsPoint(parameters, self.ORIGIN_POINT, context, wgs84)
         # QGIS gives us X=lon, Y=lat. OTP wants "lat,lon".
         from_place_lat_lon = (pt.y(), pt.x())
         feedback.pushInfo(self.tr(
-            f"Destination (lat, lon) sent to OTP: "
+            f"Origin (lat, lon) sent to OTP: "
             f"({from_place_lat_lon[0]:.6f}, {from_place_lat_lon[1]:.6f})"
         ))
 
@@ -384,9 +395,10 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         router_id = compute_router_id(pbf, gtfs_files)
         feedback.pushInfo(self.tr(f"Router ID: {router_id}"))
         router_dir = ensure_router_dir(work_dir, router_id, pbf, gtfs_files)
+        ensure_router_config(router_dir, gtfs_dir, feedback)
         pointsets = ensure_pointsets_dir(work_dir)
 
-        if graph_obj_exists(work_dir, router_id):
+        if graph_build_complete(work_dir, router_id):
             feedback.pushInfo(self.tr("Graph cache hit — skipping build."))
         else:
             feedback.pushInfo(self.tr("Building OTP graph (this can take minutes)…"))
@@ -406,6 +418,12 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                     f"Reusing OTP already running on port {port} (version {ver_str})."
                 ))
             else:
+                if port_is_listening(port):
+                    raise QgsProcessingException(self.tr(
+                        f"Port {port} is held by a non-OTP process. Pick a "
+                        f"different OTP_PORT or stop the conflicting service. "
+                        f"Run TestOtpServer for details."
+                    ))
                 feedback.pushInfo(self.tr(f"Starting OTP server on port {port}…"))
                 server_ctx = OtpServer(
                     java_path=java,
@@ -417,6 +435,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                     pointsets_dir=pointsets,
                     keep_alive=keep_alive,
                     feedback=feedback,
+                    show_console=show_console,
                 )
                 server_ctx.__enter__()
 
@@ -431,6 +450,8 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 )
             except RuntimeError as e:
                 raise QgsProcessingException(str(e)) from e
+
+            self._log_router_diagnostic(client, feedback)
 
             surfaces_dir = work_dir / "surfaces"
             surfaces_dir.mkdir(parents=True, exist_ok=True)
@@ -449,14 +470,29 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                     transfer_penalty=self.parameterAsInt(parameters, self.TRANSFER_PENALTY, context),
                     min_transfer_time=self.parameterAsInt(parameters, self.MIN_TRANSFER_TIME, context),
                     walk_speed=self.parameterAsDouble(parameters, self.WALK_SPEED, context),
+                    log_fn=feedback.pushInfo,
                 )
-                client.download_surface_raster(surface_id, out_path, timeout_s=180.0)
+                client.download_surface_raster(surface_id, out_path, timeout_s=180.0, log_fn=feedback.pushInfo)
             except OtpClientError as e:
-                raise QgsProcessingException(self.tr(
-                    f"OTP surface generation failed: {e}. "
-                    f"Verify the destination is inside the graph extent and "
-                    f"that ANALYSIS_DATE falls within the GTFS service calendar."
-                )) from e
+                err_text = str(e)
+                if "VertexNotFoundException" in err_text:
+                    msg = self.tr(
+                        f"OTP could not snap the origin point to any vertex in the graph.\n"
+                        f"Common causes:\n"
+                        f"- ORIGIN_POINT is outside the OSM coverage area "
+                        f"(check the router polygon bbox logged above).\n"
+                        f"- OSM_PBF was empty or invalid (graph has no streets).\n"
+                        f"- Coordinates entered with swapped lat/lon — check "
+                        f"the 'Origin (lat, lon) sent to OTP' line above.\n"
+                        f"Original error: {err_text}"
+                    )
+                else:
+                    msg = self.tr(
+                        f"OTP surface generation failed: {err_text}. "
+                        f"Verify ORIGIN_POINT is inside the graph extent and "
+                        f"that ANALYSIS_DATE falls within the GTFS service calendar."
+                    )
+                raise QgsProcessingException(msg) from e
 
             feedback.pushInfo(self.tr(f"Test surface written: {out_path}"))
             feedback.pushInfo(self.tr(
@@ -471,6 +507,58 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             if server_ctx is not None:
                 server_ctx.__exit__(*self._exc_info())
             raise
+
+    def _log_router_diagnostic(self, client: OtpClient, feedback) -> None:
+        """Fetch and pretty-print the router info so we can see what OTP loaded.
+
+        Helps diagnose empty-surface bugs: if transitServiceStarts/Ends does
+        not cover ANALYSIS_DATE, OTP will return an all-unreachable raster.
+        """
+        try:
+            info = client.get_router_info()
+        except OtpClientError as e:
+            feedback.pushWarning(self.tr(f"Could not fetch router diagnostic: {e}"))
+            return
+
+        from datetime import datetime, timezone
+
+        def _epoch_to_iso(value) -> str:
+            try:
+                return datetime.fromtimestamp(int(value), tz=timezone.utc).date().isoformat()
+            except (TypeError, ValueError, OSError):
+                return str(value)
+
+        transit_starts = info.get("transitServiceStarts")
+        transit_ends = info.get("transitServiceEnds")
+        has_transit = info.get("hasTransit")
+        center_lat = info.get("centerLatitude")
+        center_lon = info.get("centerLongitude")
+        polygon = info.get("polygon")
+
+        feedback.pushInfo(self.tr("--- OTP router diagnostic ---"))
+        feedback.pushInfo(self.tr(
+            f"hasTransit = {has_transit}; "
+            f"transitServiceStarts = {_epoch_to_iso(transit_starts)} ({transit_starts}); "
+            f"transitServiceEnds = {_epoch_to_iso(transit_ends)} ({transit_ends})"
+        ))
+        if center_lat is not None and center_lon is not None:
+            feedback.pushInfo(self.tr(f"Router center (lat, lon) = ({center_lat}, {center_lon})"))
+        if isinstance(polygon, dict) and polygon.get("coordinates"):
+            try:
+                coords = polygon["coordinates"][0]
+                lons = [c[0] for c in coords]
+                lats = [c[1] for c in coords]
+                feedback.pushInfo(self.tr(
+                    f"Router polygon bbox (lat, lon): "
+                    f"({min(lats):.4f}, {min(lons):.4f}) .. "
+                    f"({max(lats):.4f}, {max(lons):.4f})"
+                ))
+            except (KeyError, TypeError, ValueError):
+                pass
+        for flag in ("hasBikeSharing", "hasParkRide", "hasBikeRental"):
+            if flag in info:
+                feedback.pushInfo(self.tr(f"{flag} = {info[flag]}"))
+        feedback.pushInfo(self.tr("-----------------------------"))
 
     def _require_file(self, parameters, context, key: str, label: str) -> Path:
         raw = self.parameterAsFile(parameters, key, context)

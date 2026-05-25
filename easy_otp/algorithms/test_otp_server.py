@@ -13,7 +13,7 @@ from qgis.core import (
     QgsProcessingParameterNumber,
 )
 
-from ..core.otp_server import port_is_free, probe_otp
+from ..core.otp_server import port_is_listening, probe_otp
 
 _JAVA_VERSION_RE = re.compile(r'(?:java|openjdk)\s+version\s+"([^"]+)"', re.IGNORECASE)
 
@@ -167,11 +167,12 @@ class TestOtpServer(QgsProcessingAlgorithm):
                 f"RunTemporalAccessibility will reuse this server."
             ))
             return True
-        if port_is_free(port):
-            feedback.pushInfo(self.tr(f"Port {port}: free."))
-            return True
-        feedback.reportError(self.tr(
-            f"Port {port} is held by a non-OTP process. Pick a different "
-            f"OTP_PORT or stop the conflicting service."
-        ))
-        return False
+        if port_is_listening(port):
+            feedback.reportError(self.tr(
+                f"Port {port} is held by a non-OTP process (responds to TCP "
+                f"but not as an OTP /otp endpoint). Pick a different OTP_PORT "
+                f"or stop the conflicting service."
+            ))
+            return False
+        feedback.pushInfo(self.tr(f"Port {port}: free."))
+        return True
