@@ -43,6 +43,7 @@ from ..core.otp_server import (
     wait_until_ready,
     write_meta,
 )
+from ..core.raster_processing import build_surface_vrt, count_below_threshold
 from ..core.surface_runner import SurfaceJobParams, run_surface_loop
 from ..core.time_utils import INTERVAL_MINUTES, build_time_list
 
@@ -418,6 +419,14 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             f"{time_list[0]} to {time_list[-1]}, every {interval_min} min."
         ))
 
+        threshold_min = self.parameterAsInt(parameters, self.TRAVEL_TIME_THRESHOLD, context)
+        out_count_str = self.parameterAsOutputLayer(parameters, self.OUTPUT_COUNT_RASTER, context)
+        if not out_count_str:
+            raise QgsProcessingException(self.tr(
+                "Output count raster path is required."
+            ))
+        out_count_path = Path(out_count_str)
+
         router_id = compute_router_id(pbf, gtfs_files)
         feedback.pushInfo(self.tr(f"Router ID: {router_id}"))
         router_dir = ensure_router_dir(work_dir, router_id, pbf, gtfs_files)
@@ -526,14 +535,33 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             feedback.pushInfo(self.tr(
                 f"Generated {len(surfaces)} surface(s) in {surfaces_dir}."
             ))
+
+            vrt_path = work_dir / "surfaces_stack.vrt"
             feedback.pushInfo(self.tr(
-                "Milestone 3 complete: time-window surface loop done. "
-                "Raster stacking and zonal stats arrive in milestones 4-5."
+                f"Stacking {len(surfaces)} surface(s) into VRT: {vrt_path}"
+            ))
+            try:
+                build_surface_vrt(surfaces, vrt_path)
+            except RuntimeError as e:
+                raise QgsProcessingException(str(e)) from e
+
+            feedback.pushInfo(self.tr(
+                f"Counting pixels with travel-time ≤ {threshold_min} min "
+                f"across {len(surfaces)} band(s) → {out_count_path}"
+            ))
+            try:
+                count_below_threshold(vrt_path, threshold_min, out_count_path, feedback)
+            except RuntimeError as e:
+                raise QgsProcessingException(str(e)) from e
+
+            feedback.pushInfo(self.tr(
+                "Milestone 4 complete: count raster written; zero-count "
+                "pixels marked as NoData. Zonal stats arrive in milestone 5."
             ))
             if server_ctx is not None:
                 server_ctx.__exit__(None, None, None)
                 server_ctx = None
-            return {}
+            return {self.OUTPUT_COUNT_RASTER: str(out_count_path)}
         except BaseException:
             if server_ctx is not None:
                 server_ctx.__exit__(*self._exc_info())
