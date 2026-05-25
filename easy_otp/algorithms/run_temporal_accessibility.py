@@ -443,6 +443,13 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 feedback.pushInfo(self.tr(
                     f"Reusing OTP already running on port {port} (version {ver_str})."
                 ))
+                if show_console:
+                    feedback.pushInfo(self.tr(
+                        "Note: SHOW_OTP_CONSOLE has no effect when reusing an "
+                        "existing OTP server. Stop the running server (or run "
+                        "with KEEP_SERVER_ALIVE=False once) to start a fresh "
+                        "instance with the console window."
+                    ))
             else:
                 if port_is_listening(port):
                     raise QgsProcessingException(self.tr(
