@@ -244,13 +244,13 @@ def build_graph(
         try:
             while proc.poll() is None:
                 if feedback.isCanceled():
-                    _terminate(proc)
+                    _terminate(proc, feedback)
                     raise RuntimeError("OTP build cancelled by user.")
                 elapsed = int(time.monotonic() - start)
                 feedback.pushInfo(f"…building graph ({elapsed}s elapsed)")
                 time.sleep(2.0)
         except BaseException:
-            _terminate(proc)
+            _terminate(proc, feedback)
             raise
     if proc.returncode != 0:
         raise RuntimeError(
@@ -350,26 +350,65 @@ def wait_until_ready(
     )
 
 
-def stop_server(proc: subprocess.Popen) -> None:
+def stop_server(proc: subprocess.Popen, feedback=None) -> None:
     if proc.poll() is not None:
         return
-    _terminate(proc)
+    _terminate(proc, feedback)
 
 
-def _terminate(proc: subprocess.Popen) -> None:
+def _log(feedback, msg: str) -> None:
+    if feedback is None:
+        return
+    try:
+        feedback.pushInfo(msg)
+    except Exception:
+        pass
+
+
+def _terminate(proc: subprocess.Popen, feedback=None) -> None:
+    """Terminate proc; on Windows finishes with taskkill /T as a tree-kill fallback.
+
+    CREATE_NEW_CONSOLE detaches the child from our process group enough
+    that proc.terminate() can leave the conhost window — and any helper
+    children Java spawned — alive after java.exe exits. taskkill /F /T
+    /PID walks the whole tree, idempotent if terminate() already worked.
+    """
+    if proc.poll() is not None:
+        return
+    pid = proc.pid
+    _log(feedback, f"Terminating OTP process (pid={pid})…")
     try:
         proc.terminate()
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
-    except Exception:
-        # last-ditch best effort
+            _log(feedback, f"terminate() timed out for pid={pid}, escalating to taskkill…")
+    except Exception as e:
+        _log(feedback, f"terminate() raised {e!r} for pid={pid}, escalating to taskkill…")
+
+    if proc.poll() is None and sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                timeout=10,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:
+            _log(feedback, f"taskkill failed for pid={pid}: {e!r}")
+
+    if proc.poll() is None:
         try:
             proc.kill()
+            proc.wait(timeout=5)
         except Exception:
             pass
+
+    if proc.poll() is None:
+        _log(feedback, f"WARNING: OTP pid={pid} still alive after full kill attempt — kill it manually.")
+    else:
+        _log(feedback, f"OTP process pid={pid} stopped.")
 
 
 def _copy_if_missing(src: Path, dst: Path) -> None:
@@ -432,7 +471,7 @@ class OtpServer:
             return
         if exc_type is not None or not self.keep_alive:
             self.feedback.pushInfo("Stopping OTP server…")
-            stop_server(self.proc)
+            stop_server(self.proc, feedback=self.feedback)
         else:
             self.feedback.pushInfo(
                 f"Leaving OTP server running on port {self.port} (KEEP_SERVER_ALIVE=True)."
