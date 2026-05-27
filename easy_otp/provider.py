@@ -3,6 +3,7 @@
 from qgis.core import QgsProcessingProvider
 
 from .algorithms.count_from_surfaces import CountFromExistingSurfaces
+from .algorithms.generate_hex_grid import GenerateHexGrid
 from .algorithms.run_temporal_accessibility import RunTemporalAccessibility
 from .algorithms.test_otp_server import TestOtpServer
 
@@ -20,4 +21,5 @@ class EasyOtpProvider(QgsProcessingProvider):
     def loadAlgorithms(self) -> None:  # noqa: N802 — Qt API name
         self.addAlgorithm(RunTemporalAccessibility())
         self.addAlgorithm(CountFromExistingSurfaces())
+        self.addAlgorithm(GenerateHexGrid())
         self.addAlgorithm(TestOtpServer())

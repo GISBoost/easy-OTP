@@ -1,11 +1,4 @@
-"""Main algorithm: temporal accessibility pipeline via OpenTripPlanner.
-
-Milestone 3 scope: validate paths, build (or cache-hit) the OTP graph,
-start --analyst --pointSets serve, wait for the router, and generate ONE
-travel-time surface per timestamp across the configured time window
-(TIME_START..TIME_END at 1/15/60 min interval) with progress reporting
-and cancellation. Raster stacking and zonal stats arrive in milestones 4-5.
-"""
+"""Main algorithm: full temporal-accessibility pipeline via OpenTripPlanner."""
 
 from pathlib import Path
 
@@ -49,6 +42,7 @@ from ..core.raster_processing import build_surface_vrt, count_below_threshold
 from ..core.surface_runner import SurfaceJobParams, run_surface_loop
 from ..core.time_utils import INTERVAL_MINUTES, build_time_list
 from ..core.zonal import classify_service_time, log_summary_stats, run_zonal_stats
+from .generate_hex_grid import build_hex_grid, extent_of_count_nonzero
 
 
 class RunTemporalAccessibility(QgsProcessingAlgorithm):
@@ -139,13 +133,15 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 self.tr("Origin point (where travel-time analysis starts; OTP fromPlace)"),
             )
         )
-        self.addParameter(
-            QgsProcessingParameterVectorLayer(
-                self.HEX_GRID,
-                self.tr("Hexagonal grid (polygon layer)"),
-                types=[QgsProcessing.TypeVectorPolygon],
-            )
+        _hex_grid_param = QgsProcessingParameterVectorLayer(
+            self.HEX_GRID,
+            self.tr("Hexagonal grid (polygon layer; leave blank when 'Generate hex grid' is checked)"),
+            types=[QgsProcessing.TypeVectorPolygon],
         )
+        _hex_grid_param.setFlags(
+            _hex_grid_param.flags() | QgsProcessingParameterDefinition.FlagOptional
+        )
+        self.addParameter(_hex_grid_param)
         self.addParameter(
             QgsProcessingParameterBoolean(
                 self.GENERATE_GRID,
@@ -338,7 +334,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         )
         _hex_param = QgsProcessingParameterFeatureSink(
             self.OUTPUT_HEX,
-            self.tr("Output hex grid (service-time + classification) — milestone 5"),
+            self.tr("Output hex grid (service-time + classification)"),
             type=QgsProcessing.TypeVectorPolygon,
         )
         _hex_param.setFlags(_hex_param.flags() | QgsProcessingParameterDefinition.FlagOptional)
@@ -355,6 +351,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         self.addParameter(param)
 
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802 — Qt API name
+        self._output_hex_dest_id = None
         java = self._require_file(parameters, context, self.JAVA_PATH, "Java 8 binary")
         jar = self._require_file(parameters, context, self.OTP_JAR_PATH, "OTP 1.5.0 jar")
         pbf = self._require_file(parameters, context, self.OSM_PBF, "OSM .pbf extract")
@@ -421,6 +418,8 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             f"{time_list[0]} to {time_list[-1]}, every {interval_min} min."
         ))
 
+        self._warn_gtfs_date(gtfs_files, qdt_date.date(), feedback)
+
         threshold_min = self.parameterAsInt(parameters, self.TRAVEL_TIME_THRESHOLD, context)
         out_count_str = self.parameterAsOutputLayer(parameters, self.OUTPUT_COUNT_RASTER, context)
         if not out_count_str:
@@ -429,21 +428,37 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             ))
         out_count_path = Path(out_count_str)
 
-        router_id = compute_router_id(pbf, gtfs_files)
-        feedback.pushInfo(self.tr(f"Router ID: {router_id}"))
-        router_dir = ensure_router_dir(work_dir, router_id, pbf, gtfs_files)
-        ensure_router_config(router_dir, gtfs_dir, feedback)
-        pointsets = ensure_pointsets_dir(work_dir)
-
-        if graph_build_complete(work_dir, router_id):
-            feedback.pushInfo(self.tr("Graph cache hit — skipping build."))
+        existing_graph_dir_str = self.parameterAsFile(parameters, self.EXISTING_GRAPH_DIR, context)
+        if existing_graph_dir_str:
+            existing_dir = Path(existing_graph_dir_str)
+            if not (existing_dir / "Graph.obj").exists():
+                raise QgsProcessingException(self.tr(
+                    f"EXISTING_GRAPH_DIR does not contain Graph.obj: {existing_dir}. "
+                    "Point to the router directory (e.g. …/graphs/abc123/)."
+                ))
+            router_id = existing_dir.name
+            router_dir = existing_dir
+            server_work_dir = existing_dir.parent.parent
+            feedback.pushInfo(self.tr(
+                f"Using existing graph: {router_dir} (router_id={router_id}); skipping build."
+            ))
+            ensure_router_config(router_dir, gtfs_dir, feedback)
         else:
-            feedback.pushInfo(self.tr("Building OTP graph (this can take minutes)…"))
-            try:
-                build_graph(java, jar, xmx_build, work_dir, router_id, feedback)
-            except RuntimeError as e:
-                raise QgsProcessingException(str(e)) from e
-            write_meta(router_dir, jar, [pbf, *gtfs_files])
+            server_work_dir = work_dir
+            router_id = compute_router_id(pbf, gtfs_files)
+            feedback.pushInfo(self.tr(f"Router ID: {router_id}"))
+            router_dir = ensure_router_dir(work_dir, router_id, pbf, gtfs_files)
+            ensure_router_config(router_dir, gtfs_dir, feedback)
+            if graph_build_complete(work_dir, router_id):
+                feedback.pushInfo(self.tr("Graph cache hit — skipping build."))
+            else:
+                feedback.pushInfo(self.tr("Building OTP graph (this can take minutes)…"))
+                try:
+                    build_graph(java, jar, xmx_build, work_dir, router_id, feedback)
+                except RuntimeError as e:
+                    raise QgsProcessingException(str(e)) from e
+                write_meta(router_dir, jar, [pbf, *gtfs_files])
+        pointsets = ensure_pointsets_dir(work_dir)
 
         existing = probe_otp(port)
         server_ctx = None
@@ -473,7 +488,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                     java_path=java,
                     jar_path=jar,
                     xmx=xmx_serve,
-                    work_dir=work_dir,
+                    work_dir=server_work_dir,
                     router_id=router_id,
                     port=port,
                     pointsets_dir=pointsets,
@@ -495,7 +510,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             except RuntimeError as e:
                 raise QgsProcessingException(str(e)) from e
 
-            self._log_router_diagnostic(client, feedback)
+            router_bbox = self._log_router_diagnostic(client, feedback)
 
             surfaces_dir = work_dir / "surfaces"
             job = SurfaceJobParams(
@@ -558,12 +573,31 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             except RuntimeError as e:
                 raise QgsProcessingException(str(e)) from e
 
-            hex_grid = self.parameterAsVectorLayer(parameters, self.HEX_GRID, context)
-            if hex_grid is None:
-                raise QgsProcessingException(self.tr(
-                    "HEX_GRID is required for zonal statistics. "
-                    "Supply a polygon layer or generate one with GenerateHexGrid."
+            generate_grid = self.parameterAsBool(parameters, self.GENERATE_GRID, context)
+            if generate_grid:
+                cell_size = self.parameterAsDouble(parameters, self.GRID_CELL_SIZE, context)
+                feedback.pushInfo(self.tr(
+                    f"Generating hex grid from count raster extent (cell size {cell_size} m)…"
                 ))
+                _extent_result = extent_of_count_nonzero(out_count_path)
+                if _extent_result is None:
+                    raise QgsProcessingException(self.tr(
+                        "No pixels were accessible within the travel-time threshold. "
+                        "Check ORIGIN_POINT and TRAVEL_TIME_THRESHOLD, or supply a "
+                        "HEX_GRID layer manually."
+                    ))
+                _extent, _extent_crs = _extent_result
+                hex_grid = build_hex_grid(
+                    _extent, _extent_crs, cell_size, context, feedback,
+                    buffer_m=cell_size * 3,
+                )
+            else:
+                hex_grid = self.parameterAsVectorLayer(parameters, self.HEX_GRID, context)
+                if hex_grid is None:
+                    raise QgsProcessingException(self.tr(
+                        "HEX_GRID is required when 'Generate hex grid' is unchecked. "
+                        "Supply a polygon layer or enable the 'Generate hex grid' option."
+                    ))
 
             feedback.pushInfo(self.tr("Running zonal statistics on count raster…"))
             try:
@@ -592,7 +626,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
 
             self._output_hex_dest_id = dest_id
             feedback.pushInfo(self.tr(
-                "Milestone 5 complete: hex grid with service-time classification ready."
+                "Pipeline complete: hex grid with service-time classification ready."
             ))
             if server_ctx is not None:
                 server_ctx.__exit__(None, None, None)
@@ -617,8 +651,14 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                     layer.triggerRepaint()
         return {}
 
-    def _log_router_diagnostic(self, client: OtpClient, feedback) -> None:
+    def _log_router_diagnostic(
+        self, client: OtpClient, feedback
+    ) -> "tuple[float, float, float, float] | None":
         """Fetch and pretty-print the router info so we can see what OTP loaded.
+
+        Returns the router polygon bounding box as (min_lon, min_lat, max_lon, max_lat)
+        in WGS84, or None if the polygon could not be parsed.  The bbox is used by
+        processAlgorithm to generate the hex grid when GENERATE_GRID=True.
 
         Helps diagnose empty-surface bugs: if transitServiceStarts/Ends does
         not cover ANALYSIS_DATE, OTP will return an all-unreachable raster.
@@ -627,7 +667,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             info = client.get_router_info()
         except OtpClientError as e:
             feedback.pushWarning(self.tr(f"Could not fetch router diagnostic: {e}"))
-            return
+            return None
 
         from datetime import datetime, timezone
 
@@ -652,11 +692,14 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         ))
         if center_lat is not None and center_lon is not None:
             feedback.pushInfo(self.tr(f"Router center (lat, lon) = ({center_lat}, {center_lon})"))
+
+        router_bbox = None
         if isinstance(polygon, dict) and polygon.get("coordinates"):
             try:
                 coords = polygon["coordinates"][0]
                 lons = [c[0] for c in coords]
                 lats = [c[1] for c in coords]
+                router_bbox = (min(lons), min(lats), max(lons), max(lats))
                 feedback.pushInfo(self.tr(
                     f"Router polygon bbox (lat, lon): "
                     f"({min(lats):.4f}, {min(lons):.4f}) .. "
@@ -668,6 +711,65 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             if flag in info:
                 feedback.pushInfo(self.tr(f"{flag} = {info[flag]}"))
         feedback.pushInfo(self.tr("-----------------------------"))
+        return router_bbox
+
+    def _warn_gtfs_date(self, gtfs_files: list, analysis_date, feedback) -> None:
+        """Warn if analysis_date is outside GTFS service range or falls on a weekend.
+
+        Uses stdlib zipfile + csv — no pip install required.
+        Logs a warning (not an exception) so the pipeline still continues.
+        analysis_date is a QDate.
+        """
+        import csv
+        import io
+        import zipfile as _zf
+
+        date_str = analysis_date.toString("yyyyMMdd")  # YYYYMMDD as in GTFS
+        date_int = int(date_str)
+        day_of_week = analysis_date.dayOfWeek()  # 1=Mon … 7=Sun (Qt convention)
+
+        if day_of_week >= 6:
+            day_name = "Saturday" if day_of_week == 6 else "Sunday"
+            feedback.pushWarning(self.tr(
+                f"ANALYSIS_DATE is a {day_name} ({date_str}). Weekend transit "
+                "schedules may differ significantly from weekday analyses."
+            ))
+
+        for gtfs_path in gtfs_files:
+            try:
+                with _zf.ZipFile(str(gtfs_path)) as z:
+                    cal_name = next(
+                        (n for n in z.namelist() if n.split("/")[-1] == "calendar.txt"),
+                        None,
+                    )
+                    if cal_name is None:
+                        feedback.pushWarning(self.tr(
+                            f"No calendar.txt in {gtfs_path.name} — cannot validate "
+                            "analysis date against GTFS service range."
+                        ))
+                        continue
+                    with z.open(cal_name) as raw:
+                        reader = csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+                        active = 0
+                        for row in reader:
+                            try:
+                                if int(row["start_date"]) <= date_int <= int(row["end_date"]):
+                                    active += 1
+                            except (KeyError, ValueError, TypeError):
+                                pass
+                if active == 0:
+                    feedback.pushWarning(self.tr(
+                        f"{gtfs_path.name}: no services active on {date_str}. "
+                        "OTP may return all-unreachable surfaces for this date."
+                    ))
+                else:
+                    feedback.pushInfo(self.tr(
+                        f"{gtfs_path.name}: {active} service(s) active on {date_str}."
+                    ))
+            except Exception as exc:  # noqa: BLE001
+                feedback.pushWarning(self.tr(
+                    f"Could not read {gtfs_path.name} for date validation: {exc}"
+                ))
 
     def _require_file(self, parameters, context, key: str, label: str) -> Path:
         raw = self.parameterAsFile(parameters, key, context)

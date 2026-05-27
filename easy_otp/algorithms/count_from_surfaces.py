@@ -22,6 +22,7 @@ from qgis.core import (
     QgsProcessingContext,
     QgsProcessingException,
     QgsProcessingFeedback,
+    QgsProcessingParameterBoolean,
     QgsProcessingParameterDefinition,
     QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
@@ -35,6 +36,7 @@ from qgis.core import (
 from ..core.raster_processing import count_below_threshold
 from ..core.time_utils import INTERVAL_MINUTES
 from ..core.zonal import classify_service_time, log_summary_stats, run_zonal_stats
+from .generate_hex_grid import build_hex_grid, extent_of_count_nonzero
 
 
 class CountFromExistingSurfaces(QgsProcessingAlgorithm):
@@ -42,6 +44,8 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
     TRAVEL_TIME_THRESHOLD = "TRAVEL_TIME_THRESHOLD"
     INTERVAL = "INTERVAL"
     HEX_GRID = "HEX_GRID"
+    GENERATE_GRID = "GENERATE_GRID"
+    GRID_CELL_SIZE = "GRID_CELL_SIZE"
     OUTPUT_COUNT_RASTER = "OUTPUT_COUNT_RASTER"
     OUTPUT_HEX = "OUTPUT_HEX"
 
@@ -116,9 +120,25 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterVectorLayer(
                 self.HEX_GRID,
-                self.tr("Hexagonal grid (optional, polygon layer)"),
+                self.tr("Hexagonal grid (optional; leave blank when 'Generate hex grid' is checked)"),
                 types=[QgsProcessing.TypeVectorPolygon],
                 optional=True,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.GENERATE_GRID,
+                self.tr("Generate hex grid instead of using supplied layer"),
+                defaultValue=False,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                self.GRID_CELL_SIZE,
+                self.tr("Hex grid cell size (m)"),
+                type=QgsProcessingParameterNumber.Double,
+                defaultValue=500.0,
+                minValue=1.0,
             )
         )
         _hex_param = QgsProcessingParameterFeatureSink(
@@ -162,7 +182,25 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
         feedback.pushInfo(self.tr(f"Count raster written: {out_count_path}"))
 
         self._output_hex_dest_id = None
-        hex_grid = self.parameterAsVectorLayer(parameters, self.HEX_GRID, context)
+        generate_grid = self.parameterAsBool(parameters, self.GENERATE_GRID, context)
+        if generate_grid:
+            cell_size = self.parameterAsDouble(parameters, self.GRID_CELL_SIZE, context)
+            feedback.pushInfo(self.tr(
+                f"Generating hex grid from count raster extent (cell size {cell_size} m)…"
+            ))
+            _extent_result = extent_of_count_nonzero(out_count_path)
+            if _extent_result is None:
+                raise QgsProcessingException(self.tr(
+                    "No pixels were accessible within the travel-time threshold. "
+                    "Check TRAVEL_TIME_THRESHOLD or supply a HEX_GRID layer manually."
+                ))
+            _extent, _extent_crs = _extent_result
+            hex_grid = build_hex_grid(
+                _extent, _extent_crs, cell_size, context, feedback,
+                buffer_m=cell_size * 3,
+            )
+        else:
+            hex_grid = self.parameterAsVectorLayer(parameters, self.HEX_GRID, context)
         if hex_grid is not None:
             feedback.pushInfo(self.tr("Running zonal statistics on count raster…"))
             try:
