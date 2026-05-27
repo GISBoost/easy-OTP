@@ -12,6 +12,7 @@ from pathlib import Path
 from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QTime
 from qgis.core import (
     QgsCoordinateReferenceSystem,
+    QgsFeatureSink,
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
@@ -26,6 +27,7 @@ from qgis.core import (
     QgsProcessingParameterRasterDestination,
     QgsProcessingParameterString,
     QgsProcessingParameterVectorLayer,
+    QgsProcessingUtils,
 )
 
 from ..core.otp_client import OtpClient, OtpClientError
@@ -46,6 +48,7 @@ from ..core.otp_server import (
 from ..core.raster_processing import build_surface_vrt, count_below_threshold
 from ..core.surface_runner import SurfaceJobParams, run_surface_loop
 from ..core.time_utils import INTERVAL_MINUTES, build_time_list
+from ..core.zonal import classify_service_time, log_summary_stats, run_zonal_stats
 
 
 class RunTemporalAccessibility(QgsProcessingAlgorithm):
@@ -139,9 +142,8 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterVectorLayer(
                 self.HEX_GRID,
-                self.tr("Hexagonal grid (optional, polygon layer)"),
+                self.tr("Hexagonal grid (polygon layer)"),
                 types=[QgsProcessing.TypeVectorPolygon],
-                optional=True,
             )
         )
         self.addParameter(
@@ -556,21 +558,64 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             except RuntimeError as e:
                 raise QgsProcessingException(str(e)) from e
 
+            hex_grid = self.parameterAsVectorLayer(parameters, self.HEX_GRID, context)
+            if hex_grid is None:
+                raise QgsProcessingException(self.tr(
+                    "HEX_GRID is required for zonal statistics. "
+                    "Supply a polygon layer or generate one with GenerateHexGrid."
+                ))
+
+            feedback.pushInfo(self.tr("Running zonal statistics on count raster…"))
+            try:
+                zonal_layer = run_zonal_stats(out_count_path, hex_grid, context, feedback)
+            except RuntimeError as e:
+                raise QgsProcessingException(str(e)) from e
+
+            feedback.pushInfo(self.tr("Classifying service-time categories…"))
+            try:
+                classified_layer = classify_service_time(
+                    zonal_layer, feedback, interval_min=interval_min
+                )
+            except RuntimeError as e:
+                raise QgsProcessingException(str(e)) from e
+
+            sink, dest_id = self.parameterAsSink(
+                parameters, self.OUTPUT_HEX, context,
+                classified_layer.fields(),
+                classified_layer.wkbType(),
+                classified_layer.sourceCrs(),
+            )
+            for feat in classified_layer.getFeatures():
+                sink.addFeature(feat, QgsFeatureSink.FastInsert)
+
+            log_summary_stats(classified_layer, feedback)
+
+            self._output_hex_dest_id = dest_id
             feedback.pushInfo(self.tr(
-                "Milestone 4 complete: count raster written; zero-count "
-                "pixels marked as NoData. Zonal stats arrive in milestone 5."
+                "Milestone 5 complete: hex grid with service-time classification ready."
             ))
             if server_ctx is not None:
                 server_ctx.__exit__(None, None, None)
                 server_ctx = None
             return {
                 self.OUTPUT_COUNT_RASTER: str(out_count_path),
-                self.OUTPUT_HEX: None,
+                self.OUTPUT_HEX: dest_id,
             }
         except BaseException:
             if server_ctx is not None:
                 server_ctx.__exit__(*self._exc_info())
             raise
+
+    def postProcessAlgorithm(self, context, feedback):  # noqa: N802 — Qt API name
+        dest_id = getattr(self, "_output_hex_dest_id", None)
+        if dest_id:
+            layer = QgsProcessingUtils.mapLayerFromString(dest_id, context)
+            if layer:
+                qml_path = Path(__file__).parent.parent / "styles" / "service_time.qml"
+                if qml_path.exists():
+                    layer.loadNamedStyle(str(qml_path))
+                    layer.triggerRepaint()
+        return {}
 
     def _log_router_diagnostic(self, client: OtpClient, feedback) -> None:
         """Fetch and pretty-print the router info so we can see what OTP loaded.

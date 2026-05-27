@@ -1,11 +1,13 @@
 """CountFromExistingSurfaces: count reachable minutes from pre-generated TIFFs.
 
-Allows re-running only the counting step (PR section 8.2 steps 7-8) on an
-existing folder of surface_*.tiff files without re-running OTP. Useful for:
-- testing the counting logic in isolation
+Allows re-running the full pipeline (count → zonal stats → classification)
+on an existing folder of surface_*.tiff files without re-running OTP. Useful for:
+- testing the counting and classification logic in isolation
 - re-counting with a different TRAVEL_TIME_THRESHOLD
+- re-generating the hex classification without the ~22-min OTP surface loop
 
-Delegates entirely to :func:`~easy_otp.core.raster_processing.count_below_threshold`.
+Delegates counting to :func:`~easy_otp.core.raster_processing.count_below_threshold`
+and zonal/classification to :mod:`~easy_otp.core.zonal`.
 """
 
 from __future__ import annotations
@@ -14,22 +16,36 @@ from pathlib import Path
 
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (
+    QgsFeatureSink,
+    QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingContext,
     QgsProcessingException,
     QgsProcessingFeedback,
+    QgsProcessingParameterDefinition,
+    QgsProcessingParameterEnum,
+    QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFile,
     QgsProcessingParameterNumber,
     QgsProcessingParameterRasterDestination,
+    QgsProcessingParameterVectorLayer,
+    QgsProcessingUtils,
 )
 
 from ..core.raster_processing import count_below_threshold
+from ..core.time_utils import INTERVAL_MINUTES
+from ..core.zonal import classify_service_time, log_summary_stats, run_zonal_stats
 
 
 class CountFromExistingSurfaces(QgsProcessingAlgorithm):
     SURFACES_FOLDER = "SURFACES_FOLDER"
     TRAVEL_TIME_THRESHOLD = "TRAVEL_TIME_THRESHOLD"
+    INTERVAL = "INTERVAL"
+    HEX_GRID = "HEX_GRID"
     OUTPUT_COUNT_RASTER = "OUTPUT_COUNT_RASTER"
+    OUTPUT_HEX = "OUTPUT_HEX"
+
+    INTERVAL_CHOICES = ["1 min", "15 min", "60 min"]
 
     def tr(self, string: str) -> str:
         return QCoreApplication.translate("Processing", string)
@@ -51,9 +67,15 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
             "Counts, for each pixel, how many surface_*.tiff files in the "
             "given folder have a travel-time value ≤ TRAVEL_TIME_THRESHOLD. "
             "Writes a single-band Int32 GeoTIFF where 0 means NoData "
-            "(pixel never within threshold). "
-            "Use this to re-run the counting step without re-generating "
-            "surfaces via OTP."
+            "(pixel never within threshold).\n\n"
+            "Set INTERVAL to match the sampling interval used when generating "
+            "the surfaces — it is used to convert surface counts to minutes "
+            "for the 4-category classification.\n\n"
+            "Optionally, if a hexagonal grid is supplied, also runs zonal "
+            "statistics and 4-category service-time classification, producing "
+            "an OUTPUT_HEX layer styled with service_time.qml.\n\n"
+            "Use this to re-run the full pipeline without re-generating "
+            "surfaces via OTP (~22 min saved)."
         )
 
     def createInstance(self):  # noqa: N802
@@ -78,11 +100,34 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
+            QgsProcessingParameterEnum(
+                self.INTERVAL,
+                self.tr("Sampling interval of the surfaces"),
+                options=self.INTERVAL_CHOICES,
+                defaultValue=0,
+            )
+        )
+        self.addParameter(
             QgsProcessingParameterRasterDestination(
                 self.OUTPUT_COUNT_RASTER,
                 self.tr("Output count raster"),
             )
         )
+        self.addParameter(
+            QgsProcessingParameterVectorLayer(
+                self.HEX_GRID,
+                self.tr("Hexagonal grid (optional, polygon layer)"),
+                types=[QgsProcessing.TypeVectorPolygon],
+                optional=True,
+            )
+        )
+        _hex_param = QgsProcessingParameterFeatureSink(
+            self.OUTPUT_HEX,
+            self.tr("Output hex grid (service-time + classification)"),
+            type=QgsProcessing.TypeVectorPolygon,
+        )
+        _hex_param.setFlags(_hex_param.flags() | QgsProcessingParameterDefinition.FlagOptional)
+        self.addParameter(_hex_param)
 
     def processAlgorithm(  # noqa: N802
         self,
@@ -92,6 +137,8 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
     ) -> dict:
         folder = self.parameterAsString(parameters, self.SURFACES_FOLDER, context)
         threshold_min = self.parameterAsInt(parameters, self.TRAVEL_TIME_THRESHOLD, context)
+        interval_idx = self.parameterAsEnum(parameters, self.INTERVAL, context)
+        interval_min = INTERVAL_MINUTES[interval_idx]
         out_count_str = self.parameterAsOutputLayer(parameters, self.OUTPUT_COUNT_RASTER, context)
 
         # Lexicographic sort == chronological for surface_HH-MM-SS.tiff naming.
@@ -103,7 +150,7 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
 
         feedback.pushInfo(self.tr(
             f"Found {len(surfaces)} surface(s) in {folder}. "
-            f"Threshold: {threshold_min} min."
+            f"Threshold: {threshold_min} min, interval: {interval_min} min."
         ))
 
         out_count_path = Path(out_count_str)
@@ -112,7 +159,49 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
         except RuntimeError as e:
             raise QgsProcessingException(str(e)) from e
 
-        feedback.pushInfo(self.tr(
-            f"Count raster written: {out_count_path}"
-        ))
-        return {self.OUTPUT_COUNT_RASTER: str(out_count_path)}
+        feedback.pushInfo(self.tr(f"Count raster written: {out_count_path}"))
+
+        self._output_hex_dest_id = None
+        hex_grid = self.parameterAsVectorLayer(parameters, self.HEX_GRID, context)
+        if hex_grid is not None:
+            feedback.pushInfo(self.tr("Running zonal statistics on count raster…"))
+            try:
+                zonal_layer = run_zonal_stats(out_count_path, hex_grid, context, feedback)
+            except RuntimeError as e:
+                raise QgsProcessingException(str(e)) from e
+
+            feedback.pushInfo(self.tr("Classifying service-time categories…"))
+            try:
+                classified_layer = classify_service_time(
+                    zonal_layer, feedback, interval_min=interval_min
+                )
+            except RuntimeError as e:
+                raise QgsProcessingException(str(e)) from e
+
+            sink, dest_id = self.parameterAsSink(
+                parameters, self.OUTPUT_HEX, context,
+                classified_layer.fields(),
+                classified_layer.wkbType(),
+                classified_layer.sourceCrs(),
+            )
+            for feat in classified_layer.getFeatures():
+                sink.addFeature(feat, QgsFeatureSink.FastInsert)
+
+            log_summary_stats(classified_layer, feedback)
+            self._output_hex_dest_id = dest_id
+
+        return {
+            self.OUTPUT_COUNT_RASTER: str(out_count_path),
+            self.OUTPUT_HEX: self._output_hex_dest_id,
+        }
+
+    def postProcessAlgorithm(self, context, feedback):  # noqa: N802
+        dest_id = getattr(self, "_output_hex_dest_id", None)
+        if dest_id:
+            layer = QgsProcessingUtils.mapLayerFromString(dest_id, context)
+            if layer:
+                qml_path = Path(__file__).parent.parent / "styles" / "service_time.qml"
+                if qml_path.exists():
+                    layer.loadNamedStyle(str(qml_path))
+                    layer.triggerRepaint()
+        return {}
