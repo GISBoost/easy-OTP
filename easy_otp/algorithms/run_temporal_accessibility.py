@@ -334,13 +334,13 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 behavior=QgsProcessingParameterFile.Folder,
             )
         )
-        self.addParameter(
-            QgsProcessingParameterFeatureSink(
-                self.OUTPUT_HEX,
-                self.tr("Output hex grid (service-time + classification)"),
-                type=QgsProcessing.TypeVectorPolygon,
-            )
+        _hex_param = QgsProcessingParameterFeatureSink(
+            self.OUTPUT_HEX,
+            self.tr("Output hex grid (service-time + classification) — milestone 5"),
+            type=QgsProcessing.TypeVectorPolygon,
         )
+        _hex_param.setFlags(_hex_param.flags() | QgsProcessingParameterDefinition.FlagOptional)
+        self.addParameter(_hex_param)
         self.addParameter(
             QgsProcessingParameterRasterDestination(
                 self.OUTPUT_COUNT_RASTER,
@@ -537,20 +537,22 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             ))
 
             vrt_path = work_dir / "surfaces_stack.vrt"
-            feedback.pushInfo(self.tr(
-                f"Stacking {len(surfaces)} surface(s) into VRT: {vrt_path}"
-            ))
             try:
                 build_surface_vrt(surfaces, vrt_path)
+                feedback.pushInfo(self.tr(
+                    f"Debug VRT written: {vrt_path} (visual inspection only)."
+                ))
             except RuntimeError as e:
-                raise QgsProcessingException(str(e)) from e
+                feedback.pushWarning(self.tr(
+                    f"VRT build failed (debug artifact only, pipeline continues): {e}"
+                ))
 
             feedback.pushInfo(self.tr(
                 f"Counting pixels with travel-time ≤ {threshold_min} min "
-                f"across {len(surfaces)} band(s) → {out_count_path}"
+                f"across {len(surfaces)} surface(s) → {out_count_path}"
             ))
             try:
-                count_below_threshold(vrt_path, threshold_min, out_count_path, feedback)
+                count_below_threshold(surfaces, threshold_min, out_count_path, feedback)
             except RuntimeError as e:
                 raise QgsProcessingException(str(e)) from e
 
@@ -561,7 +563,10 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             if server_ctx is not None:
                 server_ctx.__exit__(None, None, None)
                 server_ctx = None
-            return {self.OUTPUT_COUNT_RASTER: str(out_count_path)}
+            return {
+                self.OUTPUT_COUNT_RASTER: str(out_count_path),
+                self.OUTPUT_HEX: None,
+            }
         except BaseException:
             if server_ctx is not None:
                 server_ctx.__exit__(*self._exc_info())

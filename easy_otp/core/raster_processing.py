@@ -37,6 +37,12 @@ def _tr(s: str) -> str:
 def build_surface_vrt(surfaces: list[Path], vrt_path: Path) -> Path:
     """Assemble per-minute GeoTIFFs into a multi-band VRT (one band per surface).
 
+    DEBUG ARTIFACT ONLY — do NOT use for counting. Reading through a VRT can
+    produce different NoData semantics than reading each source file directly
+    (see milestone-4 P0 bug). Use :func:`count_below_threshold` with a list of
+    paths instead. The VRT is still generated as a cheap (~1 s) visual aid for
+    inspecting the surface stack in QGIS.
+
     Equivalent to ``gdal:buildvirtualraster`` with the "separate" option
     in the manual pipeline (PR step 7). Raises ``RuntimeError`` if the
     surface grids disagree (different extent / CRS / pixel size) — GDAL
@@ -61,6 +67,7 @@ def build_surface_vrt(surfaces: list[Path], vrt_path: Path) -> Path:
     ds = None  # close
 
     if band_count != len(surfaces):
+        vrt_path.unlink(missing_ok=True)
         raise RuntimeError(_tr(
             f"VRT band count ({band_count}) does not match surface "
             f"count ({len(surfaces)})."
@@ -69,47 +76,72 @@ def build_surface_vrt(surfaces: list[Path], vrt_path: Path) -> Path:
 
 
 def count_below_threshold(
-    vrt_path: Path,
+    surfaces: list[Path],
     threshold_min: int,
     out_count_tif: Path,
     feedback,
 ) -> Path:
-    """For each pixel, count bands where value ≤ ``threshold_min``.
+    """For each pixel, count surfaces where value ≤ ``threshold_min``.
 
-    Direct port of ``reference/skrypt_wro.py``: per-band NoData replaced
-    with 0, accumulator ``+= (data <= threshold).astype(int32)``. Writes
-    a single-band Int32 GeoTIFF with NoData = 0 — folds in the manual
-    GRASS ``r.null`` step (PR step 8) so zero-count pixels become NoData
-    in the output and are skipped by downstream zonal stats.
+    Reads each surface GeoTIFF directly (not via VRT) to avoid any VRT
+    NoData-propagation edge cases. NoData pixels are excluded from the count
+    via a proper mask — the critical fix over the earlier VRT-based approach
+    where NoData=0 would satisfy ``0 <= threshold`` and inflate every pixel.
 
-    Reports progress per band and honours ``feedback.isCanceled()``.
+    Writes a single-band Int32 GeoTIFF with NoData = 0, folding in the manual
+    GRASS ``r.null`` step (PR step 8) so zero-count pixels become NoData in the
+    output and are skipped by downstream zonal stats.
+
+    Geotransform and projection are taken from the first surface; all surfaces
+    from one OTP serve share the same grid.
+
+    Reports progress per surface and honours ``feedback.isCanceled()``.
     """
-    src = None
+    if not surfaces:
+        raise RuntimeError(_tr("No surfaces provided for counting."))
+
     out_ds = None
+    geo_transform = None
+    projection = None
+    cols = rows = None
+    accumulator = None
+
     try:
-        src = gdal.Open(str(vrt_path), gdal.GA_ReadOnly)
-        if src is None:
-            raise RuntimeError(_tr(f"Cannot open stack VRT: {vrt_path}"))
-
-        cols = src.RasterXSize
-        rows = src.RasterYSize
-        total_bands = src.RasterCount
-        if total_bands == 0:
-            raise RuntimeError(_tr("Stack VRT contains zero bands."))
-
-        accumulator = np.zeros((rows, cols), dtype=np.int32)
-
-        for i in range(1, total_bands + 1):
+        total = len(surfaces)
+        for idx, surf_path in enumerate(surfaces):
             if feedback.isCanceled():
                 raise RuntimeError(_tr("Run cancelled by user."))
-            feedback.setProgress(int((i - 1) / total_bands * 100))
+            feedback.setProgress(int(idx / total * 100))
 
-            band = src.GetRasterBand(i)
-            data = band.ReadAsArray()
-            nodata = band.GetNoDataValue()
-            if nodata is not None:
-                data[data == nodata] = 0
-            accumulator += (data <= threshold_min).astype(np.int32)
+            ds = gdal.Open(str(surf_path), gdal.GA_ReadOnly)
+            if ds is None:
+                raise RuntimeError(_tr(f"Cannot open surface raster: {surf_path}"))
+
+            try:
+                band = ds.GetRasterBand(1)
+                data = band.ReadAsArray()
+                nodata_val = band.GetNoDataValue()
+
+                if idx == 0:
+                    rows, cols = data.shape
+                    geo_transform = ds.GetGeoTransform()
+                    projection = ds.GetProjection()
+                    accumulator = np.zeros((rows, cols), dtype=np.int32)
+                    feedback.pushInfo(
+                        f"Surface dtype={gdal.GetDataTypeName(band.DataType)} "
+                        f"NoData={nodata_val} (n_surfaces={total})"
+                    )
+
+                if nodata_val is not None:
+                    # Cast nodata to the array's own dtype to avoid float/int
+                    # comparison surprises (e.g. nodata=0.0 on uint8 array).
+                    nodata_cmp = np.array(nodata_val, dtype=data.dtype)
+                    valid = (data != nodata_cmp) & (data <= threshold_min)
+                else:
+                    valid = data <= threshold_min
+                accumulator += valid.astype(np.int32)
+            finally:
+                ds = None  # explicit GDAL close after each surface
 
         out_count_tif.parent.mkdir(parents=True, exist_ok=True)
         driver = gdal.GetDriverByName("GTiff")
@@ -120,8 +152,8 @@ def count_below_threshold(
             raise RuntimeError(_tr(
                 f"Failed to create output count raster: {out_count_tif}"
             ))
-        out_ds.SetGeoTransform(src.GetGeoTransform())
-        out_ds.SetProjection(src.GetProjection())
+        out_ds.SetGeoTransform(geo_transform)
+        out_ds.SetProjection(projection)
         out_band = out_ds.GetRasterBand(1)
         out_band.SetNoDataValue(0)
         out_band.WriteArray(accumulator)
@@ -130,10 +162,10 @@ def count_below_threshold(
         feedback.setProgress(100)
         return out_count_tif
     except BaseException:
+        if out_ds is not None:
+            out_ds = None  # close before unlink — Windows holds file lock on open datasets
         out_count_tif.unlink(missing_ok=True)
         raise
     finally:
         if out_ds is not None:
             out_ds = None  # noqa: F841 — explicit GDAL close
-        if src is not None:
-            src = None  # noqa: F841 — explicit GDAL close
