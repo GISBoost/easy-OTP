@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import socket
 import subprocess
@@ -32,9 +33,67 @@ _HASH_CHUNK = 1 << 20  # 1 MiB
 _OTP_EXIT_HINT = (
     "Common causes: wrong Java version (OTP 1.5.0 needs Java 8 — run "
     "TestOtpServer to verify), port already in use (pick a different "
-    "OTP_PORT), or corrupt/wrong-version jar (re-download "
-    "otp-1.5.0-shaded.jar from Maven Central)."
+    "OTP_PORT), corrupt/wrong-version jar (re-download "
+    "otp-1.5.0-shaded.jar from Maven Central), invalid or empty GTFS feed "
+    "(check that .zip files are valid GTFS archives), or insufficient heap "
+    "memory (increase -Xmx, e.g. set OTP_BUILD_XMX=8g or OTP_SERVE_XMX=8g)."
 )
+
+_JAVA_VERSION_RE = re.compile(r'(?:java|openjdk)\s+version\s+"([^"]+)"', re.IGNORECASE)
+
+
+def check_java_version(java_path: Path) -> "tuple[bool, str, str]":
+    """Run ``java -version`` and return ``(is_java8, version_str, error_msg)``.
+
+    ``is_java8`` is True when the binary reports Java 1.8.x or 8.x.
+    On failure ``version_str`` is empty and ``error_msg`` explains what went
+    wrong in user-readable language.
+
+    Called from both ``TestOtpServer`` and ``RunTemporalAccessibility``
+    so that a wrong Java binary is diagnosed *before* OTP is launched.
+    """
+    if not java_path.is_file():
+        return (
+            False,
+            "",
+            f"Java binary not found: {java_path}. "
+            "Download portable Eclipse Temurin 8 (https://adoptium.net/temurin/releases/?version=8), "
+            "unzip it, and point the 'Java 8 binary' parameter at bin/java "
+            "(or bin\\java.exe on Windows).",
+        )
+    try:
+        proc = subprocess.run(
+            [str(java_path), "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "", f"Timed out running '{java_path} -version'."
+    except OSError as e:
+        return False, "", f"Could not invoke '{java_path} -version': {e}"
+
+    banner = (proc.stderr or proc.stdout or "").strip()
+    first_line = banner.splitlines()[0] if banner else ""
+    match = _JAVA_VERSION_RE.search(first_line)
+    if not match:
+        return (
+            False,
+            "",
+            f"Could not parse Java version from output: {banner[:200]!r}",
+        )
+    version = match.group(1)
+    if version.startswith("1.8.") or version.startswith("8."):
+        return True, version, ""
+    return (
+        False,
+        version,
+        f"OTP 1.5.0 requires Java 8; detected version '{version}'. "
+        "Download portable Eclipse Temurin 8 "
+        "(https://adoptium.net/temurin/releases/?version=8), "
+        "unzip it, and point the 'Java 8 binary' parameter at bin/java "
+        "(or bin\\java.exe on Windows).",
+    )
 
 
 # ---------- pure helpers ----------
@@ -97,17 +156,17 @@ def ensure_router_config(
     router_dir: Path,
     source_dir: Optional[Path],
     feedback,
+    config_file: Optional[Path] = None,
 ) -> None:
     """Ensure router-config.json (and build-config.json if user-supplied) exist.
 
     OTP reads router-config at server start; without it, analyst surface
-    routing degenerates (SPT does not expand). Logic:
+    routing degenerates (SPT does not expand). Priority:
 
-    - If ``source_dir/router-config.json`` exists → copy it (user override).
-    - Else, if router_dir has no router-config.json yet → write the embedded
-      default.
-    - Else, leave the existing one untouched (user may have manually
-      customised it inside the router dir).
+    1. ``config_file`` — explicit path supplied by the user (ROUTER_CONFIG_PATH).
+    2. ``source_dir/router-config.json`` — GTFS-folder convention.
+    3. Embedded ``DEFAULT_ROUTER_CONFIG`` — written if none of the above exists.
+    4. Existing file in ``router_dir`` — left untouched if already present.
 
     build-config.json is only copied from source_dir if present — never
     auto-generated, since OTP's defaults produce a working graph and a wrong
@@ -116,7 +175,10 @@ def ensure_router_config(
     router_cfg = router_dir / "router-config.json"
     build_cfg = router_dir / "build-config.json"
 
-    src_router = (source_dir / "router-config.json") if source_dir else None
+    if config_file is not None and config_file.is_file():
+        src_router = config_file
+    else:
+        src_router = (source_dir / "router-config.json") if source_dir else None
     src_build = (source_dir / "build-config.json") if source_dir else None
 
     if src_router is not None and src_router.is_file():
@@ -483,6 +545,7 @@ __all__ = [
     "OtpClient",
     "OtpClientError",
     "build_graph",
+    "check_java_version",
     "compute_router_id",
     "discover_gtfs_files",
     "ensure_pointsets_dir",

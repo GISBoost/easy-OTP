@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-import subprocess
 from pathlib import Path
 
 from qgis.PyQt.QtCore import QCoreApplication
@@ -13,9 +11,7 @@ from qgis.core import (
     QgsProcessingParameterNumber,
 )
 
-from ..core.otp_server import port_is_listening, probe_otp
-
-_JAVA_VERSION_RE = re.compile(r'(?:java|openjdk)\s+version\s+"([^"]+)"', re.IGNORECASE)
+from ..core.otp_server import check_java_version, port_is_listening, probe_otp
 
 
 class TestOtpServer(QgsProcessingAlgorithm):
@@ -98,49 +94,18 @@ class TestOtpServer(QgsProcessingAlgorithm):
     # --- individual checks ---
 
     def _check_java(self, java: Path, feedback) -> bool:
-        if not str(java):
+        if not java.name:
             feedback.reportError(self.tr("JAVA_PATH is empty."))
             return False
-        if not java.is_file():
-            feedback.reportError(self.tr(
-                f"Java binary not found: {java}. Download portable Eclipse "
-                f"Temurin 8 (or Azul Zulu 8), unzip it, and point JAVA_PATH "
-                f"to bin/java (or bin\\java.exe on Windows)."
-            ))
-            return False
-        try:
-            proc = subprocess.run(
-                [str(java), "-version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except (subprocess.TimeoutExpired, OSError) as e:
-            feedback.reportError(self.tr(f"Could not invoke '{java} -version': {e}"))
-            return False
-
-        # Java writes the version banner to stderr.
-        banner = (proc.stderr or proc.stdout or "").strip()
-        first_line = banner.splitlines()[0] if banner else ""
-        match = _JAVA_VERSION_RE.search(first_line)
-        if not match:
-            feedback.reportError(self.tr(
-                f"Could not parse Java version from output: {banner[:200]!r}"
-            ))
-            return False
-
-        version = match.group(1)
-        if version.startswith("1.8.") or version.startswith("8."):
-            feedback.pushInfo(self.tr(f"Java OK: {first_line}"))
+        is_ok, version, err_msg = check_java_version(java)
+        if is_ok:
+            feedback.pushInfo(self.tr(f"Java OK: version {version}"))
             return True
-        feedback.reportError(self.tr(
-            f"OTP 1.5.0 requires Java 8; detected '{version}'. "
-            f"Download portable Temurin 8 and point JAVA_PATH at it."
-        ))
+        feedback.reportError(self.tr(err_msg))
         return False
 
     def _check_jar(self, jar: Path, feedback) -> bool:
-        if not str(jar):
+        if not jar.name:
             feedback.reportError(self.tr("OTP_JAR_PATH is empty."))
             return False
         if not jar.is_file():

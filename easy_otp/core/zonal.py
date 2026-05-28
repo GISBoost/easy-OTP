@@ -5,11 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from qgis.core import QgsField, QgsRasterLayer
-from qgis.PyQt.QtCore import QVariant
-
 if TYPE_CHECKING:
     from qgis.core import QgsProcessingContext, QgsProcessingFeedback, QgsVectorLayer
+
+
+def _tr(string: str) -> str:
+    from qgis.PyQt.QtCore import QCoreApplication
+    return QCoreApplication.translate("Processing", string)
+
 
 _CATEGORIES = [
     ("constantly accessible", 720),    # [720, ∞)
@@ -21,6 +24,32 @@ _CATEGORIES = [
 
 # "" is the inaccessible sentinel stored in st_class; matches QML value=""
 _CATEGORY_ORDER = [c for c, _ in _CATEGORIES] + [""]
+
+
+def _classify_value(val: "float | None", interval_min: int) -> str:
+    """Pure Python: otp_mean float → service-time category string.
+
+    No QGIS dependency — safe to import and test outside the QGIS interpreter.
+    ``val`` is the zonal mean of the count raster (number of timestamps where
+    travel-time ≤ threshold). ``interval_min`` is the sampling interval used
+    when generating the surfaces (1, 15, or 60 minutes).
+    """
+    if val is None:
+        return ""
+    try:
+        fval = float(val)
+    except (TypeError, ValueError):
+        return ""
+    if fval <= 0:
+        return ""
+    service_min = fval * interval_min
+    if service_min >= 720:
+        return "constantly accessible"
+    if service_min >= 360:
+        return "regularly accessible"
+    if service_min >= 180:
+        return "periodically accessible"
+    return "episodically accessible"
 
 
 def run_zonal_stats(
@@ -36,6 +65,7 @@ def run_zonal_stats(
     CRS for sampling), so no raster reprojection is performed here.
     """
     import processing  # noqa: PLC0415 — available only inside the QGIS interpreter
+    from qgis.core import QgsRasterLayer  # noqa: PLC0415
 
     raster_layer = QgsRasterLayer(str(count_raster_path), "count_raster", "gdal")
     if not raster_layer.isValid():
@@ -46,11 +76,11 @@ def run_zonal_stats(
     raster_crs = raster_layer.crs()
     grid_crs = hex_layer.crs()
     if raster_crs != grid_crs:
-        feedback.pushInfo(
+        feedback.pushInfo(_tr(
             f"Raster CRS ({raster_crs.authid()}) differs from grid CRS "
             f"({grid_crs.authid()}); native:zonalstatisticsfb will handle "
             f"the transform internally."
-        )
+        ))
 
     result = processing.run(
         "native:zonalstatisticsfb",
@@ -85,6 +115,9 @@ def classify_service_time(
     Inaccessible cells (otp_mean = 0 or NULL) get st_class = "" (empty string),
     which the QML renderer maps to no symbol via value="".
     """
+    from qgis.core import QgsField  # noqa: PLC0415
+    from qgis.PyQt.QtCore import QVariant  # noqa: PLC0415
+
     provider = zonal_layer.dataProvider()
     provider.addAttributes([QgsField("st_class", QVariant.String, "String", 30)])
     zonal_layer.updateFields()
@@ -100,31 +133,14 @@ def classify_service_time(
     attr_map: dict[int, dict[int, object]] = {}
     for feature in zonal_layer.getFeatures():
         raw = feature[mean_idx]
-        try:
-            val = float(raw)
-        except (TypeError, ValueError):
-            val = None
-
-        if val is None or val <= 0:
-            cat = ""  # inaccessible — matches QML value=""
-        else:
-            service_min = val * interval_min
-            if service_min >= 720:
-                cat = "constantly accessible"
-            elif service_min >= 360:
-                cat = "regularly accessible"
-            elif service_min >= 180:
-                cat = "periodically accessible"
-            else:
-                cat = "episodically accessible"
-
+        cat = _classify_value(raw, interval_min)
         attr_map[feature.id()] = {class_idx: cat}
 
     provider.changeAttributeValues(attr_map)
     zonal_layer.updateFields()
-    feedback.pushInfo(
+    feedback.pushInfo(_tr(
         f"Service-time classification complete (interval={interval_min} min)."
-    )
+    ))
     return zonal_layer
 
 
@@ -144,10 +160,10 @@ def log_summary_stats(
         key = val if isinstance(val, str) else ""
         counts[key] = counts.get(key, 0) + 1
 
-    feedback.pushInfo("=== Service-time classification summary ===")
+    feedback.pushInfo(_tr("=== Service-time classification summary ==="))
     for cat in _CATEGORY_ORDER:
         count = counts.get(cat, 0)
         pct = count / total * 100 if total > 0 else 0.0
         label = cat if cat != "" else "inaccessible"
-        feedback.pushInfo(f"  {label}: {count} cells ({pct:.1f}%)")
-    feedback.pushInfo(f"  Total: {total} cells")
+        feedback.pushInfo(_tr(f"  {label}: {count} cells ({pct:.1f}%)"))
+    feedback.pushInfo(_tr(f"  Total: {total} cells"))

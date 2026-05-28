@@ -87,6 +87,19 @@ class OtpClient:
             with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
                 body = resp.read()
         except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise OtpClientError(
+                    "OTP /surfaces returned HTTP 404: analyst surfaces endpoint "
+                    "not found. Make sure the server was started with "
+                    "--analyst --pointSets flags."
+                ) from e
+            if e.code == 500:
+                raise OtpClientError(
+                    "OTP /surfaces returned HTTP 500 (Internal Server Error). "
+                    "This usually means the analyst server ran out of memory. "
+                    "Increase OTP_XMX_SERVE (e.g. from 1G to 4G or 8G) and "
+                    "restart the server (set KEEP_SERVER_ALIVE=False for one run)."
+                ) from e
             detail = e.read().decode("utf-8", errors="replace")[:500]
             raise OtpClientError(
                 f"OTP /surfaces returned HTTP {e.code}: {detail}"

@@ -27,6 +27,7 @@ from ..core.otp_client import OtpClient, OtpClientError
 from ..core.otp_server import (
     OtpServer,
     build_graph,
+    check_java_version,
     compute_router_id,
     discover_gtfs_files,
     ensure_pointsets_dir,
@@ -72,6 +73,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
     OTP_XMX_SERVE = "OTP_XMX_SERVE"
     OTP_PORT = "OTP_PORT"
     EXISTING_GRAPH_DIR = "EXISTING_GRAPH_DIR"
+    ROUTER_CONFIG_PATH = "ROUTER_CONFIG_PATH"
     KEEP_SERVER_ALIVE = "KEEP_SERVER_ALIVE"
     SHOW_OTP_CONSOLE = "SHOW_OTP_CONSOLE"
 
@@ -107,7 +109,11 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             "and counts surfaces below the travel-time threshold, and "
             "aggregates the result into a hexagonal grid with a "
             "4-category service-time classification.\n\n"
-            "Requires user-provided Java 8 and otp-1.5.0-shaded.jar."
+            "Requires user-provided Java 8 and otp-1.5.0-shaded.jar.\n\n"
+            "Note: maxWalkDistance may have no effect on surface extent in "
+            "OTP analyst mode — the SPT is time-bounded (120 min ceiling), "
+            "not distance-bounded. Use walk_speed to control how far the "
+            "model walks within that time budget."
         )
 
     def initAlgorithm(self, config=None):  # noqa: N802 — Qt API name
@@ -173,7 +179,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 self.TIME_START,
                 self.tr("Window start time"),
                 type=QgsProcessingParameterDateTime.Time,
-                defaultValue=QDateTime(QDate(2000, 1, 1), QTime(6, 0)),
+                defaultValue=QTime(6, 0),
             )
         )
         self.addParameter(
@@ -181,7 +187,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 self.TIME_END,
                 self.tr("Window end time"),
                 type=QgsProcessingParameterDateTime.Time,
-                defaultValue=QDateTime(QDate(2000, 1, 1), QTime(22, 0)),
+                defaultValue=QTime(22, 0),
             )
         )
         self.addParameter(
@@ -243,7 +249,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         self._add_advanced(
             QgsProcessingParameterNumber(
                 self.MAX_WALK_DISTANCE,
-                self.tr("Maximum walk distance (m)"),
+                self.tr("Maximum walk distance (m) — limited effect in OTP analyst mode"),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=800,
                 minValue=0,
@@ -310,6 +316,18 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             )
         )
         self._add_advanced(
+            QgsProcessingParameterFile(
+                self.ROUTER_CONFIG_PATH,
+                self.tr(
+                    "Custom router-config.json (optional; overrides the "
+                    "auto-generated default and the GTFS-folder convention)"
+                ),
+                behavior=QgsProcessingParameterFile.File,
+                extension="json",
+                optional=True,
+            )
+        )
+        self._add_advanced(
             QgsProcessingParameterBoolean(
                 self.KEEP_SERVER_ALIVE,
                 self.tr("Keep OTP server alive after run"),
@@ -353,7 +371,19 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802 — Qt API name
         self._output_hex_dest_id = None
         java = self._require_file(parameters, context, self.JAVA_PATH, "Java 8 binary")
-        jar = self._require_file(parameters, context, self.OTP_JAR_PATH, "OTP 1.5.0 jar")
+        is_java8, java_ver, java_err = check_java_version(java)
+        if not is_java8:
+            raise QgsProcessingException(self.tr(java_err))
+        feedback.pushInfo(self.tr(f"Java OK: version {java_ver}"))
+
+        jar = self._require_file(
+            parameters, context, self.OTP_JAR_PATH, "OTP 1.5.0 jar",
+            fix_hint=self.tr(
+                "Download otp-1.5.0-shaded.jar from Maven Central "
+                "(groupId=org.opentripplanner, artifactId=otp, version=1.5.0, "
+                "classifier=shaded) and set the 'OpenTripPlanner 1.5.0 jar' parameter."
+            ),
+        )
         pbf = self._require_file(parameters, context, self.OSM_PBF, "OSM .pbf extract")
 
         gtfs_dir_str = self.parameterAsFile(parameters, self.GTFS_FILES, context)
@@ -391,11 +421,18 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         ))
 
         qdt_date = self.parameterAsDateTime(parameters, self.ANALYSIS_DATE, context)
-        qdt_start = self.parameterAsDateTime(parameters, self.TIME_START, context)
-        qdt_end = self.parameterAsDateTime(parameters, self.TIME_END, context)
         date_s = qdt_date.date().toString("MM-dd-yyyy")
-        start_t = qdt_start.time()
-        end_t = qdt_end.time()
+
+        # QgsProcessingParameterDateTime(type=Time) stores values as QTime in QGIS
+        # 3.40. parameterAsDateTime() calls QVariant::toDateTime() on a QTime, which
+        # returns an invalid QDateTime and falls back to the defaultValue — i.e., the
+        # user's input is silently ignored. Read the raw value directly instead.
+        raw_start = parameters.get(self.TIME_START)
+        raw_end   = parameters.get(self.TIME_END)
+        start_t = raw_start if isinstance(raw_start, QTime) else \
+                  self.parameterAsDateTime(parameters, self.TIME_START, context).time()
+        end_t   = raw_end   if isinstance(raw_end,   QTime) else \
+                  self.parameterAsDateTime(parameters, self.TIME_END,   context).time()
         interval_idx = self.parameterAsEnum(parameters, self.INTERVAL, context)
         try:
             interval_min = INTERVAL_MINUTES[interval_idx]
@@ -428,6 +465,9 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             ))
         out_count_path = Path(out_count_str)
 
+        router_config_str = self.parameterAsFile(parameters, self.ROUTER_CONFIG_PATH, context)
+        router_config_file = Path(router_config_str) if router_config_str else None
+
         existing_graph_dir_str = self.parameterAsFile(parameters, self.EXISTING_GRAPH_DIR, context)
         if existing_graph_dir_str:
             existing_dir = Path(existing_graph_dir_str)
@@ -442,16 +482,29 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             feedback.pushInfo(self.tr(
                 f"Using existing graph: {router_dir} (router_id={router_id}); skipping build."
             ))
-            ensure_router_config(router_dir, gtfs_dir, feedback)
+            ensure_router_config(router_dir, gtfs_dir, feedback, config_file=router_config_file)
         else:
             server_work_dir = work_dir
             router_id = compute_router_id(pbf, gtfs_files)
             feedback.pushInfo(self.tr(f"Router ID: {router_id}"))
             router_dir = ensure_router_dir(work_dir, router_id, pbf, gtfs_files)
-            ensure_router_config(router_dir, gtfs_dir, feedback)
+            ensure_router_config(router_dir, gtfs_dir, feedback, config_file=router_config_file)
             if graph_build_complete(work_dir, router_id):
                 feedback.pushInfo(self.tr("Graph cache hit — skipping build."))
             else:
+                # Check for the "off-by-one" case: user may have set WORK_DIR to
+                # the 'graphs' subfolder rather than its parent. In that case the
+                # graph lives at work_dir/router_id/ (without the extra 'graphs/').
+                _off_by_one = work_dir / router_id / "Graph.obj"
+                if _off_by_one.exists():
+                    raise QgsProcessingException(self.tr(
+                        f"Graph cache miss: expected {work_dir / 'graphs' / router_id}.\n"
+                        f"However, a graph was found at {_off_by_one.parent} — "
+                        f"WORK_DIR appears to point to the 'graphs' subfolder rather "
+                        f"than its parent.\n"
+                        f"Fix option A: set WORK_DIR to '{work_dir.parent}'.\n"
+                        f"Fix option B: set EXISTING_GRAPH_DIR to '{_off_by_one.parent}'."
+                    ))
                 feedback.pushInfo(self.tr("Building OTP graph (this can take minutes)…"))
                 try:
                     build_graph(java, jar, xmx_build, work_dir, router_id, feedback)
@@ -512,7 +565,9 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
 
             router_bbox = self._log_router_diagnostic(client, feedback)
 
-            surfaces_dir = work_dir / "surfaces"
+            date_slug = date_s.replace("-", "")  # "MM-DD-YYYY" → "MMDDYYYY"
+            time_slug = f"{start_t.hour():02d}{start_t.minute():02d}-{end_t.hour():02d}{end_t.minute():02d}"
+            surfaces_dir = work_dir / "surfaces" / f"{router_id}_{date_slug}_{interval_min}min_{time_slug}"
             job = SurfaceJobParams(
                 from_place_lat_lon=from_place_lat_lon,
                 date_mmddyyyy=date_s,
@@ -549,6 +604,12 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                     )) from e
                 raise
 
+            if len(surfaces) != len(time_list):
+                raise QgsProcessingException(self.tr(
+                    f"Surface count mismatch: expected {len(time_list)}, "
+                    f"got {len(surfaces)}. Some surfaces may have failed silently. "
+                    f"Check the OTP server log in {surfaces_dir.parent} for details."
+                ))
             feedback.pushInfo(self.tr(
                 f"Generated {len(surfaces)} surface(s) in {surfaces_dir}."
             ))
@@ -771,16 +832,20 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                     f"Could not read {gtfs_path.name} for date validation: {exc}"
                 ))
 
-    def _require_file(self, parameters, context, key: str, label: str) -> Path:
+    def _require_file(
+        self, parameters, context, key: str, label: str, fix_hint: str = ""
+    ) -> Path:
         raw = self.parameterAsFile(parameters, key, context)
         if not raw:
             raise QgsProcessingException(self.tr(
                 f"{label} is required (parameter {key})."
+                + (f" {fix_hint}" if fix_hint else "")
             ))
         path = Path(raw)
         if not path.is_file():
             raise QgsProcessingException(self.tr(
                 f"{label} not found at: {path} (parameter {key})."
+                + (f" {fix_hint}" if fix_hint else "")
             ))
         return path
 
