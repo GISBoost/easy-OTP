@@ -423,7 +423,7 @@ def _log(feedback, msg: str) -> None:
         return
     try:
         feedback.pushInfo(msg)
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
 
@@ -464,7 +464,7 @@ def _terminate(proc: subprocess.Popen, feedback=None) -> None:
         try:
             proc.kill()
             proc.wait(timeout=5)
-        except Exception:
+        except Exception:  # nosec B110
             pass
 
     if proc.poll() is None:

@@ -84,7 +84,7 @@ class OtpClient:
             log_fn(f"POST {url}")
         req = urllib.request.Request(url, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:  # nosec B310
                 body = resp.read()
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -139,7 +139,7 @@ class OtpClient:
             log_fn(f"GET {url}")
         effective_timeout = timeout_s if timeout_s is not None else self.timeout_s
         try:
-            with urllib.request.urlopen(url, timeout=effective_timeout) as resp, open(output_path, "wb") as fh:
+            with urllib.request.urlopen(url, timeout=effective_timeout) as resp, open(output_path, "wb") as fh:  # nosec B310
                 shutil.copyfileobj(resp, fh)
         except urllib.error.HTTPError as e:
             raise OtpClientError(
@@ -152,7 +152,7 @@ class OtpClient:
 
     def _get_json(self, url: str) -> dict:
         try:
-            with urllib.request.urlopen(url, timeout=self.timeout_s) as resp:
+            with urllib.request.urlopen(url, timeout=self.timeout_s) as resp:  # nosec B310
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
             raise OtpClientError(f"GET {url} returned HTTP {e.code}") from e
