@@ -42,3 +42,10 @@ __pycache__/
 *~
 .DS_Store
 Thumbs.db
+
+# --- Development-only files (not part of the plugin distribution) ---
+docs/
+papers/
+reference/
+CLAUDE.md
+.claude/
