@@ -6,7 +6,7 @@ the plugin generates one travel-time surface, counts how many minutes each hexag
 grid cell is within your travel-time threshold, and classifies cells into four
 service-time categories consistent with the academic literature.
 
-Requires **QGIS 3.40 LTR** or newer. No R, no GRASS, no `pip install`.
+Requires **QGIS 3.40 LTR** or newer. No R, no GRASS. One optional `pip install` (openpyxl) — see below.
 
 ---
 
@@ -88,6 +88,42 @@ You will enter this path in the **OpenTripPlanner 1.5.0 jar** parameter.
 4. After installation, **Plugins → easy-OTP → Enable** (if not enabled
    automatically).
 5. The algorithms appear in **Processing Toolbox** under the **easy-OTP** group.
+
+---
+
+## First-run dependency: openpyxl
+
+The **Prepare Student Layer** (R1a) algorithm reads GUS NSP 2021 Excel files
+using the `openpyxl` library. All other algorithms work without it.
+
+When QGIS loads easy-OTP and `openpyxl` is not found in the Python environment,
+a dialog appears with two choices:
+
+- **Yes** — runs `pip install openpyxl` against QGIS's own Python interpreter.
+  Requires internet access. Takes 5–30 seconds. No QGIS restart is needed in
+  most cases.
+- **No** — the plugin loads normally. All algorithms except R1a work without
+  openpyxl; R1a will raise an error if you try to run it without the library.
+
+If automatic installation fails (e.g. in a locked corporate environment), install
+manually from the **OSGeo4W Shell** (Windows) or a terminal with QGIS's Python:
+
+```
+python -m pip install openpyxl
+```
+
+Then restart QGIS.
+
+### Verify the installation
+
+In the **QGIS Python console** (Plugins → Python Console):
+
+```python
+from openpyxl import load_workbook
+print("openpyxl OK")
+```
+
+If you see `openpyxl OK`, R1a is ready to use.
 
 ---
 
