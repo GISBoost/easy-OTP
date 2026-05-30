@@ -151,6 +151,32 @@ A full 1-minute window run (961 surfaces) on Wrocław-sized data takes roughly
 
 ---
 
+## Population overlay (R1b)
+
+**Processing Toolbox → easy-OTP → Analysis → Population overlay**
+
+Overlays a demographic polygon layer on a hexagonal grid using areal interpolation
+weighted by surface area. Each hexagon receives a `num_students` field (Float)
+with the estimated number of persons from the chosen population group.
+
+The algorithm implements step 11 of the Kaczorowski & Wróblewski pipeline and
+corresponds to the `ludnosc_studentow.model3` QGIS model, with one fix: the
+reference model rounds sub-0.5 person fragments to zero (Integer field);
+this implementation uses a Float field and preserves fractional counts.
+
+| Parameter | Description |
+|---|---|
+| **Hex grid** | Polygon layer (output of *Run temporal accessibility* or *Generate hex grid*) |
+| **Population layer** | Polygon layer with a numeric population field |
+| **Population field** | Field containing person counts per polygon (default `pop20_29`) |
+| **Output** | Hex grid with `num_students` field added (Float) |
+
+The hex grid must be in a projected CRS with metric units (e.g. EPSG:2180,
+EPSG:3857). If the population layer uses a different CRS it is reprojected
+automatically before processing.
+
+---
+
 ## Running Unit Tests
 
 The following tests do **not** require a running OTP server or QGIS:
