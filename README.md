@@ -10,6 +10,18 @@ Requires **QGIS 3.40 LTR** or newer. No R, no GRASS, no `pip install`.
 
 ---
 
+## Download
+
+Download the latest release ZIP from GitHub:
+
+**[easy-OTP Releases → https://github.com/GISBoost/easy-OTP/releases/latest](https://github.com/GISBoost/easy-OTP/releases/latest)**
+
+Download `easy_otp-0.1.0.zip` from the Assets section. This is the correctly
+structured plugin ZIP — do **not** use the auto-generated "Source code" archives
+on the same page, as those have the wrong directory layout for QGIS.
+
+---
+
 ## Prerequisites
 
 | Requirement | Version | Notes |
@@ -31,12 +43,13 @@ can keep it separate from any other Java on your machine.
    `https://adoptium.net/temurin/releases/?version=8`
 2. Select your OS, architecture (x64), package type **zip** (Windows) or
    **tar.gz** (Linux/Mac), version **JRE** (a full JDK works too).
-3. Unpack the archive anywhere, e.g.:
-   - Windows: `C:\java\jdk8\`
-   - Linux/Mac: `~/java/jdk8/`
+3. Unpack the archive. Recommended: keep it together with your OTP jar and
+   analysis data in one dedicated folder, e.g.:
+   - Windows: `C:\otp\java\`
+   - Linux/Mac: `~/otp/java/`
 4. Note the path to the `java` executable:
-   - Windows: `C:\java\jdk8\bin\java.exe`
-   - Linux/Mac: `~/java/jdk8/bin/java`
+   - Windows: `C:\otp\java\bin\java.exe`
+   - Linux/Mac: `~/otp/java/bin/java`
 
 You will enter this path in the **Java 8 binary** parameter of the plugin.
 
@@ -49,7 +62,19 @@ You will enter this path in the **Java 8 binary** parameter of the plugin.
 2. Download the file named `otp-1.5.0-shaded.jar` (classifier `shaded`,
    ~47 MB). Do **not** download the plain `otp-1.5.0.jar` — it is not
    executable on its own.
-3. Save it somewhere permanent, e.g. `C:\otp\otp-1.5.0-shaded.jar`.
+3. Save it in your OTP folder alongside Java and your analysis data, e.g.
+   `C:\otp\otp-1.5.0-shaded.jar`.
+
+> **Tip — keep everything in one folder.** The recommended layout is:
+> ```
+> C:\otp\
+> ├── java\                   ← unpacked portable Java 8 JRE
+> ├── otp-1.5.0-shaded.jar    ← OTP executable
+> ├── city.osm.pbf            ← OSM extract
+> ├── gtfs\                   ← GTFS feeds
+> └── work\                   ← working directory for the plugin
+> ```
+> This way all OTP-related files are in one place and easy to back up or move.
 
 You will enter this path in the **OpenTripPlanner 1.5.0 jar** parameter.
 
@@ -57,17 +82,9 @@ You will enter this path in the **OpenTripPlanner 1.5.0 jar** parameter.
 
 ## Plugin Installation
 
-1. Zip the `easy_otp/` directory:
-   - Windows (PowerShell):
-     ```powershell
-     Compress-Archive -Path easy_otp -DestinationPath easy_otp.zip
-     ```
-   - Linux/Mac:
-     ```bash
-     zip -r easy_otp.zip easy_otp/
-     ```
+1. Download `easy_otp-0.1.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
 2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
-3. Select `easy_otp.zip` and click **Install Plugin**.
+3. Select the downloaded `easy_otp-0.1.0.zip` and click **Install Plugin**.
 4. After installation, **Plugins → easy-OTP → Enable** (if not enabled
    automatically).
 5. The algorithms appear in **Processing Toolbox** under the **easy-OTP** group.
