@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from qgis.PyQt.QtCore import QCoreApplication
+from qgis.PyQt.QtCore import QCoreApplication, QSettings
 from qgis.core import (
     QgsProcessingAlgorithm,
+    QgsProcessingParameterBoolean,
+    QgsProcessingParameterDefinition,
     QgsProcessingParameterFile,
     QgsProcessingParameterNumber,
 )
@@ -15,6 +17,7 @@ from ..core.otp_server import check_java_version, port_is_listening, probe_otp
 
 
 class TestOtpServer(QgsProcessingAlgorithm):
+    USE_SAVED_JAVA = "USE_SAVED_JAVA"
     JAVA_PATH = "JAVA_PATH"
     OTP_JAR_PATH = "OTP_JAR_PATH"
     OTP_PORT = "OTP_PORT"
@@ -47,12 +50,23 @@ class TestOtpServer(QgsProcessingAlgorithm):
 
     def initAlgorithm(self, config=None):  # noqa: N802
         self.addParameter(
-            QgsProcessingParameterFile(
-                self.JAVA_PATH,
-                self.tr("Java 8 binary"),
-                behavior=QgsProcessingParameterFile.File,
+            QgsProcessingParameterBoolean(
+                self.USE_SAVED_JAVA,
+                self.tr(
+                    "Use Java path saved by 'Download Java Runtime Environment' (QSettings)"
+                ),
+                defaultValue=True,
             )
         )
+        java_param = QgsProcessingParameterFile(
+            self.JAVA_PATH,
+            self.tr("Java 8 binary"),
+            behavior=QgsProcessingParameterFile.File,
+        )
+        java_param.setFlags(
+            java_param.flags() | QgsProcessingParameterDefinition.FlagOptional
+        )
+        self.addParameter(java_param)
         self.addParameter(
             QgsProcessingParameterFile(
                 self.OTP_JAR_PATH,
@@ -73,12 +87,13 @@ class TestOtpServer(QgsProcessingAlgorithm):
         )
 
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802
+        use_saved = self.parameterAsBool(parameters, self.USE_SAVED_JAVA, context)
         java = Path(self.parameterAsFile(parameters, self.JAVA_PATH, context) or "")
         jar = Path(self.parameterAsFile(parameters, self.OTP_JAR_PATH, context) or "")
         port = self.parameterAsInt(parameters, self.OTP_PORT, context)
 
         ok = True
-        ok &= self._check_java(java, feedback)
+        ok &= self._check_java(java, use_saved, feedback)
         ok &= self._check_jar(jar, feedback)
         ok &= self._check_port(port, feedback)
 
@@ -93,10 +108,25 @@ class TestOtpServer(QgsProcessingAlgorithm):
 
     # --- individual checks ---
 
-    def _check_java(self, java: Path, feedback) -> bool:
-        if not java.name:
-            feedback.reportError(self.tr("JAVA_PATH is empty."))
+    def _check_java(self, java: Path, use_saved: bool, feedback) -> bool:
+        if use_saved:
+            saved = QSettings().value("easy_otp/java_path", "")
+            if not saved:
+                feedback.reportError(self.tr(
+                    "No Java path saved in QSettings. Run 'Download Java Runtime "
+                    "Environment' first, or uncheck 'Use saved Java path' and "
+                    "supply the path manually."
+                ))
+                return False
+            java = Path(saved)
+            feedback.pushInfo(self.tr(f"Using Java path from QSettings: {java}"))
+        elif not java.name:
+            feedback.reportError(self.tr(
+                "JAVA_PATH is empty. Either check 'Use saved Java path' or "
+                "provide the path to the Java 8 binary."
+            ))
             return False
+
         is_ok, version, err_msg = check_java_version(java)
         if is_ok:
             feedback.pushInfo(self.tr(f"Java OK: version {version}"))

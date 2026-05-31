@@ -34,7 +34,34 @@ on the same page, as those have the wrong directory layout for QGIS.
 
 ---
 
-## Getting Java 8
+## Getting Java 8 (automated)
+
+The easiest way to get Java 8 is to use the built-in **Download Java Runtime
+Environment** algorithm (Processing Toolbox → easy-OTP → **Setup**):
+
+1. Open the Processing Toolbox and find **easy-OTP → Setup → Download Java
+   Runtime Environment**.
+2. Set **Destination folder** to an empty folder where the JRE should be
+   unpacked (e.g. `C:\otp\java\` on Windows or `~/otp/java/` on Linux/macOS).
+3. Leave **Save Java binary path to QSettings** checked (default).
+4. Click **Run**. The algorithm will:
+   - Fetch the latest Temurin 8 JRE from the Adoptium API.
+   - Verify the download's SHA-256 checksum.
+   - Unpack the archive and locate the `java` binary.
+   - Save the binary path to QSettings so **Test OTP server** and
+     **Run temporal accessibility** pick it up automatically — no manual path
+     entry needed.
+
+**Platform support:** Windows x64, Linux x64, macOS x64 (Intel).
+Apple Silicon and ARM Linux are not supported in v0.2 — use the manual
+method below and choose the native build for your architecture.
+
+Running the algorithm a second time on the same folder detects the existing JRE
+and exits in seconds (cache hit), so it is safe to re-run.
+
+---
+
+## Getting Java 8 (manual)
 
 OTP 1.5.0 requires **exactly Java 8**. Use a portable (no-installer) build so you
 can keep it separate from any other Java on your machine.

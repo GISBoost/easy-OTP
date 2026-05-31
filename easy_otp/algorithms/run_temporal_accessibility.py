@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QTime
+from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QSettings, QTime
 from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsFeatureSink,
@@ -67,6 +67,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
     MAX_WALK_DISTANCE = "MAX_WALK_DISTANCE"
     WALK_SPEED = "WALK_SPEED"
 
+    USE_SAVED_JAVA = "USE_SAVED_JAVA"
     JAVA_PATH = "JAVA_PATH"
     OTP_JAR_PATH = "OTP_JAR_PATH"
     OTP_XMX_BUILD = "OTP_XMX_BUILD"
@@ -267,6 +268,15 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
 
         # --- OTP server (advanced) ---
         self._add_advanced(
+            QgsProcessingParameterBoolean(
+                self.USE_SAVED_JAVA,
+                self.tr(
+                    "Use Java path saved by 'Download Java Runtime Environment' (QSettings)"
+                ),
+                defaultValue=True,
+            )
+        )
+        self._add_advanced(
             QgsProcessingParameterFile(
                 self.JAVA_PATH,
                 self.tr("Java 8 binary"),
@@ -370,7 +380,19 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
 
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802 — Qt API name
         self._output_hex_dest_id = None
-        java = self._require_file(parameters, context, self.JAVA_PATH, "Java 8 binary")
+        use_saved = self.parameterAsBool(parameters, self.USE_SAVED_JAVA, context)
+        if use_saved:
+            saved = QSettings().value("easy_otp/java_path", "")
+            if not saved:
+                raise QgsProcessingException(self.tr(
+                    "No Java path saved in QSettings. Run 'Download Java Runtime "
+                    "Environment' first, or uncheck 'Use saved Java path (QSettings)' "
+                    "and supply the path manually."
+                ))
+            java = Path(saved)
+            feedback.pushInfo(self.tr(f"Using Java path from QSettings: {java}"))
+        else:
+            java = self._require_file(parameters, context, self.JAVA_PATH, "Java 8 binary")
         is_java8, java_ver, java_err = check_java_version(java)
         if not is_java8:
             raise QgsProcessingException(self.tr(java_err))
