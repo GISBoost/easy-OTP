@@ -4,6 +4,7 @@ from qgis.core import QgsProcessingProvider
 
 from .algorithms.count_from_surfaces import CountFromExistingSurfaces
 from .algorithms.download_jre import DownloadJre
+from .algorithms.download_transit_data import DownloadTransitData
 from .algorithms.generate_hex_grid import GenerateHexGrid
 from .algorithms.population_overlay import PopulationOverlay
 from .algorithms.prepare_student_layer import PrepareStudentLayer
@@ -29,3 +30,4 @@ class EasyOtpProvider(QgsProcessingProvider):
         self.addAlgorithm(PrepareStudentLayer())
         self.addAlgorithm(TestOtpServer())
         self.addAlgorithm(DownloadJre())
+        self.addAlgorithm(DownloadTransitData())

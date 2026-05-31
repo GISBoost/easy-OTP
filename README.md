@@ -107,6 +107,56 @@ You will enter this path in the **OpenTripPlanner 1.5.0 jar** parameter.
 
 ---
 
+## Getting OSM and GTFS data (automated)
+
+The **Download transit data (OSM + GTFS)** algorithm automates the two most
+tedious data-collection steps: finding the right OSM extract for your study
+area, and finding and downloading the relevant GTFS feeds.
+
+**Processing Toolbox → easy-OTP → Setup → Download transit data (OSM + GTFS)**
+
+### Prerequisites
+
+A **free Transitland API key** is required to download GTFS data.
+Register at **https://www.transit.land** (no credit card, takes about a minute).
+OSM data from Geofabrik does not require any account.
+
+### Running the algorithm
+
+| Parameter | Value |
+|---|---|
+| **Area name** | Geofabrik area id or name — e.g. `dolnoslaskie`, `mazowieckie`, `berlin` |
+| **Destination folder** | An empty folder; the algorithm creates `osm/` and `gtfs/` inside it |
+| **Download OSM extract** | ✓ (uncheck if you already have a local `.osm.pbf`) |
+| **Download GTFS feed(s)** | ✓ (uncheck if you already have a local GTFS folder) |
+| **Transitland API key** | Paste the key from your Transitland account |
+
+After the run, the Processing log prints ready-to-paste paths:
+
+```
+OSM extract  →  C:\otp\data\osm\dolnoslaskie.osm.pbf
+GTFS folder  →  C:\otp\data\gtfs\
+```
+
+Copy those directly into the **OSM extract** and **GTFS folder** parameters of
+**Run temporal accessibility**.
+
+### Notes
+
+- **OSM cache:** the OSM extract is cached for 7 days in `DEST_DIR/osm/`.
+  Re-running the algorithm on the same folder skips the download and exits in
+  seconds (`"Using cached OSM extract"`).
+- **GTFS always refreshed:** GTFS feeds are re-downloaded on every run (transit
+  schedules change without a predictable cycle).
+- **Continental feeds filtered automatically:** Transitland's bbox query can
+  return national/continental aggregates (e.g. Germany-wide GTFS, FlixBus EU).
+  The algorithm discards feeds whose geographic extent is more than 5× larger
+  than the query area; only city- and sub-regional feeds are downloaded.
+- **Missing operator:** if a local operator is not yet in Transitland, add
+  their `.zip` manually to `DEST_DIR/gtfs/` after the algorithm finishes.
+
+---
+
 ## Plugin Installation
 
 1. Download `easy_otp-0.1.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).

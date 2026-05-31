@@ -43,6 +43,10 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# --- Spike / research files (never commit credentials or raw API dumps) ---
+api-key.txt
+transitland-response.json
+
 # --- Development-only files (not part of the plugin distribution) ---
 docs/
 papers/
