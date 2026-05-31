@@ -1,4 +1,4 @@
-"""DownloadJre: auto-download Eclipse Temurin 8 JRE from Adoptium (R3)."""
+"""DownloadJre: auto-download Eclipse Temurin 8 JRE and OTP 1.5.0 jar (R3)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from qgis.PyQt.QtCore import QCoreApplication, QSettings
 from qgis.core import (
     QgsProcessingAlgorithm,
     QgsProcessingException,
+    QgsProcessingMultiStepFeedback,
     QgsProcessingOutputString,
     QgsProcessingParameterBoolean,
     QgsProcessingParameterDefinition,
@@ -31,6 +32,14 @@ _ADOPTIUM_URL = (
     "https://api.adoptium.net/v3/assets/latest/8/hotspot"
     "?architecture=x64&image_type=jre&os={os_name}&vendor=eclipse"
 )
+_OTP_JAR_URL = (
+    "https://github.com/opentripplanner/OpenTripPlanner/releases/"
+    "download/v1.5.0/otp-1.5.0-shaded.jar"
+)
+_OTP_JAR_FILENAME = "otp-1.5.0-shaded.jar"
+_OTP_JAR_MIN_BYTES = 50 * 1024 * 1024   # 50 MB sanity floor
+_OTP_JAR_MAX_BYTES = 80 * 1024 * 1024   # 80 MB sanity ceiling
+_OTP_JAR_MIN_FREE_MB = 90
 _USER_AGENT = "easy-OTP/0.2"
 _CHUNK_SIZE = 64 * 1024        # 64 KB download blocks
 _HASH_CHUNK = 1 * 1024 * 1024  # 1 MB SHA256 blocks
@@ -44,6 +53,7 @@ class DownloadJre(QgsProcessingAlgorithm):
 
     JAVA_PATH = "JAVA_PATH"
     JAVA_VERSION = "JAVA_VERSION"
+    OTP_JAR_PATH = "OTP_JAR_PATH"
 
     _PLATFORM_OPTIONS = [
         "Auto-detect (current system)",
@@ -61,7 +71,7 @@ class DownloadJre(QgsProcessingAlgorithm):
         return "downloadjre"
 
     def displayName(self) -> str:  # noqa: N802
-        return self.tr("Download Java Runtime Environment")
+        return self.tr("Download Java 8 JRE and OpenTripPlanner Jar")
 
     def group(self) -> str:
         return self.tr("Setup")
@@ -72,14 +82,14 @@ class DownloadJre(QgsProcessingAlgorithm):
     def shortHelpString(self) -> str:  # noqa: N802
         return self.tr(
             "Downloads a portable Eclipse Temurin 8 JRE (x64) from the public "
-            "Adoptium API, verifies its SHA-256 checksum, unpacks it into the "
-            "chosen folder, and optionally saves the Java binary path to "
-            "QSettings so other easy-OTP algorithms pick it up automatically.\n\n"
+            "Adoptium API AND otp-1.5.0-shaded.jar from the GitHub Releases "
+            "page, verifies both files, and saves their paths to QSettings so "
+            "other easy-OTP algorithms pick them up automatically.\n\n"
             "Supported platforms: Windows x64, Linux x64, macOS x64 (Intel). "
             "Apple Silicon / ARM Linux are not supported in v0.2 — download a "
             "native build manually from https://adoptium.net/temurin/releases/?version=8\n\n"
-            "Running the algorithm a second time on the same folder detects the "
-            "existing JRE and exits in seconds (cache hit)."
+            "Running the algorithm a second time on the same folder detects "
+            "existing files and exits in seconds (cache hit for each independently)."
         )
 
     def createInstance(self):  # noqa: N802
@@ -89,7 +99,7 @@ class DownloadJre(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterFile(
                 self.JRE_DEST_DIR,
-                self.tr("Destination folder for JRE"),
+                self.tr("Destination folder for JRE and OTP jar"),
                 behavior=QgsProcessingParameterFile.Folder,
             )
         )
@@ -108,100 +118,136 @@ class DownloadJre(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterBoolean(
                 self.SET_AS_DEFAULT,
-                self.tr("Save Java binary path to QSettings (easy_otp/java_path)"),
+                self.tr(
+                    "Save paths to QSettings "
+                    "(easy_otp/java_path and easy_otp/otp_jar_path)"
+                ),
                 defaultValue=True,
             )
         )
 
         self.addOutput(QgsProcessingOutputString(self.JAVA_PATH, self.tr("Java binary path")))
         self.addOutput(QgsProcessingOutputString(self.JAVA_VERSION, self.tr("Java version")))
+        self.addOutput(QgsProcessingOutputString(self.OTP_JAR_PATH, self.tr("OTP jar path")))
 
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802
         dest = Path(self.parameterAsFile(parameters, self.JRE_DEST_DIR, context))
         platform_idx = self.parameterAsEnum(parameters, self.PLATFORM, context)
         set_as_default = self.parameterAsBool(parameters, self.SET_AS_DEFAULT, context)
 
-        # Step 0 — Pre-flight
+        # 10 virtual steps: 0-6 = JRE phase (70%), 7-9 = OTP jar phase (30%)
+        multi = QgsProcessingMultiStepFeedback(10, feedback)
+
+        # ── Step 0: pre-flight ────────────────────────────────────────────────
+        multi.setCurrentStep(0)
         self._check_arch()
         self._check_writable(dest)
-        self._check_disk(dest)
 
-        # Step 2 — Platform detection (before cache hit so _find_binary gets
-        # the correct binary name even when PLATFORM override is active)
+        # ── Step 1: platform detection + JRE cache hit check ─────────────────
+        multi.setCurrentStep(1)
         os_name = self._resolve_os(platform_idx)
-        feedback.pushInfo(self.tr(f"Target platform: {os_name} x64"))
+        multi.pushInfo(self.tr(f"Target platform: {os_name} x64"))
 
-        # Step 1 — Cache hit
+        binary: "Path | None" = None
+        version: str = ""
+        jre_cached = False
+
         cached = self._find_binary(dest, os_name)
         if cached:
-            is_ok, version, err = check_java_version(cached)
+            is_ok, ver, _err = check_java_version(cached)
             if is_ok:
-                feedback.pushInfo(self.tr(
+                multi.pushInfo(self.tr(
                     f"Existing Java 8 found at {cached}, skipping download."
                 ))
-                if set_as_default:
-                    self._save_qsettings(cached, feedback)
-                return {self.JAVA_PATH: str(cached), self.JAVA_VERSION: version}
-            # Found a JRE but wrong version — remove it before downloading replacement
-            self._remove_old_jre(cached, dest, feedback)
+                binary = cached
+                version = ver
+                jre_cached = True
+            else:
+                self._remove_old_jre(cached, dest, multi)
 
-        # Step 3 — Adoptium API
-        feedback.pushInfo(self.tr("Querying Adoptium API for latest Temurin 8 JRE …"))
-        pkg_link, checksum, pkg_name, release_name = self._query_adoptium(os_name)
-        feedback.pushInfo(self.tr(f"Found release: {release_name}  ({pkg_name})"))
+        # ── Steps 2-6: JRE download (skipped on cache hit) ───────────────────
+        if not jre_cached:
+            self._check_disk(dest)
 
-        # Step 4 — Download
-        archive = dest / pkg_name
-        tmp = dest / (pkg_name + ".tmp")
-        feedback.pushInfo(self.tr(f"Downloading {pkg_link} …"))
-        self._download(pkg_link, tmp, archive, feedback)
-        if feedback.isCanceled():
+            # Step 2: Adoptium API query
+            multi.setCurrentStep(2)
+            multi.pushInfo(self.tr("Querying Adoptium API for latest Temurin 8 JRE …"))
+            pkg_link, checksum, pkg_name, release_name = self._query_adoptium(os_name)
+            multi.pushInfo(self.tr(f"Found release: {release_name}  ({pkg_name})"))
+
+            # Steps 3-5: archive download (3 steps = 30% of total)
+            archive = dest / pkg_name
+            tmp = dest / (pkg_name + ".tmp")
+            multi.pushInfo(self.tr(f"Downloading {pkg_link} …"))
+            self._download(pkg_link, tmp, archive, multi, step_start=3, step_count=3)
+            if multi.isCanceled():
+                return {}
+
+            # Step 6: SHA256 + extract + binary find + version check
+            multi.setCurrentStep(6)
+            multi.pushInfo(self.tr("Verifying SHA-256 …"))
+            self._verify_sha256(archive, checksum)
+
+            multi.pushInfo(self.tr("Extracting archive …"))
+            self._extract(archive, dest, os_name)
+            try:
+                os.remove(archive)
+            except OSError as exc:
+                multi.pushWarning(self.tr(
+                    f"Could not delete downloaded archive '{archive}': {exc}. "
+                    "You may remove it manually."
+                ))
+
+            binary = self._find_binary(dest, os_name)
+            if binary is None:
+                raise QgsProcessingException(self.tr(
+                    f"Cannot find 'bin/java[.exe]' inside the unpacked archive at '{dest}'. "
+                    "Archive structure may have changed — please report this at "
+                    "https://github.com/GISBoost/easy-OTP/issues"
+                ))
+            if os_name != "windows":
+                os.chmod(binary, 0o755)
+
+            is_ok, version, err_msg = check_java_version(binary)
+            if not is_ok:
+                raise QgsProcessingException(self.tr(
+                    f"Unpacked JRE reports version '{version}', expected '1.8.x'. "
+                    "Adoptium API may have returned the wrong asset — please open an issue."
+                ))
+
+            multi.pushInfo(self.tr(f"Java 8 OK: version {version}  ({binary})"))
+
+        if set_as_default:
+            self._save_qsettings(binary, multi)
+
+        # ── Cancellation check between JRE and OTP jar phases ─────────────────
+        if multi.isCanceled():
+            multi.pushWarning(self.tr(
+                "Cancelled before OTP jar download. "
+                "Java path was already saved to QSettings — "
+                "run the algorithm again to download the OTP jar."
+            ))
             return {}
 
-        # Step 5 — SHA256
-        feedback.pushInfo(self.tr("Verifying SHA-256 …"))
-        self._verify_sha256(archive, checksum)
+        # ── Steps 7-9: OTP jar phase ──────────────────────────────────────────
+        jar_path = self._download_otp_jar(dest, multi)
+        if multi.isCanceled():
+            return {}
 
-        # Step 6 — Extract
-        feedback.setProgress(85)
-        feedback.pushInfo(self.tr("Extracting archive …"))
-        self._extract(archive, dest, os_name)
-        try:
-            os.remove(archive)
-        except OSError as exc:
-            feedback.pushWarning(self.tr(
-                f"Could not delete downloaded archive '{archive}': {exc}. "
-                "You may remove it manually."
+        if set_as_default and jar_path is not None:
+            QSettings().setValue("easy_otp/otp_jar_path", str(jar_path))
+            multi.pushInfo(self.tr(
+                f"OTP jar path saved to QSettings (easy_otp/otp_jar_path): {jar_path}"
             ))
 
-        # Step 7 — Find binary
-        feedback.setProgress(90)
-        binary = self._find_binary(dest, os_name)
-        if binary is None:
-            raise QgsProcessingException(self.tr(
-                f"Cannot find 'bin/java[.exe]' inside the unpacked archive at '{dest}'. "
-                "Archive structure may have changed — please report this at "
-                "https://github.com/GISBoost/easy-OTP/issues"
-            ))
-        if os_name != "windows":
-            os.chmod(binary, 0o755)
+        multi.setCurrentStep(9)
+        multi.setProgress(100)
 
-        # Step 8 — Validate version
-        feedback.setProgress(95)
-        is_ok, version, err_msg = check_java_version(binary)
-        if not is_ok:
-            raise QgsProcessingException(self.tr(
-                f"Unpacked JRE reports version '{version}', expected '1.8.x'. "
-                "Adoptium API may have returned the wrong asset — please open an issue."
-            ))
-
-        # Step 9 — Save and return
-        feedback.setProgress(100)
-        feedback.pushInfo(self.tr(f"Java 8 OK: version {version}  ({binary})"))
-        if set_as_default:
-            self._save_qsettings(binary, feedback)
-
-        return {self.JAVA_PATH: str(binary), self.JAVA_VERSION: version}
+        return {
+            self.JAVA_PATH: str(binary),
+            self.JAVA_VERSION: version,
+            self.OTP_JAR_PATH: str(jar_path) if jar_path is not None else "",
+        }
 
     # ------------------------------------------------------------------ helpers
 
@@ -282,7 +328,9 @@ class DownloadJre(QgsProcessingAlgorithm):
         url: str,
         tmp: Path,
         archive: Path,
-        feedback,
+        multi_feedback,
+        step_start: int,
+        step_count: int,
     ) -> None:
         req = urllib_request.Request(url, headers={"User-Agent": _USER_AGENT})
         try:
@@ -291,7 +339,7 @@ class DownloadJre(QgsProcessingAlgorithm):
                 downloaded = 0
                 with open(tmp, "wb") as fh:
                     while True:
-                        if feedback.isCanceled():
+                        if multi_feedback.isCanceled():
                             try:
                                 os.remove(tmp)
                             except OSError:
@@ -303,7 +351,12 @@ class DownloadJre(QgsProcessingAlgorithm):
                         fh.write(chunk)
                         downloaded += len(chunk)
                         if total:
-                            feedback.setProgress(int(downloaded / total * 80))
+                            frac = downloaded / total
+                            cur_step = step_start + int(frac * step_count)
+                            cur_step = min(cur_step, step_start + step_count - 1)
+                            multi_feedback.setCurrentStep(cur_step)
+                            within = (frac * step_count) % 1.0
+                            multi_feedback.setProgress(int(within * 100))
         except URLError as exc:
             try:
                 os.remove(tmp)
@@ -314,7 +367,7 @@ class DownloadJre(QgsProcessingAlgorithm):
             )) from exc
 
         # Clean up .tmp if cancel arrived after the last chunk was read
-        if feedback.isCanceled():
+        if multi_feedback.isCanceled():
             try:
                 os.remove(tmp)
             except OSError:
@@ -388,3 +441,54 @@ class DownloadJre(QgsProcessingAlgorithm):
         feedback.pushInfo(self.tr(
             f"Java path saved to QSettings (easy_otp/java_path): {binary}"
         ))
+
+    def _download_otp_jar(self, dest: Path, multi_feedback) -> "Path | None":
+        """Download otp-1.5.0-shaded.jar to dest (steps 7–8 of 10)."""
+        jar_path = dest / _OTP_JAR_FILENAME
+        tmp = dest / (_OTP_JAR_FILENAME + ".tmp")
+
+        # Step 7: cache check + disk check
+        multi_feedback.setCurrentStep(7)
+        if jar_path.exists() and self._sanity_check_jar(jar_path):
+            multi_feedback.pushInfo(self.tr(
+                f"Existing OTP jar found at {jar_path}, skipping download."
+            ))
+            return jar_path
+
+        free_mb = shutil.disk_usage(dest).free / (1024 * 1024)
+        if free_mb < _OTP_JAR_MIN_FREE_MB:
+            raise QgsProcessingException(self.tr(
+                f"Not enough disk space for OTP jar in '{dest}'. "
+                f"Need ~{_OTP_JAR_MIN_FREE_MB} MB, have {free_mb:.0f} MB."
+            ))
+
+        # Step 8: download + sanity check
+        multi_feedback.setCurrentStep(8)
+        multi_feedback.pushInfo(self.tr(f"Downloading OTP jar from {_OTP_JAR_URL} …"))
+        self._download(_OTP_JAR_URL, tmp, jar_path, multi_feedback, step_start=8, step_count=1)
+        if multi_feedback.isCanceled():
+            return None
+
+        if not self._sanity_check_jar(jar_path):
+            try:
+                os.remove(jar_path)
+            except OSError:
+                pass
+            raise QgsProcessingException(self.tr(
+                "Downloaded OTP jar failed sanity check: must be a valid ZIP file "
+                f"between {_OTP_JAR_MIN_BYTES // (1024 * 1024)} MB and "
+                f"{_OTP_JAR_MAX_BYTES // (1024 * 1024)} MB. "
+                "The file may be corrupted — please retry."
+            ))
+
+        multi_feedback.pushInfo(self.tr(f"OTP jar OK: {jar_path}"))
+        return jar_path
+
+    def _sanity_check_jar(self, path: Path) -> bool:
+        try:
+            size = path.stat().st_size
+            if not (_OTP_JAR_MIN_BYTES <= size <= _OTP_JAR_MAX_BYTES):
+                return False
+            return zipfile.is_zipfile(path)
+        except OSError:
+            return False

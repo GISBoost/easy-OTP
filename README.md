@@ -34,30 +34,34 @@ on the same page, as those have the wrong directory layout for QGIS.
 
 ---
 
-## Getting Java 8 (automated)
+## Getting Java 8 JRE and OTP Jar (automated)
 
-The easiest way to get Java 8 is to use the built-in **Download Java Runtime
-Environment** algorithm (Processing Toolbox → easy-OTP → **Setup**):
+The easiest way to get both prerequisites is to use the built-in
+**Download Java 8 JRE and OpenTripPlanner Jar** algorithm
+(Processing Toolbox → easy-OTP → **Setup**):
 
 1. Open the Processing Toolbox and find **easy-OTP → Setup → Download Java
-   Runtime Environment**.
-2. Set **Destination folder** to an empty folder where the JRE should be
-   unpacked (e.g. `C:\otp\java\` on Windows or `~/otp/java/` on Linux/macOS).
-3. Leave **Save Java binary path to QSettings** checked (default).
+   8 JRE and OpenTripPlanner Jar**.
+2. Set **Destination folder** to an empty folder (e.g. `C:\otp\tools\` on
+   Windows or `~/otp/tools/` on Linux/macOS).
+3. Leave **Save paths to QSettings** checked (default).
 4. Click **Run**. The algorithm will:
-   - Fetch the latest Temurin 8 JRE from the Adoptium API.
-   - Verify the download's SHA-256 checksum.
+   - Fetch the latest Temurin 8 JRE from the Adoptium API and verify its
+     SHA-256 checksum.
    - Unpack the archive and locate the `java` binary.
-   - Save the binary path to QSettings so **Test OTP server** and
-     **Run temporal accessibility** pick it up automatically — no manual path
-     entry needed.
+   - Download `otp-1.5.0-shaded.jar` (~60 MB) from the GitHub Releases page
+     and verify the file is a valid JAR (ZIP format, 50–80 MB).
+   - Save both paths to QSettings so **Test OTP server** and
+     **Run temporal accessibility** pick them up automatically — no manual
+     path entry needed.
 
 **Platform support:** Windows x64, Linux x64, macOS x64 (Intel).
 Apple Silicon and ARM Linux are not supported in v0.2 — use the manual
-method below and choose the native build for your architecture.
+methods below and choose the native build for your architecture.
 
-Running the algorithm a second time on the same folder detects the existing JRE
-and exits in seconds (cache hit), so it is safe to re-run.
+Running the algorithm a second time on the same folder detects existing files
+and exits in seconds (cache hit for each independently), so it is safe to
+re-run.
 
 ---
 
@@ -82,13 +86,20 @@ You will enter this path in the **Java 8 binary** parameter of the plugin.
 
 ---
 
-## Getting otp-1.5.0-shaded.jar
+## Getting otp-1.5.0-shaded.jar (automated — recommended)
 
-1. Open Maven Central search:
-   `https://central.sonatype.com/artifact/org.opentripplanner/otp/1.5.0`
-2. Download the file named `otp-1.5.0-shaded.jar` (classifier `shaded`,
-   ~47 MB). Do **not** download the plain `otp-1.5.0.jar` — it is not
-   executable on its own.
+The **Download Java 8 JRE and OpenTripPlanner Jar** algorithm (see above)
+downloads the OTP jar automatically alongside the JRE. Run it once to get
+both prerequisites in the same destination folder.
+
+## Getting otp-1.5.0-shaded.jar (manual fallback)
+
+If the automated download fails (firewall, offline setup):
+
+1. Go to the GitHub Releases page:
+   `https://github.com/opentripplanner/OpenTripPlanner/releases/tag/v1.5.0`
+2. Download `otp-1.5.0-shaded.jar` (~60 MB). Do **not** download the plain
+   `otp-1.5.0.jar` — it is not executable on its own.
 3. Save it in your OTP folder alongside Java and your analysis data, e.g.
    `C:\otp\otp-1.5.0-shaded.jar`.
 
