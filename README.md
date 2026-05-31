@@ -187,6 +187,86 @@ A full 1-minute window run (961 surfaces) on Wrocław-sized data takes roughly
 
 ---
 
+## Preparing the population layer (R1a)
+
+**Processing Toolbox → easy-OTP → Analysis → Prepare student layer**
+
+Reads a GUS NSP 2021 Excel file and joins census-tract population data to a polygon
+geometry layer. The output polygon layer is ready to pass directly as the
+`POPULATION_LAYER` input to the Population overlay (R1b) algorithm.
+
+The algorithm handles three observed states of GUS NSP 2021 files:
+
+| State | Description |
+|---|---|
+| `raw` | Multi-row header (rows 0–5); `Symbol` contains only a short tract number; the join key is built by concatenating the region code from the preceding `rejon statystyczny` row. |
+| `wrong` | Full 7-character keys already in `Symbol`; population values are strings with `'-'` as GUS suppression markers for small counts. |
+| `done` | Clean, numeric values; minimum processing required. |
+
+All three states produce identical output when joined with the same geometry layer.
+
+### Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| **GUS NSP 2021 Excel file** | — | Path to the `.xlsx` file from the GUS website |
+| **Sheet name** | *(first sheet)* | Required for multi-sheet files — see fixture notes below |
+| **Population column name** | `pop20-29` | Column in the Excel header containing the population count (`20-29` in raw GUS exports) |
+| **Census tract geometry layer** | — | Polygon layer with an `OBWOD` string field (or similar join key) |
+| **Join key field** | `OBWOD` | Field in the geometry layer used to match Excel rows |
+| **Output field name** | `pop20_29` | Name of the added Double field in the output layer |
+| **Output layer** | — | Polygon layer with `pop20_29` (Double) added |
+
+### End-to-end example (R1a → R1b)
+
+```
+Input files
+├── reference_dolnoslaskie_ludnosc_nsp_2021-done.xlsx   ← GUS NSP 2021 Excel
+└── wroclaw-su-brec-nsp-2021-obw.geojson                ← census tract geometry
+```
+
+**Step 1 — Run Prepare student layer (R1a):**
+
+| Parameter | Value |
+|---|---|
+| GUS NSP 2021 Excel file | `reference_dolnoslaskie_ludnosc_nsp_2021-done.xlsx` |
+| Sheet name | *(leave empty — single sheet)* |
+| Population column name | `pop20-29` |
+| Census tract geometry layer | `wroclaw-su-brec-nsp-2021-obw` |
+| Join key field | `OBWOD` |
+| Output field name | `pop20_29` |
+| Output layer | `[Save to temporary layer]` |
+
+**Fixture-specific notes:**
+- `reference_ludnosc_nsp_2021_wrong.xlsx` — multi-sheet file; available sheets are
+  `Małopolskie`, `Mazowieckie`, `Pomorskie`, `Wielkopolskie`. Set **Sheet name** to
+  the voivodeship matching your geometry layer (no Dolnośląskie sheet in this file).
+- `reference-nsp-2021-raw.xlsx` — raw GUS export; the age-group column is named
+  `20-29` (not `pop20-29`), so set **Population column name** to `20-29`.
+
+The output layer will have all original geometry attributes plus a new `pop20_29`
+(Float) field. The Processing log reports the number of matched tracts, unmatched
+tracts, and how many `'-'` values were converted to 0.
+
+**Step 2 — Run Population overlay (R1b):**
+
+| Parameter | Value |
+|---|---|
+| Hex grid | *(output of Generate hex grid, or your own polygon grid)* |
+| Population layer | *(R1a output from Step 1)* |
+| Population field | `pop20_29` |
+| Output | `[Save to file or temporary layer]* |
+
+The result is your hex grid with a `num_students` field (Float) containing the
+area-interpolated number of students aged 20–29 per hexagon.
+
+> **Note — `OBWOD` stored as integer in QGIS:** if you re-imported the GeoJSON
+> into a Shapefile and QGIS inferred `OBWOD` as an integer field, leading zeros
+> in key values may be lost. Convert the field to text (`$str(OBWOD)` in the
+> Field Calculator) before running R1a, or use the original GeoJSON directly.
+
+---
+
 ## Population overlay (R1b)
 
 **Processing Toolbox → easy-OTP → Analysis → Population overlay**
