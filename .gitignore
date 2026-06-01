@@ -48,7 +48,7 @@ api-key.txt
 transitland-response.json
 
 # --- Development-only files (not part of the plugin distribution) ---
-docs/
+# Note: docs/ is versioned per CLAUDE.md (project specs + README assets).
 papers/
 reference/
 CLAUDE.md
