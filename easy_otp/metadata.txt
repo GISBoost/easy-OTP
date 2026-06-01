@@ -3,8 +3,8 @@ name=easy-OTP
 qgisMinimumVersion=3.40
 qgisMaximumVersion=3.99
 description=Automated temporal accessibility analysis using OpenTripPlanner.
-about=Generates per-minute travel-time surfaces through OpenTripPlanner for a configurable time window and aggregates them into a service-time hexagonal grid with 4-category classification. Requires OpenTripPlanner 1.5.0 (otp-1.5.0-shaded.jar) and Java 8, both provided by the user.
-version=0.1.0
+about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts service-time minutes per hexagonal grid cell, and classifies cells into four categories. v0.2 adds: automated Java 8 JRE + OTP jar download (R3), automated OSM/GTFS data acquisition via Geofabrik and Transitland (R2), GUS NSP 2021 population layer import (R1a), and areal-interpolation population overlay onto the hex grid (R1b).
+version=0.2.0
 author=Michal Kaczorowski
 email=michal.kaczorowsx@gmail.com
 license=GPL-2.0-or-later
@@ -12,7 +12,25 @@ category=Analysis
 experimental=True
 deprecated=False
 hasProcessingProvider=yes
-tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,travel time
+tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,travel time,population,jre,java
 homepage=https://github.com/GISBoost/easy-OTP
 repository=https://github.com/GISBoost/easy-OTP
 tracker=https://github.com/GISBoost/easy-OTP/issues
+changelog=0.2.0
+    - R1a: Prepare student layer — import GUS NSP 2021 Excel into a polygon layer
+      (handles raw / wrong / done data states).
+    - R1b: Population overlay — areal interpolation of demographics onto the hex
+      grid; preserves fractional counts (Float field, fixes the integer rounding
+      bug present in the reference QGIS model).
+    - R2: Download transit data — automated OSM (Geofabrik) and GTFS (Transitland)
+      acquisition with 7-day OSM cache and continental-feed filtering.
+    - R3: Download JRE — automated Eclipse Temurin 8 download (Adoptium API,
+      SHA-256 verified) plus the OTP 1.5.0 shaded jar; both paths saved to
+      QSettings for hands-off setup.
+    - Fix: service-time category thresholds now scale proportionally for
+      analysis windows shorter than 06:00–22:00 (a shorter window previously
+      forced almost every cell into "inaccessible"). Full-window runs are
+      unchanged. A warning is logged whenever scaling is applied.
+0.1.0
+    - Initial release: TestOtpServer, GenerateHexGrid,
+      RunTemporalAccessibility, CountFromExistingSurfaces.
