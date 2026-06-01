@@ -14,25 +14,33 @@ def _tr(string: str) -> str:
     return QCoreApplication.translate("Processing", string)
 
 
-_CATEGORIES = [
-    ("constantly accessible", 720),    # [720, ∞)
-    ("regularly accessible", 360),     # [360, 720)
-    ("periodically accessible", 180),  # [180, 360)
-    ("episodically accessible", 0),    # (0, 180)
-    # val <= 0 or null → "" (inaccessible, no symbol)
-]
+# Reference analysis window from the paper (06:00–22:00 = 16 h = 960 min).
+# Thresholds scale proportionally for shorter windows; capped at 1.0 so the
+# original absolute values (720 / 360 / 180 min) apply for the full window.
+_REFERENCE_WINDOW_MIN = 960
 
 # "" is the inaccessible sentinel stored in st_class; matches QML value=""
-_CATEGORY_ORDER = [c for c, _ in _CATEGORIES] + [""]
+_CATEGORY_ORDER = [
+    "constantly accessible",
+    "regularly accessible",
+    "periodically accessible",
+    "episodically accessible",
+    "",
+]
 
 
-def _classify_value(val: "float | None", interval_min: int) -> str:
+def _classify_value(val: "float | None", interval_min: int, n_surfaces: int) -> str:
     """Pure Python: otp_mean float → service-time category string.
 
     No QGIS dependency — safe to import and test outside the QGIS interpreter.
     ``val`` is the zonal mean of the count raster (number of timestamps where
-    travel-time ≤ threshold). ``interval_min`` is the sampling interval used
-    when generating the surfaces (1, 15, or 60 minutes).
+    travel-time ≤ threshold). ``interval_min`` is the sampling interval in
+    minutes (1, 15, or 60). ``n_surfaces`` is the total number of surfaces
+    generated for this run.
+
+    Thresholds scale proportionally when the analysis window is shorter than
+    the paper's reference window (960 min = 06:00–22:00); they are capped at
+    the original absolute values (720 / 360 / 180 min) for full-window runs.
     """
     if val is None:
         return ""
@@ -43,11 +51,12 @@ def _classify_value(val: "float | None", interval_min: int) -> str:
     if fval <= 0:
         return ""
     service_min = fval * interval_min
-    if service_min >= 720:
+    scale = min(1.0, (n_surfaces * interval_min) / _REFERENCE_WINDOW_MIN)
+    if service_min >= 720 * scale:
         return "constantly accessible"
-    if service_min >= 360:
+    if service_min >= 360 * scale:
         return "regularly accessible"
-    if service_min >= 180:
+    if service_min >= 180 * scale:
         return "periodically accessible"
     return "episodically accessible"
 
@@ -104,16 +113,19 @@ def classify_service_time(
     feedback: "QgsProcessingFeedback",
     mean_field: str = "otp_mean",
     interval_min: int = 1,
+    n_surfaces: int = 961,
 ) -> "QgsVectorLayer":
     """Add ``st_class`` field with 4 service-time categories.
 
     ``interval_min`` is the sampling interval in minutes (1, 15, or 60).
-    ``otp_mean`` counts surface timestamps, so service time in minutes =
-    ``otp_mean * interval_min``. Thresholds are always expressed in minutes
-    (720 / 360 / 180) regardless of the interval used.
+    ``n_surfaces`` is the total number of surfaces generated for this run;
+    it controls threshold scaling for windows shorter than the reference
+    06:00–22:00 window (960 min). Full-window runs are unaffected.
 
-    Inaccessible cells (otp_mean = 0 or NULL) get st_class = "" (empty string),
-    which the QML renderer maps to no symbol via value="".
+    ``otp_mean`` counts surface timestamps, so service time in minutes =
+    ``otp_mean * interval_min``. Inaccessible cells (otp_mean = 0 or NULL)
+    get st_class = "" (empty string), which the QML renderer maps to no
+    symbol via value="".
     """
     from qgis.core import QgsField  # noqa: PLC0415
     from qgis.PyQt.QtCore import QVariant  # noqa: PLC0415
@@ -133,7 +145,7 @@ def classify_service_time(
     attr_map: dict[int, dict[int, object]] = {}
     for feature in zonal_layer.getFeatures():
         raw = feature[mean_idx]
-        cat = _classify_value(raw, interval_min)
+        cat = _classify_value(raw, interval_min, n_surfaces)
         attr_map[feature.id()] = {class_idx: cat}
 
     provider.changeAttributeValues(attr_map)
@@ -141,6 +153,19 @@ def classify_service_time(
     feedback.pushInfo(_tr(
         f"Service-time classification complete (interval={interval_min} min)."
     ))
+    window_min = n_surfaces * interval_min
+    if window_min < _REFERENCE_WINDOW_MIN:
+        scale = window_min / _REFERENCE_WINDOW_MIN
+        feedback.pushWarning(_tr(
+            f"Analysis window ({window_min} min) is shorter than the paper's "
+            f"reference window (06:00–22:00 = {_REFERENCE_WINDOW_MIN} min). "
+            f"Category thresholds were scaled by ×{scale:.3f} "
+            f"(constantly accessible ≥ {720 * scale:.1f} min, "
+            f"regularly ≥ {360 * scale:.1f} min, "
+            f"periodically ≥ {180 * scale:.1f} min). "
+            f"Results are not directly comparable to the Kaczorowski & "
+            f"Wróblewski article, which assumes the full 06:00–22:00 window."
+        ))
     return zonal_layer
 
 

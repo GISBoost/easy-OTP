@@ -211,7 +211,8 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
             feedback.pushInfo(self.tr("Classifying service-time categories…"))
             try:
                 classified_layer = classify_service_time(
-                    zonal_layer, feedback, interval_min=interval_min
+                    zonal_layer, feedback, interval_min=interval_min,
+                    n_surfaces=len(surfaces),
                 )
             except RuntimeError as e:
                 raise QgsProcessingException(str(e)) from e
