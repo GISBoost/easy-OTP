@@ -17,6 +17,7 @@ from qgis.core import (
     QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFile,
+    QgsProcessingParameterFileDestination,
     QgsProcessingParameterNumber,
     QgsProcessingParameterPoint,
     QgsProcessingParameterRasterDestination,
@@ -85,6 +86,9 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
     WORK_DIR = "WORK_DIR"
     OUTPUT_HEX = "OUTPUT_HEX"
     OUTPUT_COUNT_RASTER = "OUTPUT_COUNT_RASTER"
+
+    EXPORT_REPORT = "EXPORT_REPORT"
+    REPORT_PATH = "REPORT_PATH"
 
     INTERVAL_CHOICES = ["1 min", "15 min", "60 min"]
 
@@ -360,6 +364,23 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 self.SHOW_OTP_CONSOLE,
                 self.tr("Show OTP server in a separate console window (Windows; debugging)"),
                 defaultValue=False,
+            )
+        )
+        self._add_advanced(
+            QgsProcessingParameterBoolean(
+                self.EXPORT_REPORT,
+                self.tr("Export statistics report"),
+                defaultValue=False,
+                optional=True,
+            )
+        )
+        self._add_advanced(
+            QgsProcessingParameterFileDestination(
+                self.REPORT_PATH,
+                self.tr("Report file (.xlsx or .csv)"),
+                fileFilter=self.tr("Excel files (*.xlsx);;CSV files (*.csv)"),
+                optional=True,
+                createByDefault=False,
             )
         )
 
@@ -733,6 +754,29 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 sink.addFeature(out_feat, QgsFeatureSink.FastInsert)
 
             log_summary_stats(classified_layer, feedback)
+
+            if self.parameterAsBool(parameters, self.EXPORT_REPORT, context):
+                report_path = self.parameterAsFileOutput(
+                    parameters, self.REPORT_PATH, context
+                )
+                if report_path:
+                    from ..core.report_writer import write_report  # noqa: PLC0415
+                    actual_path = write_report(
+                        classified_layer,
+                        {
+                            "analysis_date": qdt_date.date().toString("yyyy-MM-dd"),
+                            "destination_lat": round(from_place_lat_lon[0], 6),
+                            "destination_lon": round(from_place_lat_lon[1], 6),
+                            "threshold_min": threshold_min,
+                            "window_start": start_t.toString("HH:mm"),
+                            "window_end": end_t.toString("HH:mm"),
+                            "interval_min": interval_min,
+                        },
+                        report_path,
+                    )
+                    feedback.pushInfo(self.tr(
+                        f"Statistics report saved to: {actual_path}"
+                    ))
 
             self._output_hex_dest_id = dest_id
             feedback.pushInfo(self.tr(

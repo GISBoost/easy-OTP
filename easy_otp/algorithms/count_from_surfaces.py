@@ -27,6 +27,7 @@ from qgis.core import (
     QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFile,
+    QgsProcessingParameterFileDestination,
     QgsProcessingParameterNumber,
     QgsProcessingParameterRasterDestination,
     QgsProcessingParameterVectorLayer,
@@ -48,6 +49,9 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
     GRID_CELL_SIZE = "GRID_CELL_SIZE"
     OUTPUT_COUNT_RASTER = "OUTPUT_COUNT_RASTER"
     OUTPUT_HEX = "OUTPUT_HEX"
+
+    EXPORT_REPORT = "EXPORT_REPORT"
+    REPORT_PATH = "REPORT_PATH"
 
     INTERVAL_CHOICES = ["1 min", "15 min", "60 min"]
 
@@ -148,6 +152,27 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
         )
         _hex_param.setFlags(_hex_param.flags() | QgsProcessingParameterDefinition.FlagOptional)
         self.addParameter(_hex_param)
+        _export_param = QgsProcessingParameterBoolean(
+            self.EXPORT_REPORT,
+            self.tr("Export statistics report"),
+            defaultValue=False,
+            optional=True,
+        )
+        _export_param.setFlags(
+            _export_param.flags() | QgsProcessingParameterDefinition.FlagAdvanced
+        )
+        self.addParameter(_export_param)
+        _report_path_param = QgsProcessingParameterFileDestination(
+            self.REPORT_PATH,
+            self.tr("Report file (.xlsx or .csv)"),
+            fileFilter=self.tr("Excel files (*.xlsx);;CSV files (*.csv)"),
+            optional=True,
+            createByDefault=False,
+        )
+        _report_path_param.setFlags(
+            _report_path_param.flags() | QgsProcessingParameterDefinition.FlagAdvanced
+        )
+        self.addParameter(_report_path_param)
 
     def processAlgorithm(  # noqa: N802
         self,
@@ -227,6 +252,30 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
                 sink.addFeature(feat, QgsFeatureSink.FastInsert)
 
             log_summary_stats(classified_layer, feedback)
+
+            if self.parameterAsBool(parameters, self.EXPORT_REPORT, context):
+                report_path = self.parameterAsFileOutput(
+                    parameters, self.REPORT_PATH, context
+                )
+                if report_path:
+                    from ..core.report_writer import write_report  # noqa: PLC0415
+                    actual_path = write_report(
+                        classified_layer,
+                        {
+                            "analysis_date": "",
+                            "destination_lat": "",
+                            "destination_lon": "",
+                            "threshold_min": threshold_min,
+                            "window_start": "",
+                            "window_end": "",
+                            "interval_min": interval_min,
+                        },
+                        report_path,
+                    )
+                    feedback.pushInfo(self.tr(
+                        f"Statistics report saved to: {actual_path}"
+                    ))
+
             self._output_hex_dest_id = dest_id
 
         return {
