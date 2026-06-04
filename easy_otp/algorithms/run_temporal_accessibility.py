@@ -2,10 +2,12 @@
 
 from pathlib import Path
 
-from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QSettings, QTime
+from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QSettings, QTime, QVariant
 from qgis.core import (
     QgsCoordinateReferenceSystem,
+    QgsFeature,
     QgsFeatureSink,
+    QgsField,
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
@@ -59,6 +61,8 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
     TIME_END = "TIME_END"
     INTERVAL = "INTERVAL"
     TRAVEL_TIME_THRESHOLD = "TRAVEL_TIME_THRESHOLD"
+
+    ARRIVE_BY = "ARRIVE_BY"
 
     WALK_RELUCTANCE = "WALK_RELUCTANCE"
     WAIT_RELUCTANCE = "WAIT_RELUCTANCE"
@@ -207,6 +211,13 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 defaultValue=30,
                 minValue=1,
                 maxValue=120,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.ARRIVE_BY,
+                self.tr("Arrive by (reverse routing — measure latest departure to arrive at destination by T)"),
+                defaultValue=False,
             )
         )
 
@@ -480,6 +491,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         self._warn_gtfs_date(gtfs_files, qdt_date.date(), feedback)
 
         threshold_min = self.parameterAsInt(parameters, self.TRAVEL_TIME_THRESHOLD, context)
+        arrive_by = self.parameterAsBool(parameters, self.ARRIVE_BY, context)
         out_count_str = self.parameterAsOutputLayer(parameters, self.OUTPUT_COUNT_RASTER, context)
         if not out_count_str:
             raise QgsProcessingException(self.tr(
@@ -536,6 +548,13 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         pointsets = ensure_pointsets_dir(work_dir)
 
         existing = probe_otp(port)
+        if arrive_by and existing:
+            feedback.pushWarning(self.tr(
+                "ARRIVE_BY=True with a reused OTP server: if surfaces fail with "
+                "HTTP 500, restart the server by setting KEEP_SERVER_ALIVE=False "
+                "for one run. Reverse routing may require more heap than forward "
+                "routing — ensure OTP_XMX_SERVE is set to at least 4G."
+            ))
         server_ctx = None
         try:
             if existing:
@@ -589,7 +608,8 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
 
             date_slug = date_s.replace("-", "")  # "MM-DD-YYYY" → "MMDDYYYY"
             time_slug = f"{start_t.hour():02d}{start_t.minute():02d}-{end_t.hour():02d}{end_t.minute():02d}"
-            surfaces_dir = work_dir / "surfaces" / f"{router_id}_{date_slug}_{interval_min}min_{time_slug}"
+            arrive_slug = "_arriveBy" if arrive_by else ""
+            surfaces_dir = work_dir / "surfaces" / f"{router_id}_{date_slug}_{interval_min}min_{time_slug}{arrive_slug}"
             job = SurfaceJobParams(
                 from_place_lat_lon=from_place_lat_lon,
                 date_mmddyyyy=date_s,
@@ -599,6 +619,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 transfer_penalty=self.parameterAsInt(parameters, self.TRANSFER_PENALTY, context),
                 min_transfer_time=self.parameterAsInt(parameters, self.MIN_TRANSFER_TIME, context),
                 walk_speed=self.parameterAsDouble(parameters, self.WALK_SPEED, context),
+                arrive_by=arrive_by,
             )
             feedback.pushInfo(self.tr(
                 f"Generating {len(time_list)} surface(s) for date={date_s}…"
@@ -697,14 +718,19 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             except RuntimeError as e:
                 raise QgsProcessingException(str(e)) from e
 
+            out_fields = classified_layer.fields()
+            out_fields.append(QgsField("arrive_by", QVariant.Bool))
             sink, dest_id = self.parameterAsSink(
                 parameters, self.OUTPUT_HEX, context,
-                classified_layer.fields(),
+                out_fields,
                 classified_layer.wkbType(),
                 classified_layer.sourceCrs(),
             )
             for feat in classified_layer.getFeatures():
-                sink.addFeature(feat, QgsFeatureSink.FastInsert)
+                out_feat = QgsFeature(out_fields)
+                out_feat.setGeometry(feat.geometry())
+                out_feat.setAttributes(feat.attributes() + [arrive_by])
+                sink.addFeature(out_feat, QgsFeatureSink.FastInsert)
 
             log_summary_stats(classified_layer, feedback)
 

@@ -31,6 +31,6 @@ changelog=0.2.0
       analysis windows shorter than 06:00–22:00 (a shorter window previously
       forced almost every cell into "inaccessible"). Full-window runs are
       unchanged. A warning is logged whenever scaling is applied.
-0.1.0
+    0.1.0
     - Initial release: TestOtpServer, GenerateHexGrid,
       RunTemporalAccessibility, CountFromExistingSurfaces.

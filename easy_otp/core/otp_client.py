@@ -58,15 +58,17 @@ class OtpClient:
         transfer_penalty: int,
         min_transfer_time: int,
         walk_speed: float,
+        arrive_by: bool = False,
         mode: str = "TRANSIT,WALK",
         log_fn: Optional[LogFn] = None,
     ) -> int:
         # OTP expects fromPlace="lat,lon". Caller passes (lat, lon).
         # routerId MUST be sent: SurfaceResource defaults to "default" router
         # when omitted, and our server runs with --router <sha256>.
+        _place = f"{from_place_lat_lon[0]},{from_place_lat_lon[1]}"
         params = {
             "routerId": self.router,
-            "fromPlace": f"{from_place_lat_lon[0]},{from_place_lat_lon[1]}",
+            "fromPlace": _place,
             "mode": mode,
             "date": date_mmddyyyy,
             "time": time_hhmmss,
@@ -76,9 +78,13 @@ class OtpClient:
             "transferPenalty": transfer_penalty,
             "minTransferTime": min_transfer_time,
             "walkSpeed": walk_speed,
-            "arriveBy": "false",
+            "arriveBy": "true" if arrive_by else "false",
             "batch": "true",
         }
+        # OTP 1.5.0 buildRequest() dereferences toPlace when arriveBy=true;
+        # without it the code throws NullPointerException. Mirror fromPlace.
+        if arrive_by:
+            params["toPlace"] = _place
         url = f"{self.base_url}/surfaces?{urllib.parse.urlencode(params)}"
         if log_fn is not None:
             log_fn(f"POST {url}")
@@ -94,11 +100,18 @@ class OtpClient:
                     "--analyst --pointSets flags."
                 ) from e
             if e.code == 500:
+                detail = e.read().decode("utf-8", errors="replace")[:1000]
+                arrive_hint = (
+                    "\nNote: arriveBy=true (reverse routing) may require more heap "
+                    "than forward routing — restart with KEEP_SERVER_ALIVE=False to "
+                    "get a fresh server with the current OTP_XMX_SERVE setting."
+                    if arrive_by else
+                    "\nIf this is a memory error, increase OTP_XMX_SERVE and restart "
+                    "the server (set KEEP_SERVER_ALIVE=False for one run)."
+                )
                 raise OtpClientError(
-                    "OTP /surfaces returned HTTP 500 (Internal Server Error). "
-                    "This usually means the analyst server ran out of memory. "
-                    "Increase OTP_XMX_SERVE (e.g. from 1G to 4G or 8G) and "
-                    "restart the server (set KEEP_SERVER_ALIVE=False for one run)."
+                    f"OTP /surfaces returned HTTP 500 (Internal Server Error).{arrive_hint}\n"
+                    f"OTP detail: {detail if detail else '(empty response body)'}"
                 ) from e
             detail = e.read().decode("utf-8", errors="replace")[:500]
             raise OtpClientError(

@@ -37,6 +37,7 @@ class SurfaceJobParams:
     transfer_penalty: int
     min_transfer_time: int
     walk_speed: float
+    arrive_by: bool = False
 
 
 def run_surface_loop(
@@ -81,6 +82,7 @@ def run_surface_loop(
                 transfer_penalty=job.transfer_penalty,
                 min_transfer_time=job.min_transfer_time,
                 walk_speed=job.walk_speed,
+                arrive_by=job.arrive_by,
                 log_fn=None,
             )
             if feedback.isCanceled():
