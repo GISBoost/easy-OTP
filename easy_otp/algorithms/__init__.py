@@ -1,3 +1,4 @@
+from .compare_temporal_accessibility import CompareTemporalAccessibility
 from .count_from_surfaces import CountFromExistingSurfaces
 from .download_jre import DownloadJre
 from .download_transit_data import DownloadTransitData
@@ -8,6 +9,7 @@ from .run_temporal_accessibility import RunTemporalAccessibility
 from .test_otp_server import TestOtpServer
 
 __all__ = [
+    "CompareTemporalAccessibility",
     "CountFromExistingSurfaces",
     "DownloadJre",
     "DownloadTransitData",

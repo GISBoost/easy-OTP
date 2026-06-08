@@ -169,6 +169,75 @@ def classify_service_time(
     return zonal_layer
 
 
+def classify_delta(
+    zonal_layer: "QgsVectorLayer",
+    feedback: "QgsProcessingFeedback",
+    mean_field: str = "otp_mean",
+    interval_min: int = 1,
+    positive_min: float = 60.0,
+    negative_max: float = -60.0,
+) -> "QgsVectorLayer":
+    """Add ``delta_mean`` (minutes) and ``delta_class`` fields to a zonal layer.
+
+    ``mean_field`` holds the mean count delta (count_B − count_A) per hex cell
+    as returned by :func:`run_zonal_stats` on the delta raster.  Converts to
+    minutes via ``interval_min``, then classifies:
+
+    - ``"improved"``  — delta_mean ≥ positive_min
+    - ``"degraded"``  — delta_mean ≤ negative_max
+    - ``"unchanged"`` — otherwise
+
+    NULL/NoData cells (hex cells where the delta raster had no valid pixels)
+    get ``delta_class = ""`` and ``delta_mean = NULL``.
+    """
+    from qgis.core import QgsField  # noqa: PLC0415
+    from qgis.PyQt.QtCore import QVariant  # noqa: PLC0415
+
+    provider = zonal_layer.dataProvider()
+    provider.addAttributes([
+        QgsField("delta_mean", QVariant.Double, "double", 12, 2),
+        QgsField("delta_class", QVariant.String, "String", 20),
+    ])
+    zonal_layer.updateFields()
+
+    mean_idx = zonal_layer.fields().indexOf(mean_field)
+    dmean_idx = zonal_layer.fields().indexOf("delta_mean")
+    dclass_idx = zonal_layer.fields().indexOf("delta_class")
+
+    if mean_idx == -1:
+        raise RuntimeError(
+            f"Field '{mean_field}' not found in zonal layer. "
+            f"Available fields: {[f.name() for f in zonal_layer.fields()]}"
+        )
+
+    attr_map: dict[int, dict[int, object]] = {}
+    for feature in zonal_layer.getFeatures():
+        raw = feature[mean_idx]
+        try:
+            count_delta = float(raw)
+        except (TypeError, ValueError):
+            attr_map[feature.id()] = {dmean_idx: None, dclass_idx: ""}
+            continue
+
+        delta_min = count_delta * interval_min
+        if delta_min >= positive_min:
+            cat = "improved"
+        elif delta_min <= negative_max:
+            cat = "degraded"
+        else:
+            cat = "unchanged"
+
+        attr_map[feature.id()] = {dmean_idx: delta_min, dclass_idx: cat}
+
+    provider.changeAttributeValues(attr_map)
+    zonal_layer.updateFields()
+    feedback.pushInfo(_tr(
+        f"Delta classification complete (interval={interval_min} min, "
+        f"improved ≥ {positive_min} min, degraded ≤ {negative_max} min)."
+    ))
+    return zonal_layer
+
+
 def log_summary_stats(
     layer: "QgsVectorLayer",
     feedback: "QgsProcessingFeedback",

@@ -2,6 +2,7 @@
 
 from qgis.core import QgsProcessingProvider
 
+from .algorithms.compare_temporal_accessibility import CompareTemporalAccessibility
 from .algorithms.count_from_surfaces import CountFromExistingSurfaces
 from .algorithms.download_jre import DownloadJre
 from .algorithms.download_transit_data import DownloadTransitData
@@ -17,13 +18,14 @@ class EasyOtpProvider(QgsProcessingProvider):
         return "easyotp"
 
     def name(self) -> str:
-        return self.tr("easy-OTP")
+        return self.tr("Easy-OTP")
 
     def longName(self) -> str:  # noqa: N802 — Qt API name
-        return self.tr("easy-OTP — temporal accessibility via OpenTripPlanner")
+        return self.tr("Easy-OTP — temporal accessibility via OpenTripPlanner")
 
     def loadAlgorithms(self) -> None:  # noqa: N802 — Qt API name
         self.addAlgorithm(RunTemporalAccessibility())
+        self.addAlgorithm(CompareTemporalAccessibility())
         self.addAlgorithm(CountFromExistingSurfaces())
         self.addAlgorithm(GenerateHexGrid())
         self.addAlgorithm(PopulationOverlay())

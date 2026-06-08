@@ -169,3 +169,83 @@ def count_below_threshold(
     finally:
         if out_ds is not None:
             out_ds = None  # noqa: F841 — explicit GDAL close
+
+
+def compute_delta_raster(
+    count_a: Path,
+    count_b: Path,
+    out_delta: Path,
+    feedback,
+) -> Path:
+    """Compute pixel-wise delta = count_B − count_A.
+
+    Pixels inaccessible in both scenarios (stored as 0, the NoData sentinel of
+    count_below_threshold) become NoData = −9999 in the output.  All other
+    pixels carry a signed count delta, including newly-accessible pixels
+    (count_a=0, count_b>0 → positive) and fully-lost pixels (negative).
+
+    Both rasters must have identical grid dimensions.  Raises RuntimeError if
+    they differ.  Geotransform and projection are taken from count_a.
+    """
+    _NODATA_DELTA = -9999
+
+    ds_a = gdal.Open(str(count_a), gdal.GA_ReadOnly)
+    if ds_a is None:
+        raise RuntimeError(_tr(f"Cannot open count raster A: {count_a}"))
+    ds_b = gdal.Open(str(count_b), gdal.GA_ReadOnly)
+    if ds_b is None:
+        ds_a = None
+        raise RuntimeError(_tr(f"Cannot open count raster B: {count_b}"))
+
+    out_ds = None
+    try:
+        arr_a = ds_a.GetRasterBand(1).ReadAsArray()
+        arr_b = ds_b.GetRasterBand(1).ReadAsArray()
+
+        if arr_a.shape != arr_b.shape:
+            raise RuntimeError(_tr(
+                f"Count raster grid mismatch: A is {arr_a.shape}, "
+                f"B is {arr_b.shape}. Both pipelines must use the same OSM "
+                f"extract and OTP version to produce identical raster grids."
+            ))
+
+        delta = arr_b.astype(np.int32) - arr_a.astype(np.int32)
+        mask_nodata = (arr_a == 0) & (arr_b == 0)
+        delta[mask_nodata] = _NODATA_DELTA
+
+        out_delta.parent.mkdir(parents=True, exist_ok=True)
+        driver = gdal.GetDriverByName("GTiff")
+        rows, cols = arr_a.shape
+        out_ds = driver.Create(str(out_delta), cols, rows, 1, gdal.GDT_Int32)
+        if out_ds is None:
+            raise RuntimeError(_tr(f"Failed to create delta raster: {out_delta}"))
+        out_ds.SetGeoTransform(ds_a.GetGeoTransform())
+        out_ds.SetProjection(ds_a.GetProjection())
+        out_band = out_ds.GetRasterBand(1)
+        out_band.SetNoDataValue(_NODATA_DELTA)
+        out_band.WriteArray(delta)
+        out_band.FlushCache()
+
+        valid = ~mask_nodata
+        if valid.any():
+            feedback.pushInfo(_tr(
+                f"Delta raster written: {out_delta} "
+                f"(valid count-delta range: {int(delta[valid].min())} "
+                f"to {int(delta[valid].max())})"
+            ))
+        else:
+            feedback.pushWarning(_tr(
+                f"Delta raster written but all pixels are NoData: {out_delta}. "
+                "Both scenarios may be fully inaccessible within the threshold."
+            ))
+        return out_delta
+    except BaseException:
+        if out_ds is not None:
+            out_ds = None
+        out_delta.unlink(missing_ok=True)
+        raise
+    finally:
+        ds_a = None
+        ds_b = None
+        if out_ds is not None:
+            out_ds = None  # noqa: F841 — explicit GDAL close
