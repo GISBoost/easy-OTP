@@ -203,7 +203,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             QgsProcessingParameterEnum(
                 self.INTERVAL,
                 self.tr("Sampling interval"),
-                options=self.INTERVAL_CHOICES,
+                options=[self.tr(s) for s in self.INTERVAL_CHOICES],
                 defaultValue=0,
             )
         )
@@ -625,7 +625,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             except RuntimeError as e:
                 raise QgsProcessingException(str(e)) from e
 
-            router_bbox = self._log_router_diagnostic(client, feedback)
+            self._log_router_diagnostic(client, feedback)
 
             date_slug = date_s.replace("-", "")  # "MM-DD-YYYY" → "MMDDYYYY"
             time_slug = f"{start_t.hour():02d}{start_t.minute():02d}-{end_t.hour():02d}{end_t.minute():02d}"

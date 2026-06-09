@@ -111,7 +111,7 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
             QgsProcessingParameterEnum(
                 self.INTERVAL,
                 self.tr("Sampling interval of the surfaces"),
-                options=self.INTERVAL_CHOICES,
+                options=[self.tr(s) for s in self.INTERVAL_CHOICES],
                 defaultValue=0,
             )
         )

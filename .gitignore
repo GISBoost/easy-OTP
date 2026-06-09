@@ -53,3 +53,6 @@ papers/
 reference/
 CLAUDE.md
 .claude/
+
+# --- Build artifacts ---
+easy_otp-package.zip

@@ -2,12 +2,10 @@
 
 from pathlib import Path
 
-from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QSettings, QTime, QVariant
+from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QSettings, QTime
 from qgis.core import (
     QgsCoordinateReferenceSystem,
-    QgsFeature,
     QgsFeatureSink,
-    QgsField,
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
@@ -237,7 +235,7 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
             QgsProcessingParameterEnum(
                 self.INTERVAL,
                 self.tr("Sampling interval"),
-                options=self.INTERVAL_CHOICES,
+                options=[self.tr(s) for s in self.INTERVAL_CHOICES],
                 defaultValue=0,
             )
         )

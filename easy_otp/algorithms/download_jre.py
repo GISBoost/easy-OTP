@@ -107,7 +107,7 @@ class DownloadJre(QgsProcessingAlgorithm):
         platform_param = QgsProcessingParameterEnum(
             self.PLATFORM,
             self.tr("Platform override"),
-            options=self._PLATFORM_OPTIONS,
+            options=[self.tr(s) for s in self._PLATFORM_OPTIONS],
             defaultValue=0,
         )
         platform_param.setFlags(

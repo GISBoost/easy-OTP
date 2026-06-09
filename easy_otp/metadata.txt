@@ -1,14 +1,14 @@
 [general]
 name=Easy-OTP
 qgisMinimumVersion=3.40
-qgisMaximumVersion=3.99
 description=Automated temporal accessibility analysis using OpenTripPlanner.
-about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts service-time minutes per hexagonal grid cell, and classifies cells into four categories. v0.2 adds: automated Java 8 JRE + OTP jar download (R3), automated OSM/GTFS data acquisition via Geofabrik and Transitland (R2), GUS NSP 2021 population layer import (R1a), and areal-interpolation population overlay onto the hex grid (R1b).
+about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces (optional XLSX report), CompareTemporalAccessibility (delta analysis between two scenarios), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay, DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
 version=0.2.0
 author=Michal Kaczorowski
 email=michal.kaczorowsx@gmail.com
 license=GPL-2.0-or-later
 category=Analysis
+icon=resources/icon.svg
 experimental=True
 deprecated=False
 hasProcessingProvider=yes
@@ -31,6 +31,13 @@ changelog=0.2.0
       analysis windows shorter than 06:00–22:00 (a shorter window previously
       forced almost every cell into "inaccessible"). Full-window runs are
       unchanged. A warning is logged whenever scaling is applied.
+    - A-1: arriveBy toggle in RunTemporalAccessibility — analyse arrive-by
+      accessibility in addition to the default depart-at mode.
+    - Report export: optional XLSX summary report for RunTemporalAccessibility
+      and CountFromExistingSurfaces.
+    - A-2: CompareTemporalAccessibility — delta raster + classified hex-grid
+      difference between two temporal accessibility scenarios; supports NoData
+      semantics for cells present in only one scenario.
     0.1.0
     - Initial release: TestOtpServer, GenerateHexGrid,
       RunTemporalAccessibility, CountFromExistingSurfaces.
