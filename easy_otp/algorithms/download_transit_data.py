@@ -368,7 +368,7 @@ class DownloadTransitData(QgsProcessingAlgorithm):
             _GEOFABRIK_INDEX_URL, headers={"User-Agent": _USER_AGENT}
         )
         try:
-            with urllib_request.urlopen(req, timeout=30) as resp:
+            with urllib_request.urlopen(req, timeout=30) as resp:  # nosec B310 — QGIS stdlib only (no requests); HTTPS URL from hardcoded endpoint or trusted API
                 raw = resp.read()
         except URLError as exc:
             raise QgsProcessingException(self.tr(
@@ -427,7 +427,7 @@ class DownloadTransitData(QgsProcessingAlgorithm):
         """Download url to tmp then rename to final. Returns True if cancelled."""
         req = urllib_request.Request(url, headers={"User-Agent": _USER_AGENT})
         try:
-            with urllib_request.urlopen(req, timeout=60) as resp:
+            with urllib_request.urlopen(req, timeout=60) as resp:  # nosec B310 — QGIS stdlib only (no requests); HTTPS URL from hardcoded endpoint or trusted API
                 total = int(resp.headers.get("Content-Length") or 0)
                 downloaded = 0
                 step_no_length = 0
@@ -481,7 +481,7 @@ class DownloadTransitData(QgsProcessingAlgorithm):
         md5_url = pbf_url + ".md5"
         req = urllib_request.Request(md5_url, headers={"User-Agent": _USER_AGENT})
         try:
-            with urllib_request.urlopen(req, timeout=30) as resp:
+            with urllib_request.urlopen(req, timeout=30) as resp:  # nosec B310 — QGIS stdlib only (no requests); HTTPS URL from hardcoded endpoint or trusted API
                 content = resp.read().decode("utf-8").strip()
         except URLError as exc:
             feedback.pushWarning(self.tr(
@@ -490,7 +490,7 @@ class DownloadTransitData(QgsProcessingAlgorithm):
             return
 
         expected = content.split()[0]
-        h = hashlib.md5()  # noqa: S324 — MD5 mandated by Geofabrik spec
+        h = hashlib.md5()  # nosec B324 — MD5 mandated by Geofabrik .md5 checksum spec
         with open(file_path, "rb") as fh:
             for block in iter(lambda: fh.read(_HASH_CHUNK), b""):
                 h.update(block)
@@ -516,7 +516,7 @@ class DownloadTransitData(QgsProcessingAlgorithm):
                 return []
             req = urllib_request.Request(next_url, headers={"User-Agent": _USER_AGENT})
             try:
-                with urllib_request.urlopen(req, timeout=30) as resp:
+                with urllib_request.urlopen(req, timeout=30) as resp:  # nosec B310 — QGIS stdlib only (no requests); HTTPS URL from hardcoded endpoint or trusted API
                     data = json.loads(resp.read().decode("utf-8"))
             except HTTPError as exc:
                 if exc.code == 401:
@@ -580,7 +580,7 @@ class DownloadTransitData(QgsProcessingAlgorithm):
 
         req = urllib_request.Request(url, headers={"User-Agent": _USER_AGENT})
         try:
-            with urllib_request.urlopen(req, timeout=60) as resp:
+            with urllib_request.urlopen(req, timeout=60) as resp:  # nosec B310 — QGIS stdlib only (no requests); HTTPS URL from hardcoded endpoint or trusted API
                 total = int(resp.headers.get("Content-Length") or 0)
                 downloaded = 0
                 step_no_length = 0

@@ -206,7 +206,7 @@ class DownloadJre(QgsProcessingAlgorithm):
                     "https://github.com/GISBoost/easy-OTP/issues"
                 ))
             if os_name != "windows":
-                os.chmod(binary, 0o755)
+                os.chmod(binary, 0o755)  # nosec B103 — executable bit required for JRE binary
 
             is_ok, version, err_msg = check_java_version(binary)
             if not is_ok:
@@ -299,7 +299,7 @@ class DownloadJre(QgsProcessingAlgorithm):
         url = _ADOPTIUM_URL.format(os_name=os_name)
         req = urllib_request.Request(url, headers={"User-Agent": _USER_AGENT})
         try:
-            with urllib_request.urlopen(req, timeout=30) as resp:
+            with urllib_request.urlopen(req, timeout=30) as resp:  # nosec B310 — QGIS stdlib only (no requests); HTTPS URL from hardcoded endpoint or trusted API
                 data = json.loads(resp.read().decode())
         except URLError as exc:
             raise QgsProcessingException(self.tr(
@@ -334,7 +334,7 @@ class DownloadJre(QgsProcessingAlgorithm):
     ) -> None:
         req = urllib_request.Request(url, headers={"User-Agent": _USER_AGENT})
         try:
-            with urllib_request.urlopen(req, timeout=60) as resp:
+            with urllib_request.urlopen(req, timeout=60) as resp:  # nosec B310 — QGIS stdlib only (no requests); HTTPS URL from hardcoded endpoint or trusted API
                 total = int(resp.headers.get("Content-Length") or 0)
                 downloaded = 0
                 with open(tmp, "wb") as fh:
@@ -390,17 +390,27 @@ class DownloadJre(QgsProcessingAlgorithm):
                 f"Expected {expected}, got {got}."
             ))
 
+    def _safe_zipextract(self, zf: "zipfile.ZipFile", dest: Path) -> None:
+        """Extract zip safely, skipping members with path traversal (zip slip)."""
+        dest_root = dest.resolve()
+        prefix = str(dest_root) + os.sep
+        for member in zf.infolist():
+            target = (dest_root / member.filename).resolve()
+            if str(target) != str(dest_root) and not str(target).startswith(prefix):
+                continue  # skip zip-slip attempt
+            zf.extract(member, dest)
+
     def _extract(self, archive: Path, dest: Path, os_name: str) -> None:
         if os_name == "windows":
             with zipfile.ZipFile(archive) as zf:
-                zf.extractall(dest)
+                self._safe_zipextract(zf, dest)
         else:
             with tarfile.open(archive) as tf:
                 # filter="data" available from Python 3.12; safe for data archives
                 if sys.version_info >= (3, 12):
                     tf.extractall(dest, filter="data")
                 else:
-                    tf.extractall(dest)  # noqa: S202
+                    tf.extractall(dest)  # nosec B202 — SHA-256 verified before extraction
 
     def _find_binary(self, dest: Path, os_name: str) -> "Path | None":
         binary_name = "java.exe" if os_name == "windows" else "java"
