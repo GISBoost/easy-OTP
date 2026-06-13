@@ -149,8 +149,8 @@ class PrepareStudentLayer(QgsProcessingAlgorithm):
         geom_layer = self.parameterAsVectorLayer(parameters, self.GEOMETRY_LAYER, context)
         key_field = self.parameterAsString(parameters, self.KEY_FIELD, context)
         out_field_name = (
-            self.parameterAsString(parameters, self.OUTPUT_FIELD_NAME, context).strip()
-            or "pop20_29"
+            self.parameterAsString(parameters, self.OUTPUT_FIELD_NAME, context).strip() or
+            "pop20_29"
         )
 
         feedback.setProgress(0)
@@ -224,7 +224,7 @@ class PrepareStudentLayer(QgsProcessingAlgorithm):
             ))
         if col_population is None:
             nearby: set[str] = set()
-            for row in rows[max(0, struct_row_idx - 1) : struct_row_idx + 3]:
+            for row in rows[max(0, struct_row_idx - 1): struct_row_idx + 3]:
                 nearby.update(
                     str(v).strip() for v in row if v is not None and str(v).strip()
                 )

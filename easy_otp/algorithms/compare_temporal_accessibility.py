@@ -548,10 +548,14 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
 
         raw_start = parameters.get(self.TIME_START)
         raw_end = parameters.get(self.TIME_END)
-        start_t = raw_start if isinstance(raw_start, QTime) else \
-                  self.parameterAsDateTime(parameters, self.TIME_START, context).time()
-        end_t = raw_end if isinstance(raw_end, QTime) else \
-                self.parameterAsDateTime(parameters, self.TIME_END, context).time()
+        start_t = (
+            raw_start if isinstance(raw_start, QTime)
+            else self.parameterAsDateTime(parameters, self.TIME_START, context).time()
+        )
+        end_t = (
+            raw_end if isinstance(raw_end, QTime)
+            else self.parameterAsDateTime(parameters, self.TIME_END, context).time()
+        )
         interval_idx = self.parameterAsEnum(parameters, self.INTERVAL, context)
         try:
             interval_min = INTERVAL_MINUTES[interval_idx]
@@ -1075,14 +1079,14 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
         raw = self.parameterAsFile(parameters, key, context)
         if not raw:
             raise QgsProcessingException(self.tr(
-                f"{label} is required (parameter {key})."
-                + (f" {fix_hint}" if fix_hint else "")
+                f"{label} is required (parameter {key})." +
+                (f" {fix_hint}" if fix_hint else "")
             ))
         path = Path(raw)
         if not path.is_file():
             raise QgsProcessingException(self.tr(
-                f"{label} not found at: {path} (parameter {key})."
-                + (f" {fix_hint}" if fix_hint else "")
+                f"{label} not found at: {path} (parameter {key})." +
+                (f" {fix_hint}" if fix_hint else "")
             ))
         return path
 

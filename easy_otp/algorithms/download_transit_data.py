@@ -97,7 +97,7 @@ class DownloadTransitData(QgsProcessingAlgorithm):
     DEST_DIR = "DEST_DIR"
     DOWNLOAD_OSM = "DOWNLOAD_OSM"
     DOWNLOAD_GTFS = "DOWNLOAD_GTFS"
-    GTFS_API_KEY = "GTFS_API_KEY"
+    GTFS_API_KEY = "GTFS_API_KEY"  # pragma: allowlist secret
 
     OUTPUT_OSM = "OUTPUT_OSM"
     OUTPUT_GTFS_DIR = "OUTPUT_GTFS_DIR"
@@ -245,8 +245,8 @@ class DownloadTransitData(QgsProcessingAlgorithm):
         osm_path = osm_dir / f"{area_slug}.osm.pbf"
 
         if download_osm:
-            if (osm_path.exists()
-                    and (time.time() - osm_path.stat().st_mtime) < _OSM_CACHE_DAYS * 86400):
+            if (osm_path.exists() and
+                    (time.time() - osm_path.stat().st_mtime) < _OSM_CACHE_DAYS * 86400):
                 feedback.pushInfo(self.tr(f"Using cached OSM extract for '{area_id}'."))
                 feedback.setProgress(osm_p_end)
             else:
@@ -357,8 +357,8 @@ class DownloadTransitData(QgsProcessingAlgorithm):
 
     def _load_index(self, dest: Path, feedback) -> list:
         cache = dest / ".geofabrik-index.json"
-        if (cache.exists()
-                and (time.time() - cache.stat().st_mtime) < _INDEX_TTL_DAYS * 86400):
+        if (cache.exists() and
+                (time.time() - cache.stat().st_mtime) < _INDEX_TTL_DAYS * 86400):
             feedback.pushInfo(self.tr("Using cached Geofabrik index."))
             with open(cache, encoding="utf-8") as fh:
                 return json.load(fh)["features"]
@@ -393,8 +393,8 @@ class DownloadTransitData(QgsProcessingAlgorithm):
         # 2 — contains match on id or name
         matches = [
             f for f in features
-            if needle in f.get("properties", {}).get("id", "").lower()
-            or needle in f.get("properties", {}).get("name", "").lower()
+            if needle in f.get("properties", {}).get("id", "").lower() or
+            needle in f.get("properties", {}).get("name", "").lower()
         ]
 
         if len(matches) == 0:
@@ -447,8 +447,8 @@ class DownloadTransitData(QgsProcessingAlgorithm):
                         downloaded += len(chunk)
                         if total:
                             pct = int(
-                                downloaded / total * (progress_end - progress_start)
-                                + progress_start
+                                downloaded / total * (progress_end - progress_start) +
+                                progress_start
                             )
                             feedback.setProgress(pct)
                         else:
@@ -600,8 +600,8 @@ class DownloadTransitData(QgsProcessingAlgorithm):
                         downloaded += len(chunk)
                         if total:
                             pct = int(
-                                downloaded / total * (progress_end - progress_start)
-                                + progress_start
+                                downloaded / total * (progress_end - progress_start) +
+                                progress_start
                             )
                             feedback.setProgress(pct)
                         else:
