@@ -70,6 +70,34 @@ def build_time_list(
     return out
 
 
+def forward_window(
+    now: datetime, horizon_min: int
+) -> tuple[int, int, int, int, bool]:
+    """Anchor a realtime window at ``now`` and extend ``horizon_min`` minutes ahead.
+
+    Returns ``(start_h, start_m, end_h, end_m, truncated)`` where the start is
+    ``now`` truncated to the minute and the end is ``now + horizon_min``. Live
+    GTFS-RT only carries predictions near the present, so RunRealtimeAccessibility
+    measures forward from the current moment rather than over a fixed historical
+    window.
+
+    RT-1 does not span calendar days: if the end crosses midnight it is clamped to
+    ``23:59`` of the start day and ``truncated`` is True so the caller can warn.
+
+    Raises ValueError when ``horizon_min`` is not positive.
+    """
+    if horizon_min <= 0:
+        raise ValueError(f"horizon_min must be positive, got {horizon_min}")
+
+    start = now.replace(second=0, microsecond=0)
+    end = start + timedelta(minutes=horizon_min)
+    truncated = False
+    if end.date() != start.date():
+        end = start.replace(hour=23, minute=59)
+        truncated = True
+    return (start.hour, start.minute, end.hour, end.minute, truncated)
+
+
 def time_to_filename_slug(t: str) -> str:
     """``"06:30:00"`` -> ``"06-30-00"`` so the timestamp can sit in a filename."""
     return t.replace(":", "-")

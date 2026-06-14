@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import socket
@@ -335,12 +336,16 @@ def start_server(
 ) -> tuple[subprocess.Popen, Path]:
     """Spawn OTP --server --analyst --pointSets. Returns (process, log_path).
 
-    When show_console=True on Windows, the Java process is spawned in its own
-    console window with live stdout/stderr visible (no logfile in that mode).
-    Useful for diagnosing routing problems where OTP only reports the failure
-    via its own logging.
+    OTP's output is ALWAYS redirected to ``otp_server_<router_id>_<timestamp>.log``
+    so it survives a crash — the file is available for analysis even after the
+    process (and any console window) is gone. The timestamp keeps each run's log
+    distinct, so re-running after a crash does not wipe the log the user was told
+    to inspect. When show_console=True on Windows, a separate window is opened that
+    live-tails that same logfile; unlike OTP's own console it stays open after OTP
+    exits, so the final error remains visible.
     """
-    log_path = work_dir / f"otp_server_{router_id}.log"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_path = work_dir / f"otp_server_{router_id}_{stamp}.log"
     cmd = [
         str(java_path),
         f"-Xmx{xmx}",
@@ -358,23 +363,60 @@ def start_server(
         str(pointsets_dir),
     ]
     feedback.pushInfo(f"$ {' '.join(cmd)}")
+    feedback.pushInfo(f"Server log: {log_path}")
+    # Always log to file (crash-proof). log_fh stays open; closed by the OS when
+    # proc exits / we kill it.
+    log_fh = open(log_path, "wb")  # noqa: SIM115
+    proc = subprocess.Popen(
+        cmd,
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+        **_popen_kwargs(),
+    )
     if show_console and sys.platform == "win32":
-        feedback.pushInfo("Server output will appear in a separate console window (SHOW_OTP_CONSOLE=True).")
-        proc = subprocess.Popen(
-            cmd,
+        _spawn_log_tail_console(log_path, feedback)
+    return proc, log_path
+
+
+def _spawn_log_tail_console(log_path: Path, feedback) -> None:
+    """Open a separate Windows console that live-tails the OTP server logfile.
+
+    Replaces attaching OTP directly to its own console (which vanished on crash,
+    taking the visible logs with it). The tail reads the persistent logfile, so it
+    keeps showing output — including the final error — after OTP exits. Best-effort:
+    failure to open the window never breaks the run. The window must be closed
+    manually; the full log is always at ``log_path`` regardless.
+    """
+    # QGIS's bundled environment often has a stripped PATH without System32, so the
+    # bare name "powershell" raises FileNotFoundError under CreateProcess. Resolve
+    # the full path first, then fall back to PATH lookup, then the bare name.
+    ps_full = os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"),
+        "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+    )
+    powershell = ps_full if os.path.isfile(ps_full) else (shutil.which("powershell") or "powershell")
+    # Escape single quotes for the PowerShell single-quoted string literal: a path
+    # like C:\Users\O'Brien\... would otherwise terminate the string early (lost
+    # live view, minor injection). In PS, '' is the literal-quote escape.
+    ps_literal = str(log_path).replace("'", "''")
+    try:
+        subprocess.Popen(
+            [
+                powershell,
+                "-NoExit",
+                "-Command",
+                f"Get-Content -LiteralPath '{ps_literal}' -Wait -Tail 2000",
+            ],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
-    else:
-        feedback.pushInfo(f"Server log: {log_path}")
-        log_fh = open(log_path, "wb")
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_fh,
-            stderr=subprocess.STDOUT,
-            **_popen_kwargs(),
+        feedback.pushInfo(
+            "Live OTP server log opened in a separate window (SHOW_OTP_CONSOLE=True); "
+            "it stays open after a crash so the error remains readable."
         )
-        # log_fh stays open; closed implicitly by OS when proc exits / we kill it.
-    return proc, log_path
+    except Exception as e:  # noqa: BLE001 — the tail window is a convenience only
+        feedback.pushWarning(
+            f"Could not open live log window: {e!r}. Full log is still at {log_path}."
+        )
 
 
 def wait_until_ready(
@@ -500,6 +542,7 @@ class OtpServer:
         keep_alive: bool,
         feedback,
         show_console: bool = False,
+        rt_config_cleanup: bool = False,
     ):
         self.java_path = java_path
         self.jar_path = jar_path
@@ -511,6 +554,10 @@ class OtpServer:
         self.keep_alive = keep_alive
         self.feedback = feedback
         self.show_console = show_console
+        # When True, the per-run GTFS-RT router-config.json is deleted on teardown
+        # so a stale RT updater cannot leak into a later fresh static graph build
+        # (RunRealtimeAccessibility sets this; static analysis leaves it False).
+        self.rt_config_cleanup = rt_config_cleanup
         self.proc: Optional[subprocess.Popen] = None
         self.log_path: Optional[Path] = None
 
@@ -531,13 +578,42 @@ class OtpServer:
     def __exit__(self, exc_type, exc, tb) -> None:
         if self.proc is None:
             return
-        if exc_type is not None or not self.keep_alive:
-            self.feedback.pushInfo("Stopping OTP server…")
-            stop_server(self.proc, feedback=self.feedback)
-        else:
-            self.feedback.pushInfo(
-                f"Leaving OTP server running on port {self.port} (KEEP_SERVER_ALIVE=True)."
-            )
+        server_left_running = exc_type is None and self.keep_alive
+        try:
+            if not server_left_running:
+                self.feedback.pushInfo("Stopping OTP server…")
+                stop_server(self.proc, feedback=self.feedback)
+            else:
+                self.feedback.pushInfo(
+                    f"Leaving OTP server running on port {self.port} (KEEP_SERVER_ALIVE=True)."
+                )
+        finally:
+            # Always remove the per-run RT config, even when the server is left
+            # running. OTP reads router-config.json only at boot, so removal cannot
+            # affect the live server — but a leftover RT updater on disk WOULD make a
+            # later static run on the same router_id silently poll the live feed,
+            # breaking the Analysis/Realtime separation (CLAUDE.md). Leak-prevention
+            # outranks keeping the file around for inspection (its contents were
+            # already logged at write time).
+            if self.rt_config_cleanup:
+                self._remove_rt_config()
+
+    def _remove_rt_config(self) -> None:
+        """Delete the per-run GTFS-RT router-config.json from the router dir.
+
+        OTP reads router-config.json only at server start, so removing it after
+        teardown is safe and prevents a stale RT updater from being reused by a
+        later fresh static graph build (ensure_router_config keeps an existing
+        file untouched).
+        """
+        cfg = self.work_dir / "graphs" / self.router_id / "router-config.json"
+        try:
+            cfg.unlink()
+            _log(self.feedback, f"Removed GTFS-RT router-config.json: {cfg}")
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            _log(self.feedback, f"Could not remove {cfg}: {e!r}")
 
 
 __all__ = [

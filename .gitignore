@@ -10,6 +10,13 @@ graphs/
 router-config.json
 build-config.json
 
+# --- GTFS-RT artifacts / rt_diagnose tooling (never versioned) ---
+*.pb
+tools/rt_diagnose/.venv/
+
+# --- Crash artifacts ---
+bash.exe.stackdump
+
 # --- Intermediate and output rasters ---
 *.tif
 *.tiff

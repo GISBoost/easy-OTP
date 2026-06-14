@@ -46,6 +46,29 @@ class OtpClient:
     def get_router_info(self) -> dict:
         return self._get_json(f"{self.base_url}/routers/{self.router}")
 
+    def get_feed_ids(self) -> list:
+        """Return the feed IDs OTP actually loaded for this router.
+
+        Uses the OTP 1.5 index API (``/index/feeds``), which returns a JSON array
+        of feedId strings. RunRealtimeAccessibility logs these so the user can set
+        ``GTFS_RT_FEED_ID`` to a value OTP recognises — a mismatch makes OTP
+        silently ignore the GTFS-RT feed. Raises OtpClientError on transport
+        failure or unexpected payload.
+        """
+        url = f"{self.base_url}/routers/{self.router}/index/feeds"
+        try:
+            with urllib.request.urlopen(url, timeout=self.timeout_s) as resp:  # nosec B310
+                data = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            raise OtpClientError(f"GET {url} returned HTTP {e.code}") from e
+        except (urllib.error.URLError, OSError) as e:
+            raise OtpClientError(f"GET {url} unreachable: {e}") from e
+        except json.JSONDecodeError as e:
+            raise OtpClientError(f"GET {url} returned non-JSON") from e
+        if not isinstance(data, list):
+            raise OtpClientError(f"GET {url} returned non-list payload: {data!r}")
+        return data
+
     def create_surface(
         self,
         *,

@@ -6,9 +6,15 @@ Pure stdlib — no QGIS / GDAL dependency. Run with standard pytest:
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
-from easy_otp.core.time_utils import build_time_list, time_to_filename_slug
+from easy_otp.core.time_utils import (
+    build_time_list,
+    forward_window,
+    time_to_filename_slug,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +77,43 @@ def test_invalid_hours():
     """Hour value out of 0–23 raises ValueError."""
     with pytest.raises(ValueError, match="(?i)hour"):
         build_time_list(25, 0, 22, 0, 1)
+
+
+# ---------------------------------------------------------------------------
+# forward_window — now-anchored realtime window
+# ---------------------------------------------------------------------------
+
+def test_forward_window_normal():
+    """Window starts at now (truncated to the minute) and ends now+horizon."""
+    now = datetime(2026, 6, 15, 10, 33, 47)
+    sh, sm, eh, em, truncated = forward_window(now, 60)
+    assert (sh, sm) == (10, 33)
+    assert (eh, em) == (11, 33)
+    assert truncated is False
+
+
+def test_forward_window_truncates_at_midnight():
+    """A horizon crossing midnight is clamped to 23:59 with truncated=True."""
+    now = datetime(2026, 6, 15, 23, 30, 0)
+    sh, sm, eh, em, truncated = forward_window(now, 60)
+    assert (sh, sm) == (23, 30)
+    assert (eh, em) == (23, 59)
+    assert truncated is True
+
+
+def test_forward_window_feeds_build_time_list():
+    """forward_window output drives build_time_list to a sensible surface count."""
+    now = datetime(2026, 6, 15, 10, 0, 0)
+    sh, sm, eh, em, _ = forward_window(now, 30)
+    times = build_time_list(sh, sm, eh, em, 1)
+    assert times[0] == "10:00:00"
+    assert times[-1] == "10:30:00"
+    assert len(times) == 31
+
+
+def test_forward_window_rejects_nonpositive_horizon():
+    with pytest.raises(ValueError, match="(?i)horizon"):
+        forward_window(datetime(2026, 6, 15, 10, 0, 0), 0)
 
 
 # ---------------------------------------------------------------------------

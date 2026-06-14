@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,6 +35,7 @@ def write_router_config(
     url: str,
     feed_id: str,
     polling_sec: int,
+    fuzzy_matching: bool = False,
 ) -> None:
     """Write ``router-config.json`` with a GTFS-RT updater into ``graph_dir``.
 
@@ -43,24 +45,60 @@ def write_router_config(
     ``routingDefaults`` is merged in from the shared ``DEFAULT_ROUTER_CONFIG``;
     without it the analyst surface SPT collapses (confirmed 2026-05-25). The
     updater uses the OTP 1.5.0 ``stop-time-updater`` / ``gtfs-http`` tokens.
+
+    When ``fuzzy_matching`` is True, ``"fuzzyTripMatching": true`` is added so OTP
+    matches TripUpdates by route/direction/start-time instead of exact trip_id —
+    necessary when the static GTFS and the live RT feed are from different editions
+    (their trip_ids don't match), which otherwise yields "Applied 0 trip updates".
+    ``fuzzyTripMatching`` is an OTP 1.5.0 key (do not carry it to OTP 2.x).
     """
+    updater: dict = {
+        "type": "stop-time-updater",
+        "frequencySec": polling_sec,
+        "sourceType": "gtfs-http",
+        "url": url,
+        "feedId": feed_id,
+    }
+    if fuzzy_matching:
+        updater["fuzzyTripMatching"] = True
     config: dict = {
         "routingDefaults": dict(DEFAULT_ROUTER_CONFIG["routingDefaults"]),
-        "updaters": [
-            {
-                "type": "stop-time-updater",
-                "frequencySec": polling_sec,
-                "sourceType": "gtfs-http",
-                "url": url,
-                "feedId": feed_id,
-            }
-        ],
+        "updaters": [updater],
     }
 
     graph_dir.mkdir(parents=True, exist_ok=True)
     (graph_dir / ROUTER_CONFIG_NAME).write_text(
         json.dumps(config, indent=2), encoding="utf-8"
     )
+
+
+_APPLIED_RE = re.compile(r"Applied (\d+) trip updates")
+_NO_PATTERN_RE = re.compile(r"No pattern found for tripId")
+
+
+def summarize_trip_update_log(text: str) -> "tuple[int, int]":
+    """Scan an OTP server log for GTFS-RT application results.
+
+    Returns ``(applied_total, skipped_count)`` where ``applied_total`` is the sum of
+    all ``Applied N trip updates`` lines and ``skipped_count`` is the number of
+    ``No pattern found for tripId`` warnings. A result of ``(0, N>0)`` means the RT
+    feed was fetched but none of it matched the loaded graph — the analysis is
+    effectively static despite the realtime updater being active.
+    """
+    applied_total = sum(int(m) for m in _APPLIED_RE.findall(text))
+    skipped_count = len(_NO_PATTERN_RE.findall(text))
+    return applied_total, skipped_count
+
+
+def count_rt_polls(text: str) -> int:
+    """Number of completed ``Applied N trip updates`` summary lines in an OTP log.
+
+    OTP emits exactly one such line per finished GTFS-RT poll, so a non-zero count
+    means at least one poll has completed. The pre-flight guard uses this to avoid
+    aborting mid-poll: only when a poll has *finished* with 0 applied (and trips
+    were skipped) is the static↔RT edition mismatch conclusive.
+    """
+    return len(_APPLIED_RE.findall(text))
 
 
 def suggest_feed_id(gtfs_zip_path: str) -> str | None:

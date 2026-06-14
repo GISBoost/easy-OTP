@@ -5,6 +5,7 @@ from .download_transit_data import DownloadTransitData
 from .generate_hex_grid import GenerateHexGrid
 from .population_overlay import PopulationOverlay
 from .prepare_student_layer import PrepareStudentLayer
+from .run_realtime_accessibility import RunRealtimeAccessibility
 from .run_temporal_accessibility import RunTemporalAccessibility
 from .test_otp_server import TestOtpServer
 
@@ -16,6 +17,7 @@ __all__ = [
     "GenerateHexGrid",
     "PopulationOverlay",
     "PrepareStudentLayer",
+    "RunRealtimeAccessibility",
     "RunTemporalAccessibility",
     "TestOtpServer",
 ]
