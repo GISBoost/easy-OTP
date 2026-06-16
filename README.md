@@ -18,7 +18,25 @@ Requires **QGIS 3.40 LTR** or newer. No R, no GRASS. One optional `pip install` 
 
 ---
 
-## Download
+## What you need to run an analysis
+
+| Requirement | Version | How to get it |
+|---|---|---|
+| QGIS | 3.40 LTR+ | Install from qgis.org; the plugin uses the bundled Python and GDAL |
+| Java | **8 (1.8)** | Plugin can download it — *Download Java 8 JRE and OpenTripPlanner Jar* (or install manually) |
+| OpenTripPlanner jar | **1.5.0** | Plugin can download it — *Download Java 8 JRE and OpenTripPlanner Jar* (`otp-1.5.0-shaded.jar`) |
+| OSM extract | any | Plugin can download it — *Download transit data* (`.osm.pbf` covering your study area) |
+| GTFS feed(s) | any valid | Plugin can download it — *Download transit data* (one or more `.zip` archives in a folder) |
+
+You don't have to collect everything by hand — the plugin can download Java 8, the OTP
+jar, the OSM extract and GTFS feeds for you after installation (see
+[Getting the prerequisites](#getting-the-prerequisites)).
+
+---
+
+## Installation
+
+### Download
 
 Download the latest release ZIP from GitHub:
 
@@ -28,21 +46,62 @@ Download `easy_otp-0.3.5.zip` from the Assets section. This is the correctly
 structured plugin ZIP — do **not** use the auto-generated "Source code" archives
 on the same page, as those have the wrong directory layout for QGIS.
 
+### Plugin Installation
+
+1. Download `easy_otp-0.3.5.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
+2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
+3. Select the downloaded `easy_otp-0.3.5.zip` and click **Install Plugin**.
+4. After installation, **Plugins → easy-OTP → Enable** (if not enabled
+   automatically).
+5. The algorithms appear in **Processing Toolbox** under the **easy-OTP** group.
+
+### First-run dependency: openpyxl
+
+The **Prepare Student Layer** (R1a) algorithm reads GUS NSP 2021 Excel files
+using the `openpyxl` library. All other algorithms work without it.
+
+When QGIS loads easy-OTP and `openpyxl` is not found in the Python environment,
+a dialog appears with two choices:
+
+- **Yes** — runs `pip install openpyxl` against QGIS's own Python interpreter.
+  Requires internet access. Takes 5–30 seconds. No QGIS restart is needed in
+  most cases.
+- **No** — the plugin loads normally. All algorithms except R1a work without
+  openpyxl; R1a will raise an error if you try to run it without the library.
+
+If automatic installation fails (e.g. in a locked corporate environment), install
+manually from the **OSGeo4W Shell** (Windows) or a terminal with QGIS's Python:
+
+```
+python -m pip install openpyxl
+```
+
+Then restart QGIS.
+
+#### Verify the installation
+
+In the **QGIS Python console** (Plugins → Python Console):
+
+```python
+from openpyxl import load_workbook
+print("openpyxl OK")
+```
+
+If you see `openpyxl OK`, R1a is ready to use.
+
 ---
 
-## Prerequisites
+## Getting the prerequisites
 
-| Requirement | Version | Notes |
-|---|---|---|
-| QGIS | 3.40 LTR+ | Plugin uses the bundled Python and GDAL |
-| Java | **8 (1.8)** | Portable distribution recommended — see below |
-| OpenTripPlanner jar | **1.5.0** | `otp-1.5.0-shaded.jar` — see below |
-| OSM extract | any | `.osm.pbf` covering your study area |
-| GTFS feed(s) | any valid | One or more `.zip` archives in a folder |
+After installing the plugin you can collect the remaining inputs — Java 8, the OTP
+jar, the OSM extract and the GTFS feeds — directly from the Processing Toolbox.
 
----
+### Getting Java 8 and the OTP jar
 
-## Getting Java 8 JRE and OTP Jar (automated) *(new in v0.2)*
+OTP 1.5.0 requires **exactly Java 8** plus the `otp-1.5.0-shaded.jar`. One algorithm
+downloads both.
+
+#### Automated (recommended) *(new in v0.2)*
 
 The easiest way to get both prerequisites is to use the built-in
 **Download Java 8 JRE and OpenTripPlanner Jar** algorithm
@@ -71,12 +130,12 @@ Running the algorithm a second time on the same folder detects existing files
 and exits in seconds (cache hit for each independently), so it is safe to
 re-run.
 
----
+#### Manual fallback
 
-## Getting Java 8 (manual)
+If the automated download fails (firewall, offline setup), get the two files by hand.
 
-OTP 1.5.0 requires **exactly Java 8**. Use a portable (no-installer) build so you
-can keep it separate from any other Java on your machine.
+**Java 8.** Use a portable (no-installer) build so you can keep it separate from any
+other Java on your machine.
 
 1. Go to **Eclipse Temurin releases**:
    `https://adoptium.net/temurin/releases/?version=8`
@@ -92,17 +151,7 @@ can keep it separate from any other Java on your machine.
 
 You will enter this path in the **Java 8 binary** parameter of the plugin.
 
----
-
-## Getting otp-1.5.0-shaded.jar (automated — recommended) *(new in v0.2)*
-
-The **Download Java 8 JRE and OpenTripPlanner Jar** algorithm (see above)
-downloads the OTP jar automatically alongside the JRE. Run it once to get
-both prerequisites in the same destination folder.
-
-## Getting otp-1.5.0-shaded.jar (manual fallback)
-
-If the automated download fails (firewall, offline setup):
+**otp-1.5.0-shaded.jar.**
 
 1. Go to the GitHub Releases page:
    `https://github.com/opentripplanner/OpenTripPlanner/releases/tag/v1.5.0`
@@ -124,9 +173,7 @@ If the automated download fails (firewall, offline setup):
 
 You will enter this path in the **OpenTripPlanner 1.5.0 jar** parameter.
 
----
-
-## Getting OSM and GTFS data (automated) *(new in v0.2)*
+### Getting OSM and GTFS data *(new in v0.2)*
 
 The **Download transit data (OSM + GTFS)** algorithm automates the two most
 tedious data-collection steps: finding the right OSM extract for your study
@@ -134,13 +181,13 @@ area, and finding and downloading the relevant GTFS feeds.
 
 **Processing Toolbox → easy-OTP → Setup → Download transit data (OSM + GTFS)**
 
-### Prerequisites
+#### Prerequisites
 
 A **free Transitland API key** is required to download GTFS data.
 Register at **https://www.transit.land** (no credit card, takes about a minute).
 OSM data from Geofabrik does not require any account.
 
-### Running the algorithm
+#### Running the algorithm
 
 | Parameter | Value |
 |---|---|
@@ -160,7 +207,7 @@ GTFS folder  →  C:\otp\data\gtfs\
 Copy those directly into the **OSM extract** and **GTFS folder** parameters of
 **Run temporal accessibility**.
 
-### Notes
+#### Notes
 
 - **OSM cache:** the OSM extract is cached for 7 days in `DEST_DIR/osm/`.
   Re-running the algorithm on the same folder skips the download and exits in
@@ -173,53 +220,6 @@ Copy those directly into the **OSM extract** and **GTFS folder** parameters of
   than the query area; only city- and sub-regional feeds are downloaded.
 - **Missing operator:** if a local operator is not yet in Transitland, add
   their `.zip` manually to `DEST_DIR/gtfs/` after the algorithm finishes.
-
----
-
-## Plugin Installation
-
-1. Download `easy_otp-0.3.5.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
-2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
-3. Select the downloaded `easy_otp-0.3.5.zip` and click **Install Plugin**.
-4. After installation, **Plugins → easy-OTP → Enable** (if not enabled
-   automatically).
-5. The algorithms appear in **Processing Toolbox** under the **easy-OTP** group.
-
----
-
-## First-run dependency: openpyxl
-
-The **Prepare Student Layer** (R1a) algorithm reads GUS NSP 2021 Excel files
-using the `openpyxl` library. All other algorithms work without it.
-
-When QGIS loads easy-OTP and `openpyxl` is not found in the Python environment,
-a dialog appears with two choices:
-
-- **Yes** — runs `pip install openpyxl` against QGIS's own Python interpreter.
-  Requires internet access. Takes 5–30 seconds. No QGIS restart is needed in
-  most cases.
-- **No** — the plugin loads normally. All algorithms except R1a work without
-  openpyxl; R1a will raise an error if you try to run it without the library.
-
-If automatic installation fails (e.g. in a locked corporate environment), install
-manually from the **OSGeo4W Shell** (Windows) or a terminal with QGIS's Python:
-
-```
-python -m pip install openpyxl
-```
-
-Then restart QGIS.
-
-### Verify the installation
-
-In the **QGIS Python console** (Plugins → Python Console):
-
-```python
-from openpyxl import load_workbook
-print("openpyxl OK")
-```
-
-If you see `openpyxl OK`, R1a is ready to use.
 
 ---
 
@@ -242,7 +242,7 @@ correctly before attempting a full run.
 
 ---
 
-## Example Run
+## Run temporal accessibility (the main algorithm)
 
 ```
 Input data
@@ -286,7 +286,16 @@ A full 1-minute window run (961 surfaces) on Wrocław-sized data takes roughly
 
 ---
 
-## Comparing two scenarios (CompareTemporalAccessibility) *(new in v0.3.5)*
+## Other algorithms
+
+Besides the main analysis, easy-OTP ships several supporting algorithms. The most
+commonly used are documented below. Two helper algorithms are not yet documented in
+detail: **Count reachable minutes from existing surfaces** (`CountFromExistingSurfaces`)
+— recomputes a count raster from a folder of `surface_*.tiff` files without re-running
+OTP — and **Generate hex grid** (`GenerateHexGrid`) — builds the hexagonal grid used by
+the analysis.
+
+### Compare temporal accessibility (CompareTemporalAccessibility) *(new in v0.3.5)*
 
 **Processing Toolbox → easy-OTP → Analysis → Compare temporal accessibility**
 
@@ -309,9 +318,7 @@ cell that gained or lost coverage entirely is not silently treated as zero
 change. The output hex layer is styled automatically with the bundled
 `easy_otp/styles/delta_class.qml`.
 
----
-
-## Preparing the population layer (R1a) *(new in v0.2)*
+### Preparing the population layer (R1a) *(new in v0.2)*
 
 **Processing Toolbox → easy-OTP → Analysis → Prepare student layer**
 
@@ -329,7 +336,7 @@ The algorithm handles three observed states of GUS NSP 2021 files:
 
 All three states produce identical output when joined with the same geometry layer.
 
-### Parameters
+#### Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -341,7 +348,7 @@ All three states produce identical output when joined with the same geometry lay
 | **Output field name** | `pop20_29` | Name of the added Double field in the output layer |
 | **Output layer** | — | Polygon layer with `pop20_29` (Double) added |
 
-### End-to-end example (R1a → R1b)
+#### End-to-end example (R1a → R1b)
 
 ```
 Input files
@@ -389,9 +396,7 @@ area-interpolated number of students aged 20–29 per hexagon.
 > in key values may be lost. Convert the field to text (`$str(OBWOD)` in the
 > Field Calculator) before running R1a, or use the original GeoJSON directly.
 
----
-
-## Population overlay (R1b) *(new in v0.2)*
+### Population overlay (R1b) *(new in v0.2)*
 
 **Processing Toolbox → easy-OTP → Analysis → Population overlay**
 
@@ -439,11 +444,11 @@ python -m pytest easy_otp/test/test_raster_processing.py -v
 
 ### "OTP 1.5.0 requires Java 8; detected version X"
 Your `Java 8 binary` parameter points to a different Java version. Follow the
-[Getting Java 8](#getting-java-8) section and update the parameter.
+[Getting Java 8 and the OTP jar](#getting-java-8-and-the-otp-jar) section and update the parameter.
 
 ### "OTP 1.5.0 jar not found at: ..."
 The path in `OpenTripPlanner 1.5.0 jar` is wrong or the file has not been
-downloaded. Follow the [Getting otp-1.5.0-shaded.jar](#getting-otp-150-shaded-jar)
+downloaded. Follow the [Getting Java 8 and the OTP jar](#getting-java-8-and-the-otp-jar)
 section.
 
 ### "Port 8801 is held by a non-OTP process"
@@ -469,3 +474,48 @@ the start of the run:
 On Windows, open Task Manager and end any `java.exe` processes manually.
 Under normal circumstances (including user-initiated Cancel) the plugin
 terminates the OTP process automatically.
+
+---
+
+## Roadmap
+
+This is an indicative plan and may change. Released features (arrive-by analysis,
+XLSX/CSV report export, scenario comparison, population overlays R1a/R1b, and the
+Java/OTP/data downloaders) are already part of v0.3.5. Planned and in-progress work:
+
+- **Realtime accessibility** (`RunRealtimeAccessibility`) — service time from actual
+  GTFS-RT delays instead of the planned timetable (v0.4, in progress on `feat/rt1-fix`).
+- **GTFS-RT recording + realized timetable** (`RecordGtfsRt`, `BuildRealizedGtfs`) —
+  archive RT snapshots and reconstruct a "realized" timetable for re-analysis (v0.5).
+- **Validate GTFS feed** — diagnostic Setup algorithm checking feed correctness before analysis.
+- **Multi-destination accessibility** — accessibility to many destinations at once
+  (e.g. all hospitals or all campuses).
+- **Walk-only isochrone** — static pedestrian isochrone as a baseline.
+- **H3 grid** — H3 grid indexing alongside the plain hexagonal grid.
+- **Car Dependency Index (CDI)** — car-vs-transit accessibility contrast module.
+- **R5 engine (r5py)** — a faster engine for multi-origin analyses (likely a separate
+  `easy-r5` plugin).
+- **Quality-of-life** — arbitrary sampling interval (today only 1/15/60 min),
+  algorithm-order cleanup, and minor UX improvements.
+
+Tasks are tracked in [GitHub Issues](../../issues) — contributions and feedback are welcome.
+
+---
+
+## Known issues
+
+A few confirmed limitations to be aware of:
+
+- **Count raster vs original R reference** — the count algorithm is unit-tested and
+  considered correct, but a controlled 1:1 comparison against the original R workflow
+  (`wro_under_30.tif`) is not yet closed.
+- **Sampling interval limited to 1 / 15 / 60 min** — no intermediate value (e.g. 5 or
+  10 min) yet.
+- **`maxWalkDistance` has no effect in analyst mode** — an OTP 1.5.0 limitation
+  (the shortest-path tree is bounded by time, not distance); won't fix.
+- **Mixing surface runs in one folder** — `CountFromExistingSurfaces` trusts the folder
+  contents, so surfaces from different runs (different intervals/dates) in one folder give
+  wrong results. Point it at a clean single-run subfolder.
+
+See [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) for the full (non-exhaustive) list and the
+[issue tracker](../../issues) for progress.
