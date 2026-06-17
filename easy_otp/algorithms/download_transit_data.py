@@ -112,7 +112,7 @@ class DownloadTransitData(QgsProcessingAlgorithm):
         return self.tr("Download transit data (OSM + GTFS)")
 
     def group(self) -> str:
-        return self.tr("Setup")
+        return self.tr("1 · Setup")
 
     def groupId(self) -> str:  # noqa: N802
         return "setup"

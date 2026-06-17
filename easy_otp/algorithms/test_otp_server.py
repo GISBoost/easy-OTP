@@ -32,7 +32,7 @@ class TestOtpServer(QgsProcessingAlgorithm):
         return self.tr("Test OTP server")
 
     def group(self) -> str:
-        return self.tr("Diagnostics")
+        return self.tr("2 · Diagnostics")
 
     def groupId(self) -> str:  # noqa: N802
         return "diagnostics"

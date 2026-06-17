@@ -136,7 +136,7 @@ class GenerateHexGrid(QgsProcessingAlgorithm):
         return self.tr("Generate hexagonal grid")
 
     def group(self) -> str:
-        return self.tr("Analysis")
+        return self.tr("3 · Analysis")
 
     def groupId(self) -> str:  # noqa: N802 — Qt API name
         return "analysis"

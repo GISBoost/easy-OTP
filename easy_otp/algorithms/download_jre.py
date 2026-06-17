@@ -74,7 +74,7 @@ class DownloadJre(QgsProcessingAlgorithm):
         return self.tr("Download Java 8 JRE and OpenTripPlanner Jar")
 
     def group(self) -> str:
-        return self.tr("Setup")
+        return self.tr("1 · Setup")
 
     def groupId(self) -> str:  # noqa: N802
         return "setup"
