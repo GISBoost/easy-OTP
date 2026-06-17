@@ -45,9 +45,33 @@ def test_60min_window():
     assert result[-1] == "22:00:00"
 
 
+def test_5min_window():
+    """06:00–22:00 at 5 min → 193 entries with correct endpoints."""
+    result = build_time_list(6, 0, 22, 0, 5)
+    assert len(result) == 193
+    assert result[0] == "06:00:00"
+    assert result[-1] == "22:00:00"
+
+
+def test_10min_window():
+    """06:00–22:00 at 10 min → 97 entries with correct endpoints."""
+    result = build_time_list(6, 0, 22, 0, 10)
+    assert len(result) == 97
+    assert result[0] == "06:00:00"
+    assert result[-1] == "22:00:00"
+
+
+def test_30min_window():
+    """06:00–22:00 at 30 min → 33 entries with correct endpoints."""
+    result = build_time_list(6, 0, 22, 0, 30)
+    assert len(result) == 33
+    assert result[0] == "06:00:00"
+    assert result[-1] == "22:00:00"
+
+
 def test_single_entry():
     """start == end → list with exactly one entry."""
-    result = build_time_list(10, 30, 10, 30, 15)
+    result = build_time_list(10, 30, 10, 30, 7)
     assert result == ["10:30:00"]
 
 
@@ -67,10 +91,16 @@ def test_end_before_start():
         build_time_list(22, 0, 6, 0, 1)
 
 
-def test_invalid_interval():
-    """Interval not in {1, 15, 60} raises ValueError."""
+def test_interval_zero_raises():
+    """interval_minutes=0 raises ValueError."""
     with pytest.raises(ValueError, match="(?i)interval"):
-        build_time_list(6, 0, 22, 0, 5)
+        build_time_list(6, 0, 22, 0, 0)
+
+
+def test_interval_negative_raises():
+    """interval_minutes=-1 raises ValueError."""
+    with pytest.raises(ValueError, match="(?i)interval"):
+        build_time_list(6, 0, 22, 0, -1)
 
 
 def test_invalid_hours():

@@ -27,7 +27,6 @@ from qgis.core import (
     QgsProcessingException,
     QgsProcessingParameterBoolean,
     QgsProcessingParameterDefinition,
-    QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFile,
     QgsProcessingParameterFileDestination,
@@ -63,7 +62,7 @@ from ..core.otp_server import (
 )
 from ..core.raster_processing import build_surface_vrt, count_below_threshold
 from ..core.surface_runner import SurfaceJobParams, run_surface_loop
-from ..core.time_utils import INTERVAL_MINUTES, build_time_list, forward_window
+from ..core.time_utils import build_time_list, forward_window
 from ..core.zonal import classify_service_time, log_summary_stats, run_zonal_stats
 from .generate_hex_grid import build_hex_grid, extent_of_count_nonzero
 
@@ -116,8 +115,6 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
     EXPORT_REPORT = "EXPORT_REPORT"
     REPORT_PATH = "REPORT_PATH"
 
-    INTERVAL_CHOICES = ["1 min", "15 min", "60 min"]
-
     def tr(self, string: str) -> str:
         return QCoreApplication.translate("Processing", string)
 
@@ -128,7 +125,7 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         return self.tr("Run realtime accessibility")
 
     def group(self) -> str:
-        return self.tr("Realtime")
+        return self.tr("4 · Realtime")
 
     def groupId(self) -> str:  # noqa: N802 — Qt API name
         return "realtime"
@@ -286,11 +283,12 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
-            QgsProcessingParameterEnum(
+            QgsProcessingParameterNumber(
                 self.INTERVAL,
-                self.tr("Sampling interval"),
-                options=[self.tr(s) for s in self.INTERVAL_CHOICES],
-                defaultValue=0,
+                self.tr("Sampling interval (minutes)"),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=1,
+                minValue=1,
             )
         )
         self.addParameter(
@@ -591,13 +589,11 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         qdate = QDate(now.year, now.month, now.day)
         horizon_min = self.parameterAsInt(parameters, self.RT_HORIZON_MIN, context)
 
-        interval_idx = self.parameterAsEnum(parameters, self.INTERVAL, context)
-        try:
-            interval_min = INTERVAL_MINUTES[interval_idx]
-        except KeyError as e:
+        interval_min = self.parameterAsInt(parameters, self.INTERVAL, context)
+        if interval_min > horizon_min:
             raise QgsProcessingException(self.tr(
-                f"Unsupported sampling interval index: {interval_idx}."
-            )) from e
+                f"Sampling interval ({interval_min} min) is longer than the RT horizon ({horizon_min} min)."
+            ))
         try:
             sh, sm, eh, em, truncated = forward_window(now, horizon_min)
             time_list = build_time_list(sh, sm, eh, em, interval_min)

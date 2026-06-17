@@ -14,7 +14,6 @@ from qgis.core import (
     QgsProcessingParameterBoolean,
     QgsProcessingParameterDateTime,
     QgsProcessingParameterDefinition,
-    QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFile,
     QgsProcessingParameterFileDestination,
@@ -44,7 +43,7 @@ from ..core.otp_server import (
 )
 from ..core.raster_processing import build_surface_vrt, count_below_threshold
 from ..core.surface_runner import SurfaceJobParams, run_surface_loop
-from ..core.time_utils import INTERVAL_MINUTES, build_time_list
+from ..core.time_utils import build_time_list
 from ..core.zonal import classify_service_time, log_summary_stats, run_zonal_stats
 from .generate_hex_grid import build_hex_grid, extent_of_count_nonzero
 
@@ -90,8 +89,6 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
     EXPORT_REPORT = "EXPORT_REPORT"
     REPORT_PATH = "REPORT_PATH"
 
-    INTERVAL_CHOICES = ["1 min", "15 min", "60 min"]
-
     def tr(self, string: str) -> str:
         return QCoreApplication.translate("Processing", string)
 
@@ -102,7 +99,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
         return self.tr("Run temporal accessibility")
 
     def group(self) -> str:
-        return self.tr("Analysis")
+        return self.tr("3 · Analysis")
 
     def groupId(self) -> str:  # noqa: N802 — Qt API name
         return "analysis"
@@ -200,11 +197,12 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
-            QgsProcessingParameterEnum(
+            QgsProcessingParameterNumber(
                 self.INTERVAL,
-                self.tr("Sampling interval"),
-                options=[self.tr(s) for s in self.INTERVAL_CHOICES],
-                defaultValue=0,
+                self.tr("Sampling interval (minutes)"),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=1,
+                minValue=1,
             )
         )
         self.addParameter(
@@ -491,13 +489,15 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             raw_end if isinstance(raw_end, QTime)
             else self.parameterAsDateTime(parameters, self.TIME_END, context).time()
         )
-        interval_idx = self.parameterAsEnum(parameters, self.INTERVAL, context)
-        try:
-            interval_min = INTERVAL_MINUTES[interval_idx]
-        except KeyError as e:
+        interval_min = self.parameterAsInt(parameters, self.INTERVAL, context)
+        window_min = (
+            (end_t.hour() * 60 + end_t.minute())
+            - (start_t.hour() * 60 + start_t.minute())
+        )
+        if interval_min > window_min:
             raise QgsProcessingException(self.tr(
-                f"Unsupported sampling interval index: {interval_idx}."
-            )) from e
+                f"Sampling interval ({interval_min} min) is longer than the analysis window."
+            ))
         try:
             time_list = build_time_list(
                 start_t.hour(), start_t.minute(),
@@ -509,8 +509,8 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 f"Invalid time window: {e}"
             )) from e
         feedback.pushInfo(self.tr(
-            f"Time window: {len(time_list)} timestamp(s) from "
-            f"{time_list[0]} to {time_list[-1]}, every {interval_min} min."
+            f"Sampling {len(time_list)} surfaces at {interval_min}-min interval "
+            f"({time_list[0]}–{time_list[-1]})."
         ))
 
         self._warn_gtfs_date(gtfs_files, qdt_date.date(), feedback)

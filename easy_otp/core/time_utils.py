@@ -12,12 +12,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-# Map QgsProcessingParameterEnum index (see INTERVAL_CHOICES in
-# RunTemporalAccessibility) to the corresponding interval in minutes.
-INTERVAL_MINUTES: dict[int, int] = {0: 1, 1: 15, 2: 60}
-
-_ALLOWED_INTERVALS = frozenset(INTERVAL_MINUTES.values())
-
 
 def build_time_list(
     start_h: int,
@@ -29,8 +23,8 @@ def build_time_list(
     """Build a deterministic list of HH:MM:SS timestamps from a time window.
 
     The end is inclusive when it lands exactly on the interval grid
-    (the usual case: 06:00 -> 22:00 with interval 1/15/60 min gives
-    961 / 65 / 17 entries respectively, as required by PR section 8.2).
+    (e.g. 06:00–22:00 at 1 min → 961 entries, at 5 min → 193 entries).
+    Any positive integer interval is accepted.
 
     The returned format matches what ``OtpClient.create_surface``
     sends as the ``time`` query parameter.
@@ -38,10 +32,9 @@ def build_time_list(
     Raises ValueError when arguments are invalid; the caller is
     responsible for translating that into a user-facing message.
     """
-    if interval_minutes not in _ALLOWED_INTERVALS:
+    if interval_minutes < 1:
         raise ValueError(
-            f"interval_minutes must be one of {sorted(_ALLOWED_INTERVALS)}, "
-            f"got {interval_minutes}"
+            f"interval_minutes must be >= 1, got {interval_minutes}"
         )
     if not (0 <= start_h < 24 and 0 <= end_h < 24):
         raise ValueError(

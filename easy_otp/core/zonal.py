@@ -117,7 +117,9 @@ def classify_service_time(
 ) -> "QgsVectorLayer":
     """Add ``st_class`` field with 4 service-time categories.
 
-    ``interval_min`` is the sampling interval in minutes (1, 15, or 60).
+    ``interval_min`` is the sampling interval in minutes (any integer >= 1).
+    Accuracy improves with sampling density; intervals > 1 min are approximations
+    (each sample represents ``interval_min`` minutes of service).
     ``n_surfaces`` is the total number of surfaces generated for this run;
     it controls threshold scaling for windows shorter than the reference
     06:00–22:00 window (960 min). Full-window runs are unaffected.

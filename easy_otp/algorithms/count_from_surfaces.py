@@ -24,7 +24,6 @@ from qgis.core import (
     QgsProcessingFeedback,
     QgsProcessingParameterBoolean,
     QgsProcessingParameterDefinition,
-    QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFile,
     QgsProcessingParameterFileDestination,
@@ -35,7 +34,6 @@ from qgis.core import (
 )
 
 from ..core.raster_processing import count_below_threshold
-from ..core.time_utils import INTERVAL_MINUTES
 from ..core.zonal import classify_service_time, log_summary_stats, run_zonal_stats
 from .generate_hex_grid import build_hex_grid, extent_of_count_nonzero
 
@@ -53,8 +51,6 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
     EXPORT_REPORT = "EXPORT_REPORT"
     REPORT_PATH = "REPORT_PATH"
 
-    INTERVAL_CHOICES = ["1 min", "15 min", "60 min"]
-
     def tr(self, string: str) -> str:
         return QCoreApplication.translate("Processing", string)
 
@@ -65,7 +61,7 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
         return self.tr("Count reachable minutes from existing surfaces")
 
     def group(self) -> str:
-        return self.tr("Analysis")
+        return self.tr("3 · Analysis")
 
     def groupId(self) -> str:  # noqa: N802
         return "analysis"
@@ -108,11 +104,12 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
-            QgsProcessingParameterEnum(
+            QgsProcessingParameterNumber(
                 self.INTERVAL,
-                self.tr("Sampling interval of the surfaces"),
-                options=[self.tr(s) for s in self.INTERVAL_CHOICES],
-                defaultValue=0,
+                self.tr("Sampling interval of the surfaces (minutes)"),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=1,
+                minValue=1,
             )
         )
         self.addParameter(
@@ -182,8 +179,7 @@ class CountFromExistingSurfaces(QgsProcessingAlgorithm):
     ) -> dict:
         folder = self.parameterAsString(parameters, self.SURFACES_FOLDER, context)
         threshold_min = self.parameterAsInt(parameters, self.TRAVEL_TIME_THRESHOLD, context)
-        interval_idx = self.parameterAsEnum(parameters, self.INTERVAL, context)
-        interval_min = INTERVAL_MINUTES[interval_idx]
+        interval_min = self.parameterAsInt(parameters, self.INTERVAL, context)
         out_count_str = self.parameterAsOutputLayer(parameters, self.OUTPUT_COUNT_RASTER, context)
 
         # Lexicographic sort == chronological for surface_HH-MM-SS.tiff naming.
