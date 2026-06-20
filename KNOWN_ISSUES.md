@@ -74,6 +74,15 @@ the error text is misleading. **Fix:** add a `window_min <= 0` guard before the 
 check in `run_temporal_accessibility.py`, `compare_temporal_accessibility.py`, and
 `run_realtime_accessibility.py`.
 
+## 8. OTP build fails with `DuplicateEntityException` on GTFS feeds with duplicate IDs
+
+**Severity:** medium. · **Tracker:** [#7](../../issues/7)
+
+OTP 1.5.0 aborts the build (exit code 1) when a GTFS feed has duplicate entity IDs
+(e.g. a repeated `route_id`), and the plugin's generic "OTP --build failed" message
+doesn't pinpoint the cause. **Workaround:** check each feed's `routes.txt` for duplicate
+`route_id` values and fix the offending feed. See [#7](../../issues/7) for details.
+
 ---
 
 This list is not exhaustive. If you hit something not listed here, please open a GitHub issue.
