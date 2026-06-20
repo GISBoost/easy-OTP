@@ -11,8 +11,10 @@ import zipfile
 from pathlib import Path
 
 from easy_otp.core.gtfsrt_config import (
+    assess_rt_effectiveness,
     count_rt_polls,
     suggest_feed_id,
+    summarize_rt_log,
     summarize_trip_update_log,
     validate_rt_url,
     write_router_config,
@@ -195,6 +197,178 @@ def test_summarize_log_some_applied():
 def test_summarize_log_empty():
     """No RT lines → (0, 0)."""
     assert summarize_trip_update_log("INFO Grizzly server running.\n") == (0, 0)
+
+
+# ---------------------------------------------------------------------------
+# summarize_rt_log
+# ---------------------------------------------------------------------------
+
+_POZNAN_SNIPPET = (
+    "WARN (TimetableSnapshotSource.java:318) No pattern found for tripId 7_17509^N+, "
+    "skipping TripUpdate.\n"
+    "WARN (TimetableSnapshotSource.java:245) Failed to apply TripUpdate.\n"
+    "INFO (TimetableSnapshotSource.java:250) Applied 0 trip updates.\n"
+    "WARN (TimetableSnapshotSource.java:318) No pattern found for tripId 5_18096^N+, "
+    "skipping TripUpdate.\n"
+    "WARN (TimetableSnapshotSource.java:245) Failed to apply TripUpdate.\n"
+)
+
+_GDANSK_GOOD_SNIPPET = (
+    "ERROR (TripTimes.java:447) Negative running time in TripTimes after stop index 5.\n"
+    "ERROR (Timetable.java:619) TripTimes are non-increasing after applying GTFS-RT "
+    "delay propagation to trip 184202606202049_212_184-04.\n"
+    "WARN (TimetableSnapshotSource.java:245) Failed to apply TripUpdate.\n"
+)
+
+
+def test_summarize_rt_log_poznan_signals():
+    """Poznań data-mismatch: no_pattern>0, applied_polling==0, non_increasing==0."""
+    signals = summarize_rt_log(_POZNAN_SNIPPET)
+    assert signals["no_pattern"] == 2
+    assert signals["applied_polling"] == 0
+    assert signals["non_increasing"] == 0
+    assert signals["failed_apply"] == 2
+    assert signals["polls"] == 1  # one "Applied 0" line
+
+
+def test_summarize_rt_log_gdansk_good_signals():
+    """Gdańsk matched-but-rejected: non_increasing>0, no_pattern==0."""
+    signals = summarize_rt_log(_GDANSK_GOOD_SNIPPET)
+    # "Negative running time" + "non-increasing" — both match _NON_INCREASING_RE
+    assert signals["non_increasing"] == 2
+    assert signals["no_pattern"] == 0
+    assert signals["failed_apply"] == 1
+    assert signals["applied_polling"] == 0
+    assert signals["polls"] == 0
+
+
+def test_summarize_rt_log_polling_path_positive():
+    """PollingStoptimeUpdater path: Applied N>0 → applied_polling summed correctly."""
+    text = (
+        "INFO Applied 5 trip updates.\n"
+        "INFO Applied 3 trip updates.\n"
+        "WARN No pattern found for tripId X, skipping TripUpdate.\n"
+    )
+    signals = summarize_rt_log(text)
+    assert signals["applied_polling"] == 8
+    assert signals["no_pattern"] == 1
+    assert signals["polls"] == 2
+
+
+def test_summarize_rt_log_empty_log():
+    """Startup-only log (no RT lines) → all zeros."""
+    signals = summarize_rt_log("INFO Grizzly server running.\n")
+    assert signals == {
+        "applied_polling": 0,
+        "no_pattern": 0,
+        "failed_apply": 0,
+        "non_increasing": 0,
+        "polls": 0,
+    }
+
+
+def test_summarize_rt_log_caps_at_2mb():
+    """Text longer than 2 MB is tail-truncated before matching."""
+    # Build >2 MB of junk followed by one signal line.
+    padding = "X" * (2_100_000)
+    text = padding + "\nWARN (TimetableSnapshotSource.java:245) Failed to apply TripUpdate.\n"
+    signals = summarize_rt_log(text)
+    assert signals["failed_apply"] == 1
+
+
+# ---------------------------------------------------------------------------
+# assess_rt_effectiveness
+# ---------------------------------------------------------------------------
+
+def _sigs(**kwargs) -> dict:
+    """Build a signals dict with zero defaults, overridden by kwargs."""
+    base = {
+        "applied_polling": 0,
+        "no_pattern": 0,
+        "failed_apply": 0,
+        "non_increasing": 0,
+        "polls": 0,
+    }
+    base.update(kwargs)
+    return base
+
+
+def test_assess_poznan_data_mismatch():
+    """no_pattern>0, non_increasing==0 → not effective (0)."""
+    signals = _sigs(no_pattern=170, failed_apply=171, polls=1)
+    assert assess_rt_effectiveness(signals, {}) == 0
+
+
+def test_assess_gdansk_good_non_increasing():
+    """non_increasing>0 → effective (1), regardless of failed_apply or updaters."""
+    signals = _sigs(non_increasing=9, failed_apply=9)
+    assert assess_rt_effectiveness(signals, {}) == 1
+
+
+def test_assess_polling_path_positive():
+    """applied_polling>0 → effective (1)."""
+    signals = _sigs(applied_polling=5, no_pattern=1)
+    assert assess_rt_effectiveness(signals, {}) == 1
+
+
+def test_assess_silent_success_with_updater():
+    """All signals zero but updater registered → effective (1, best-effort)."""
+    signals = _sigs()
+    updaters = {"0": "Streaming stoptime updater with update source = GtfsRealtime"}
+    assert assess_rt_effectiveness(signals, updaters) == 1
+
+
+def test_assess_inconclusive_no_signals_no_updater():
+    """All signals zero, no updater info → inconclusive (-1)."""
+    assert assess_rt_effectiveness(_sigs(), {}) == -1
+
+
+def test_assess_mixed_no_pattern_and_non_increasing():
+    """non_increasing>0 beats no_pattern>0 — rule 2 fires before rule 3."""
+    signals = _sigs(no_pattern=5, non_increasing=3, failed_apply=8)
+    assert assess_rt_effectiveness(signals, {}) == 1
+
+
+def test_assess_failed_apply_no_no_pattern():
+    """failed_apply>0 with no_pattern==0 → effective (rule 4)."""
+    signals = _sigs(failed_apply=2)
+    assert assess_rt_effectiveness(signals, {}) == 1
+
+
+def test_assess_updater_present_but_data_mismatch():
+    """no_pattern>0 beats non-empty updaters — rule 3 fires before rule 5."""
+    signals = _sigs(no_pattern=5, failed_apply=5)
+    updaters = {"0": "Streaming stoptime updater with update source = GtfsRealtime"}
+    assert assess_rt_effectiveness(signals, updaters) == 0
+
+
+# ---------------------------------------------------------------------------
+# Fixture-based integration tests (skipped if log files absent)
+# ---------------------------------------------------------------------------
+
+def test_summarize_rt_log_poznan_fixture():
+    """Verdict against the committed Poznań evidence log."""
+    log = Path(__file__).parent.parent.parent / "docs" / "serverlog" / "otp_server_56053e4b_(poznan).log"
+    if not log.exists():
+        import pytest
+        pytest.skip("Poznań fixture log not present in docs/serverlog/")
+    signals = summarize_rt_log(log.read_text(encoding="utf-8", errors="replace"))
+    assert signals["no_pattern"] > 0
+    assert signals["applied_polling"] == 0
+    assert signals["non_increasing"] == 0
+    assert assess_rt_effectiveness(signals, {}) == 0
+
+
+def test_summarize_rt_log_gdansk_good_fixture():
+    """Verdict against the committed Gdańsk good-run evidence log."""
+    log = Path(__file__).parent.parent.parent / "docs" / "serverlog" / "otp_server_e3327fe0_20260620-205143(gdansk).log"
+    if not log.exists():
+        import pytest
+        pytest.skip("Gdańsk fixture log not present in docs/serverlog/")
+    signals = summarize_rt_log(log.read_text(encoding="utf-8", errors="replace"))
+    assert signals["non_increasing"] > 0
+    assert signals["no_pattern"] == 0
+    assert assess_rt_effectiveness(signals, {}) == 1
 
 
 # ---------------------------------------------------------------------------

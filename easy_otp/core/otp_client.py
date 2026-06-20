@@ -69,6 +69,25 @@ class OtpClient:
             raise OtpClientError(f"GET {url} returned non-list payload: {data!r}")
         return data
 
+    def get_updaters(self) -> dict:
+        """Return the active updater status dict, or {} on any failure.
+
+        GET /otp/routers/{router}/updaters returns a JSON object such as
+        {"0": "Streaming stoptime updater with update source = GtfsRealtime…"}.
+        A non-empty dict proves at least one updater is registered and live.
+
+        All network and parse failures return {} — updater liveness is a
+        best-effort signal, not a hard requirement for the pipeline.
+        """
+        url = f"{self.base_url}/routers/{self.router}/updaters"
+        try:
+            data = self._get_json(url)
+        except OtpClientError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return data
+
     def create_surface(
         self,
         *,

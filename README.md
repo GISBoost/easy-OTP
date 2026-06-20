@@ -518,5 +518,15 @@ A few confirmed limitations to be aware of:
   contents, so surfaces from different runs (different intervals/dates) in one folder give
   wrong results. Point it at a clean single-run subfolder.
 
+- **RT-1 infeasible for Poznań and Kraków** — the live GTFS-RT TripUpdates feed uses
+  trip_ids from a pipeline independent of the static GTFS (zero overlap). OTP logs
+  `No pattern found for tripId` for every update; output is correctly marked
+  `RT-NOT-APPLIED_`. Fix planned for v0.5 (RT-2/RT-3 path). Confirmed working city:
+  **Gdańsk** ([#10](../../issues/10)).
+- **Gdańsk (and similar feeds): same-day static GTFS required** — trip_ids encode the
+  service date and regenerate daily; a stale static from the previous day causes all RT
+  matches to fail silently. Re-download the static GTFS and rebuild the OTP graph on the
+  same day as each `RunRealtimeAccessibility` session ([#11](../../issues/11)).
+
 See [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) for the full (non-exhaustive) list and the
 [issue tracker](../../issues) for progress.
