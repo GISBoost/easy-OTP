@@ -39,9 +39,9 @@ from qgis.core import (
 )
 
 from ..core.gtfsrt_config import (
-    count_rt_polls,
+    assess_rt_effectiveness,
     suggest_feed_id,
-    summarize_trip_update_log,
+    summarize_rt_log,
     validate_rt_url,
     write_router_config,
 )
@@ -153,8 +153,10 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
             "at the moment of the run. The output layer is tagged "
             "analysis_type = \"realtime\".\n"
             "- The feedId must match the feed_id OTP assigns to the static GTFS "
-            "(from feed_info.txt, or an OTP-generated id when that column is "
-            "absent), or OTP silently ignores the RT feed.\n"
+            "(from feed_info.txt, or an OTP-generated numeric id such as '1' when "
+            "that column is absent). A numeric feedId is correct — it is not an "
+            "error. Check the OTP log line 'Feed IDs loaded' or use "
+            "/otp/routers/<id>/index/feeds to confirm.\n"
             "- The static GTFS MUST be the official agency edition covering today, "
             "from the SAME source as the live feed, downloaded close in time to it. "
             "For ZTM Poznań that is getGTFSFile "
@@ -163,8 +165,17 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
             "mkuran.pl) regenerate trip_ids and will NEVER match the live feed, so "
             "OTP applies 0 updates and the result is silently static. Use "
             "tools/rt_diagnose/compare_rt_vs_static.py to confirm a pairing.\n"
+            "- For Gdańsk ZTM (Open Data CKAN feed): trip_ids embed the service "
+            "date, so you must re-download the static GTFS the same day as the .pb. "
+            "feedId=1 is correct (feed_info.txt has no feed_id column).\n"
             "- Cities without a TripUpdates feed (e.g. Wrocław, Warszawa) will "
-            "produce a warning and fall back to static-like results."
+            "produce a warning and fall back to static-like results.\n\n"
+            "Fuzzy trip matching: matches RT updates by route/direction/start-time "
+            "when trip_ids differ. A last resort — with an official static GTFS "
+            "matched to the live feed, exact trip_id matching should work. Requires "
+            "the live .pb to carry route_id + start_time.\n"
+            "Auto-detect feedId: reads feed_id from feed_info.txt. Many agencies "
+            "omit that column, so OTP generates its own id — enter it manually then."
         )
 
     def initAlgorithm(self, config=None):  # noqa: N802 — Qt API name
@@ -226,8 +237,10 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         _feed_id_param = QgsProcessingParameterString(
             self.GTFS_RT_FEED_ID,
             self.tr(
-                "GTFS-RT feedId (must match the feed_id OTP assigns to the "
-                "static GTFS; leave blank to try Auto-detect)"
+                "GTFS-RT feedId (must match the feed_id OTP assigns to the static GTFS; "
+                "leave blank to try Auto-detect). When feed_info.txt has no feed_id "
+                "column, OTP assigns a numeric id such as '1' — that is correct, not "
+                "an error. Confirmed working: Gdańsk ZTM with feedId=1."
             ),
             optional=True,
         )
@@ -235,10 +248,7 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterBoolean(
                 self.AUTO_DETECT_FEED_ID,
-                self.tr(
-                    "Auto-detect feedId from feed_info.txt (best-effort; many "
-                    "feeds omit feed_id — then enter the id OTP assigns manually)"
-                ),
+                self.tr("Auto-detect feedId from feed_info.txt (best-effort)"),
                 defaultValue=False,
             )
         )
@@ -256,11 +266,7 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
             QgsProcessingParameterBoolean(
                 self.GTFS_RT_FUZZY_MATCHING,
                 self.tr(
-                    "Fuzzy trip matching (match RT by route/direction/start-time "
-                    "when trip_ids differ). A fallback only: with the official "
-                    "static edition that matches the live feed, exact trip_id "
-                    "matching should just work and fuzzy is unnecessary. Fuzzy also "
-                    "requires the live .pb to carry route_id + start_time."
+                    "Fuzzy trip matching (fallback: match by route/direction/start-time)"
                 ),
                 defaultValue=True,
             )
@@ -491,7 +497,7 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
 
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802 — Qt API name
         self._output_hex_dest_id = None
-        self._rt_effective = 1  # assume effective until _check_rt_applied says otherwise
+        self._rt_effective = -1  # inconclusive until _assess_rt_effectiveness runs
         use_saved = self.parameterAsBool(parameters, self.USE_SAVED_JAVA, context)
         if use_saved:
             saved = QSettings().value("easy_otp/java_path", "")
@@ -721,6 +727,9 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
             router_info = self._log_router_diagnostic(
                 client, feedback, expected_feed_id=feed_id
             )
+            # Fetch updater status once — used later by _assess_rt_effectiveness
+            # to confirm liveness on the silent-success (TimetableSnapshotSource) path.
+            updaters = client.get_updaters()
             # Validate the *served graph* covers now — the GTFS-zip service check
             # can pass while a stale EXISTING_GRAPH_DIR / cached router does not.
             # Reuse the router info already fetched above (one GET, not two — C-4).
@@ -787,16 +796,14 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
                 f"Generated {len(surfaces)} surface(s) in {surfaces_dir}."
             ))
 
-            # Did OTP actually apply any RT updates? If 0 were applied while the
-            # feed was fetched, the surfaces are effectively static (see method).
-            rt_applied = self._check_rt_applied(
-                server_ctx.log_path if server_ctx else None, fuzzy_matching, feedback
+            # Assess whether OTP actually applied RT updates. Tri-state result:
+            # 1=effective, 0=data mismatch (drives RT-NOT-APPLIED_ prefix), -1=inconclusive.
+            rt_effective, rt_applied = self._assess_rt_effectiveness(
+                server_ctx.log_path if server_ctx else None,
+                updaters,
+                fuzzy_matching,
+                feedback,
             )
-            # rt_effective is the unambiguous "did RT actually take effect" flag:
-            # 1 only when at least one update applied. Any other outcome (0 applied,
-            # or an unreadable log) is treated as not-effective — better to under-
-            # claim RT than to let a static-in-disguise result pass as realtime.
-            rt_effective = 1 if rt_applied > 0 else 0
             self._rt_effective = rt_effective
 
             vrt_path = work_dir / "surfaces_stack.vrt"
@@ -951,10 +958,9 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         if dest_id:
             layer = QgsProcessingUtils.mapLayerFromString(dest_id, context)
             if layer:
-                # When no RT update took effect, prefix the layer name so it is
-                # unmistakable in the QGIS layer tree that this "realtime" output is
-                # effectively static (see _check_rt_applied / rt_effective field).
-                if getattr(self, "_rt_effective", 1) == 0 and not layer.name().startswith(
+                # Prefix only on confirmed data-mismatch (rt_effective == 0).
+                # Inconclusive (-1) and effective (1) do NOT get the prefix.
+                if getattr(self, "_rt_effective", -1) == 0 and not layer.name().startswith(
                     "RT-NOT-APPLIED_"
                 ):
                     layer.setName("RT-NOT-APPLIED_" + layer.name())
@@ -1153,43 +1159,69 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
             f"WORK_DIR so a new router_id is built) and rerun."
         ))
 
-    def _check_rt_applied(self, log_path, fuzzy_matching: bool, feedback) -> int:
-        """Report how many GTFS-RT updates OTP applied; warn if none.
+    def _assess_rt_effectiveness(
+        self, log_path, updaters: dict, fuzzy_matching: bool, feedback
+    ) -> "tuple[int, int]":
+        """Assess GTFS-RT effectiveness from OTP 1.5 log signals + updater REST status.
 
-        Reads the OTP server log and counts applied / skipped TripUpdates. Returns
-        the applied total, or -1 when the log can't be read. A result of 0 applied
-        with skipped > 0 means the live feed was fetched but matched nothing in the
-        static graph — the surfaces are effectively static despite the realtime
-        tag, almost always a static↔RT GTFS edition mismatch (trip_ids differ).
+        Returns (rt_effective, rt_applied_count).
+
+        rt_effective:
+           1  — confirmed effective (RT applied, possibly with some validator rejects)
+           0  — confirmed not effective (data mismatch; drives RT-NOT-APPLIED_ prefix)
+          -1  — inconclusive (no signals; no prefix added)
+
+        rt_applied_count is applied_polling (lower bound — 0 for TimetableSnapshotSource
+        success path where updates apply silently; prefer rt_effective as headline flag).
+
+        OTP 1.5 TimetableSnapshotSource only logs explicit "Applied N trip updates" when
+        the poll ends with zero net applications. Silent success (N > 0 applied) is
+        detected via non-increasing-times errors from Timetable.java, which fire AFTER
+        a successful trip_id match.
         """
         if log_path is None:
-            return -1
+            feedback.pushInfo(self.tr(
+                "No OTP server log path available — RT effectiveness could not be "
+                "verified. Check the /otp/routers/<router>/updaters endpoint."
+            ))
+            return -1, 0
+
         try:
-            text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+            text = Path(log_path).read_bytes()[-2_000_000:].decode(
+                "utf-8", errors="replace"
+            )
         except OSError as e:
             feedback.pushWarning(self.tr(f"Could not read OTP log to verify RT: {e}"))
-            return -1
+            return -1, 0
 
-        # A2 diagnostic: surface whether OTP's fuzzy matcher left any trace in the
-        # log. Absence is not proof it never ran (OTP 1.5 is quiet about it), but a
-        # mention helps distinguish "fuzzy engaged and still failed" from "fuzzy
-        # never engaged" when chasing a future 0-applied.
-        if fuzzy_matching:
-            feedback.pushInfo(self.tr(
-                "Fuzzy trip matching was requested; OTP log "
-                + ("mentions fuzzy matching."
-                   if "fuzzy" in text.lower() else
-                   "shows no explicit fuzzy-matcher line (absence is not proof it "
-                   "did not run).")
-            ))
+        signals = summarize_rt_log(text)
+        rt_effective = assess_rt_effectiveness(signals, updaters)
 
-        applied, skipped = summarize_trip_update_log(text)
-        if applied > 0:
-            feedback.pushInfo(self.tr(
-                f"GTFS-RT applied: {applied} trip update(s) took effect "
-                f"({skipped} skipped). Surfaces reflect live conditions."
-            ))
-        elif skipped > 0:
+        applied    = signals["applied_polling"]
+        no_pattern = signals["no_pattern"]
+        failed     = signals["failed_apply"]
+        non_incr   = signals["non_increasing"]
+
+        if rt_effective == 1:
+            if applied > 0:
+                feedback.pushInfo(self.tr(
+                    f"GTFS-RT applied: {applied} trip update(s) took effect "
+                    f"({no_pattern} skipped). Surfaces reflect live conditions."
+                ))
+            elif non_incr > 0 or failed > 0:
+                feedback.pushInfo(self.tr(
+                    f"GTFS-RT applied. Note: {failed} trip update(s) were rejected "
+                    f"by OTP's TripTimes validator (non-increasing times after delay "
+                    f"propagation — known OTP 1.5 limitation, issues #1250/#2780/#2560). "
+                    f"The remaining updates applied silently."
+                ))
+            else:
+                feedback.pushInfo(self.tr(
+                    "GTFS-RT updater is registered and running. No explicit "
+                    "application count is available (TimetableSnapshotSource logs "
+                    "success silently). Treating as effective."
+                ))
+        elif rt_effective == 0:
             extra = (
                 "Fuzzy matching is already on, so the editions are too far apart — "
                 "use a static GTFS matched to the live feed."
@@ -1198,7 +1230,7 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
                 "to the live feed."
             )
             warn = (
-                f"GTFS-RT was fetched but 0 updates were applied ({skipped} "
+                f"GTFS-RT was fetched but 0 updates were applied ({no_pattern} "
                 f"TripUpdates skipped — trip_id not found in the static GTFS). The "
                 f"static feed and the live RT feed are out of sync, so these "
                 f"surfaces are effectively STATIC despite analysis_type='realtime'. "
@@ -1207,15 +1239,16 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
                 f"{extra}"
             )
             QgsMessageLog.logMessage(warn, LOG_TAG, Qgis.Warning)
-            # reportError (non-fatal) so the failure is unmistakable in the QGIS log
-            # without cancelling the run — the user still gets the geometry.
             feedback.reportError(self.tr(warn), fatalError=False)
         else:
             feedback.pushInfo(self.tr(
-                "No GTFS-RT trip updates were seen in the OTP log yet (feed may be "
-                "empty right now, or no poll completed during sampling)."
+                "GTFS-RT effectiveness could not be confirmed from the OTP log "
+                "(no completed poll observed yet, or the feed was empty). "
+                "The output is not prefixed RT-NOT-APPLIED_ — check the OTP server "
+                "log or /otp/routers/<router>/updaters for updater status."
             ))
-        return applied
+
+        return rt_effective, applied
 
     def _preflight_rt_check(
         self, log_path, polling_sec: int, fuzzy_matching: bool, feedback
@@ -1223,40 +1256,55 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         """Abort early if the first completed RT poll applied nothing (best-effort).
 
         Waits up to one polling cycle for OTP's first GTFS-RT poll to finish, then
-        reads the server log. If a poll has *completed* (an ``Applied N`` summary
-        line exists) with 0 applied and trips skipped, the static and live feeds are
-        out of sync — generating every surface would just yield a static result, so
-        we abort with the same guidance the post-run check gives.
+        reads the server log. Recognises both the PollingStoptimeUpdater path
+        (``Applied N`` summary line) and the TimetableSnapshotSource path (validator
+        rejection errors that prove a trip_id match occurred). Aborts only on a
+        confirmed data-mismatch (no_pattern > 0, non_increasing == 0).
 
         Purely an optimisation: a missing log, an unreadable log, cancellation, or
         an inconclusive window all let the run proceed. The post-run
-        ``_check_rt_applied`` remains the authoritative flag (this guard is never the
-        sole correctness mechanism).
+        ``_assess_rt_effectiveness`` remains the authoritative flag.
         """
         if log_path is None:
             return
         import time  # noqa: PLC0415 — local stdlib import, mirrors otp_server usage
 
-        # One poll cycle plus a margin for OTP to flush the summary line.
+        # One poll cycle plus a margin for OTP to flush the first log entries.
         deadline = time.monotonic() + polling_sec + 10
         while time.monotonic() < deadline:
             if feedback.isCanceled():
                 return
             try:
-                text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+                text = Path(log_path).read_bytes()[-2_000_000:].decode(
+                    "utf-8", errors="replace"
+                )
             except OSError:
                 return  # cannot read — never block a run that could succeed
-            applied, skipped = summarize_trip_update_log(text)
+
+            signals = summarize_rt_log(text)
+            applied    = signals["applied_polling"]
+            no_pattern = signals["no_pattern"]
+            failed     = signals["failed_apply"]
+            non_incr   = signals["non_increasing"]
+
             if applied > 0:
                 feedback.pushInfo(self.tr(
                     f"Pre-flight: first GTFS-RT poll applied {applied} update(s) — "
                     f"RT is live; generating surfaces."
                 ))
                 return
-            if skipped > 0 and count_rt_polls(text) > 0:
-                # A poll finished and resolved nothing → conclusive edition mismatch;
-                # fuzzy (if on) already failed for these and later polls match the
-                # same feed against the same graph, so the outcome will not change.
+
+            # TimetableSnapshotSource matched path: validator errors prove trip_id match.
+            if non_incr > 0 or (failed > 0 and no_pattern == 0):
+                feedback.pushInfo(self.tr(
+                    "Pre-flight: GTFS-RT updates matched (OTP validator rejected "
+                    f"{failed} update(s) with non-increasing times — known OTP 1.5 "
+                    "limitation); RT is live. Generating surfaces."
+                ))
+                return
+
+            # Data mismatch: trip_ids in the feed not found in the graph.
+            if no_pattern > 0 and non_incr == 0:
                 extra = (
                     "fuzzy matching is already on, so the editions are too far apart"
                     if fuzzy_matching else
@@ -1264,13 +1312,14 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
                 )
                 raise QgsProcessingException(self.tr(
                     f"Pre-flight aborted before generating surfaces: OTP's first "
-                    f"GTFS-RT poll applied 0 of {skipped} TripUpdates (trip_id not "
+                    f"GTFS-RT poll applied 0 of {no_pattern} TripUpdates (trip_id not "
                     f"found in the static GTFS). The static feed and the live RT feed "
                     f"are different editions, so every surface would be static — "
-                    f"{extra}. Use the official ZTM static edition covering today "
-                    f"(getGTFSFile), downloaded close in time to the .pb, or run "
+                    f"{extra}. Use the official static edition covering today, "
+                    f"downloaded close in time to the .pb, or run "
                     f"tools/rt_diagnose/compare_rt_vs_static.py to confirm the pairing."
                 ))
+
             time.sleep(2.0)
         feedback.pushInfo(self.tr(
             "Pre-flight: no completed RT poll observed yet; proceeding (the post-run "
