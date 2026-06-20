@@ -6,7 +6,7 @@ the plugin generates one travel-time surface, counts how many minutes each hexag
 grid cell is within your travel-time threshold, and classifies cells into four
 service-time categories consistent with the academic literature.
 
-Requires **QGIS 3.40 LTR** or newer. No R, no GRASS. One optional `pip install` (openpyxl) — see below.
+Requires **QGIS 3.22 LTR** or newer. No R, no GRASS. One optional `pip install` (openpyxl) — see below.
 
 ---
 
@@ -34,7 +34,7 @@ on the same page, as those have the wrong directory layout for QGIS.
 
 | Requirement | Version | Notes |
 |---|---|---|
-| QGIS | 3.40 LTR+ | Plugin uses the bundled Python and GDAL |
+| QGIS | 3.22 LTR+ | Plugin uses the bundled Python and GDAL |
 | Java | **8 (1.8)** | Portable distribution recommended — see below |
 | OpenTripPlanner jar | **1.5.0** | `otp-1.5.0-shaded.jar` — see below |
 | OSM extract | any | `.osm.pbf` covering your study area |

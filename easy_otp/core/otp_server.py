@@ -252,7 +252,15 @@ def port_is_free(port: int) -> bool:
 
 def _popen_kwargs() -> dict:
     if sys.platform == "win32":
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        # CREATE_NO_WINDOW suppresses the blank console Windows auto-allocates
+        # when a console app (java.exe) is spawned from a GUI parent (QGIS).
+        # stdout is always redirected to a log file so no output is lost.
+        return {
+            "creationflags": (
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW
+            )
+        }
     return {}
 
 

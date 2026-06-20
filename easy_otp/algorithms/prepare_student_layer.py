@@ -61,8 +61,9 @@ class PrepareStudentLayer(QgsProcessingAlgorithm):
             "Output: a polygon layer with the original geometry attributes plus one "
             "added Double field (default 'pop20_29') — ready for use as "
             "POPULATION_LAYER in the Population overlay (R1b) algorithm.\n\n"
-            "Requires openpyxl. If not installed, use the Easy-OTP settings panel "
-            "and click 'Install openpyxl'.\n\n"
+            "Requires openpyxl. If the automatic install at QGIS startup failed "
+            "(e.g. SSL unavailable in QGIS 3.22), install manually from the "
+            "OSGeo4W Shell: python -m pip install openpyxl — then restart QGIS.\n\n"
             "Input file: download the 'Ludnosc w rejonach statystycznych "
             "i obwodach spisowych' table from the GUS NSP 2021 results page "
             "(stat.gov.pl/spisy-powszechne/nsp-2021/)."
@@ -139,8 +140,9 @@ class PrepareStudentLayer(QgsProcessingAlgorithm):
 
         if not ensure_openpyxl():
             raise QgsProcessingException(self.tr(
-                "openpyxl is not available. Open the Easy-OTP settings panel "
-                "and click 'Install openpyxl', then re-run the algorithm."
+                "openpyxl is not available. If the automatic install at QGIS "
+                "startup failed, install manually from the OSGeo4W Shell: "
+                "python -m pip install openpyxl — then restart QGIS."
             ))
 
         excel_path = self.parameterAsFile(parameters, self.EXCEL_FILE, context)

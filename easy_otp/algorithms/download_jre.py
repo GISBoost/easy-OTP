@@ -269,11 +269,25 @@ class DownloadJre(QgsProcessingAlgorithm):
                 f"Destination folder '{dest}' does not exist. "
                 "Create it first or choose an existing folder."
             ))
-        if not os.access(dest, os.W_OK):
+        # os.access(W_OK) is unreliable on Windows (UAC virtualization can
+        # return True for folders that require admin rights). Try a real write.
+        test = dest / ".easy_otp_write_test"
+        try:
+            test.touch()
+            test.unlink()
+        except PermissionError:
             raise QgsProcessingException(self.tr(
-                f"Destination folder '{dest}' is not writable. "
-                "Check permissions or choose another folder."
-            ))
+                "Cannot write to '{folder}': administrator rights required.\n"
+                "Choose a folder in your user profile instead, for example:\n"
+                "  C:\\Users\\{user}\\Desktop\n"
+                "  C:\\Users\\{user}\\Documents"
+            ).format(folder=dest, user=os.environ.get("USERNAME", "you")))
+        except OSError as exc:
+            raise QgsProcessingException(
+                self.tr("Cannot write to '{folder}': {err}").format(
+                    folder=dest, err=exc
+                )
+            )
 
     def _check_disk(self, dest: Path) -> None:
         free_mb = shutil.disk_usage(dest).free / (1024 * 1024)
