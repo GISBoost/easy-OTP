@@ -106,7 +106,6 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
     EXISTING_GRAPH_DIR = "EXISTING_GRAPH_DIR"
     ROUTER_CONFIG_PATH = "ROUTER_CONFIG_PATH"
     KEEP_SERVER_ALIVE = "KEEP_SERVER_ALIVE"
-    SHOW_OTP_CONSOLE = "SHOW_OTP_CONSOLE"
 
     WORK_DIR = "WORK_DIR"
     OUTPUT_HEX = "OUTPUT_HEX"
@@ -448,13 +447,6 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         )
         self._add_advanced(
             QgsProcessingParameterBoolean(
-                self.SHOW_OTP_CONSOLE,
-                self.tr("Show OTP server in a separate console window (Windows; debugging)"),
-                defaultValue=False,
-            )
-        )
-        self._add_advanced(
-            QgsProcessingParameterBoolean(
                 self.EXPORT_REPORT,
                 self.tr("Export statistics report"),
                 defaultValue=False,
@@ -570,7 +562,6 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         xmx_build = self.parameterAsString(parameters, self.OTP_XMX_BUILD, context) or "2G"
         xmx_serve = self.parameterAsString(parameters, self.OTP_XMX_SERVE, context) or "4G"
         keep_alive = self.parameterAsBool(parameters, self.KEEP_SERVER_ALIVE, context)
-        show_console = self.parameterAsBool(parameters, self.SHOW_OTP_CONSOLE, context)
 
         wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
         pt = self.parameterAsPoint(parameters, self.ORIGIN_POINT, context, wgs84)
@@ -711,7 +702,6 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
                 pointsets_dir=pointsets,
                 keep_alive=keep_alive,
                 feedback=feedback,
-                show_console=show_console,
                 rt_config_cleanup=True,
             )
             server_ctx.__enter__()

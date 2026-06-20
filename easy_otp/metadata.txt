@@ -3,7 +3,7 @@ name=Easy-OTP
 qgisMinimumVersion=3.22
 description=Automated temporal accessibility analysis using OpenTripPlanner.
 about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces (optional XLSX report), CompareTemporalAccessibility (delta analysis between two scenarios), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay, DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
-version=0.3.5
+version=0.3.6
 author=Michal Kaczorowski
 email=michal.kaczorowsx@gmail.com
 license=GPL-2.0-or-later
@@ -16,7 +16,12 @@ tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,t
 homepage=https://github.com/GISBoost/easy-OTP
 repository=https://github.com/GISBoost/easy-OTP
 tracker=https://github.com/GISBoost/easy-OTP/issues
-changelog=0.3.5
+changelog=0.3.6
+    - fix(ux): the OTP server again runs in a visible, closeable Java console
+      window (close it to stop the server); the graph build phase stays
+      windowless. Removed the PowerShell log-tail window and the
+      SHOW_OTP_CONSOLE parameter.
+    0.3.5
     - chore: lower qgisMinimumVersion to 3.22 (verified API/Python compatibility;
       all PyQGIS APIs used since ≤3.14, all Processing IDs since ≤3.16).
     - A-1: arriveBy toggle in RunTemporalAccessibility — analyse arrive-by

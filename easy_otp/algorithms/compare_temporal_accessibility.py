@@ -85,7 +85,6 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
     EXISTING_GRAPH_DIR_A = "EXISTING_GRAPH_DIR_A"
     EXISTING_GRAPH_DIR_B = "EXISTING_GRAPH_DIR_B"
     KEEP_SERVER_ALIVE = "KEEP_SERVER_ALIVE"
-    SHOW_OTP_CONSOLE = "SHOW_OTP_CONSOLE"
 
     WORK_DIR = "WORK_DIR"
     DELTA_POSITIVE_MIN = "DELTA_POSITIVE_MIN"
@@ -416,15 +415,6 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
                 defaultValue=True,
             )
         )
-        self._add_advanced(
-            QgsProcessingParameterBoolean(
-                self.SHOW_OTP_CONSOLE,
-                self.tr(
-                    "Show OTP server in a separate console window (Windows; debugging)"
-                ),
-                defaultValue=False,
-            )
-        )
 
         # --- Working directory and outputs ---
         self.addParameter(
@@ -524,7 +514,6 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
         xmx_build = self.parameterAsString(parameters, self.OTP_XMX_BUILD, context)
         xmx_serve = self.parameterAsString(parameters, self.OTP_XMX_SERVE, context)
         keep_alive = self.parameterAsBool(parameters, self.KEEP_SERVER_ALIVE, context)
-        show_console = self.parameterAsBool(parameters, self.SHOW_OTP_CONSOLE, context)
 
         # --- Origin point ---
         wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -626,7 +615,6 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
             work_dir=work_dir,
             port=port, xmx_build=xmx_build, xmx_serve=xmx_serve,
             keep_alive=False,  # always stop A so port is free for B
-            show_console=show_console,
             time_list=time_list, interval_min=interval_min, threshold_min=threshold_min,
             job=job_a,
             count_path=count_a_path,
@@ -647,7 +635,6 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
             work_dir=work_dir,
             port=port, xmx_build=xmx_build, xmx_serve=xmx_serve,
             keep_alive=keep_alive,
-            show_console=show_console,
             time_list=time_list, interval_min=interval_min, threshold_min=threshold_min,
             job=job_b,
             count_path=count_b_path,
@@ -797,7 +784,6 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
         xmx_build: str,
         xmx_serve: str,
         keep_alive: bool,
-        show_console: bool,
         time_list: list,
         interval_min: int,
         threshold_min: int,
@@ -882,7 +868,6 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
                     pointsets_dir=pointsets,
                     keep_alive=keep_alive,
                     feedback=feedback,
-                    show_console=show_console,
                 )
                 server_ctx.__enter__()
 

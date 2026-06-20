@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import socket
@@ -250,17 +249,23 @@ def port_is_free(port: int) -> bool:
 
 # ---------- subprocess ----------
 
-def _popen_kwargs() -> dict:
+def _popen_kwargs(show_window: bool = False) -> dict:
+    """Windows process-creation flags for an OTP java.exe child.
+
+    Always CREATE_NEW_PROCESS_GROUP (so our cancel/taskkill targets only OTP).
+    When show_window is False (the default, used by the --build phase), also add
+    CREATE_NO_WINDOW to suppress the blank console Windows auto-allocates for a
+    console app spawned from a GUI parent (QGIS). When show_window is True (the
+    --server phase), CREATE_NO_WINDOW is omitted so Windows shows that console
+    window — it serves as the visible "server is alive" indicator and lets the
+    user stop the server by closing it. stdout is redirected to a log file in
+    both cases, so the server window is blank but no output is lost.
+    """
     if sys.platform == "win32":
-        # CREATE_NO_WINDOW suppresses the blank console Windows auto-allocates
-        # when a console app (java.exe) is spawned from a GUI parent (QGIS).
-        # stdout is always redirected to a log file so no output is lost.
-        return {
-            "creationflags": (
-                subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.CREATE_NO_WINDOW
-            )
-        }
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP
+        if not show_window:
+            flags |= subprocess.CREATE_NO_WINDOW
+        return {"creationflags": flags}
     return {}
 
 
@@ -340,17 +345,17 @@ def start_server(
     port: int,
     pointsets_dir: Path,
     feedback,
-    show_console: bool = False,
 ) -> tuple[subprocess.Popen, Path]:
     """Spawn OTP --server --analyst --pointSets. Returns (process, log_path).
 
     OTP's output is ALWAYS redirected to ``otp_server_<router_id>_<timestamp>.log``
     so it survives a crash — the file is available for analysis even after the
-    process (and any console window) is gone. The timestamp keeps each run's log
+    process (and its console window) is gone. The timestamp keeps each run's log
     distinct, so re-running after a crash does not wipe the log the user was told
-    to inspect. When show_console=True on Windows, a separate window is opened that
-    live-tails that same logfile; unlike OTP's own console it stays open after OTP
-    exits, so the final error remains visible.
+    to inspect. On Windows the server is launched with a visible console window
+    (see ``_popen_kwargs(show_window=True)``): it shows that OTP is alive and lets
+    the user stop the server by closing it. The window is blank because output
+    goes to the logfile.
     """
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_path = work_dir / f"otp_server_{router_id}_{stamp}.log"
@@ -379,52 +384,9 @@ def start_server(
         cmd,
         stdout=log_fh,
         stderr=subprocess.STDOUT,
-        **_popen_kwargs(),
+        **_popen_kwargs(show_window=True),
     )
-    if show_console and sys.platform == "win32":
-        _spawn_log_tail_console(log_path, feedback)
     return proc, log_path
-
-
-def _spawn_log_tail_console(log_path: Path, feedback) -> None:
-    """Open a separate Windows console that live-tails the OTP server logfile.
-
-    Replaces attaching OTP directly to its own console (which vanished on crash,
-    taking the visible logs with it). The tail reads the persistent logfile, so it
-    keeps showing output — including the final error — after OTP exits. Best-effort:
-    failure to open the window never breaks the run. The window must be closed
-    manually; the full log is always at ``log_path`` regardless.
-    """
-    # QGIS's bundled environment often has a stripped PATH without System32, so the
-    # bare name "powershell" raises FileNotFoundError under CreateProcess. Resolve
-    # the full path first, then fall back to PATH lookup, then the bare name.
-    ps_full = os.path.join(
-        os.environ.get("SystemRoot", r"C:\Windows"),
-        "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
-    )
-    powershell = ps_full if os.path.isfile(ps_full) else (shutil.which("powershell") or "powershell")
-    # Escape single quotes for the PowerShell single-quoted string literal: a path
-    # like C:\Users\O'Brien\... would otherwise terminate the string early (lost
-    # live view, minor injection). In PS, '' is the literal-quote escape.
-    ps_literal = str(log_path).replace("'", "''")
-    try:
-        subprocess.Popen(
-            [
-                powershell,
-                "-NoExit",
-                "-Command",
-                f"Get-Content -LiteralPath '{ps_literal}' -Wait -Tail 2000",
-            ],
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
-        )
-        feedback.pushInfo(
-            "Live OTP server log opened in a separate window (SHOW_OTP_CONSOLE=True); "
-            "it stays open after a crash so the error remains readable."
-        )
-    except Exception as e:  # noqa: BLE001 — the tail window is a convenience only
-        feedback.pushWarning(
-            f"Could not open live log window: {e!r}. Full log is still at {log_path}."
-        )
 
 
 def wait_until_ready(
@@ -549,7 +511,6 @@ class OtpServer:
         pointsets_dir: Path,
         keep_alive: bool,
         feedback,
-        show_console: bool = False,
         rt_config_cleanup: bool = False,
     ):
         self.java_path = java_path
@@ -561,7 +522,6 @@ class OtpServer:
         self.pointsets_dir = pointsets_dir
         self.keep_alive = keep_alive
         self.feedback = feedback
-        self.show_console = show_console
         # When True, the per-run GTFS-RT router-config.json is deleted on teardown
         # so a stale RT updater cannot leak into a later fresh static graph build
         # (RunRealtimeAccessibility sets this; static analysis leaves it False).
@@ -579,7 +539,6 @@ class OtpServer:
             self.port,
             self.pointsets_dir,
             self.feedback,
-            show_console=self.show_console,
         )
         return self
 
@@ -593,7 +552,10 @@ class OtpServer:
                 stop_server(self.proc, feedback=self.feedback)
             else:
                 self.feedback.pushInfo(
-                    f"Leaving OTP server running on port {self.port} (KEEP_SERVER_ALIVE=True)."
+                    f"OTP server still running on port {self.port} "
+                    f"(PID {self.proc.pid}, KEEP_SERVER_ALIVE=True). To stop it, "
+                    f"close its Java console window, or run any easy-OTP "
+                    f"algorithm with KEEP_SERVER_ALIVE unchecked."
                 )
         finally:
             # Always remove the per-run RT config, even when the server is left
