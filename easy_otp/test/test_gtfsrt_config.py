@@ -341,10 +341,10 @@ def test_assess_failed_apply_no_no_pattern():
 
 def test_summarize_rt_log_poznan_fixture():
     """Verdict against the committed Poznań evidence log."""
-    log = Path(__file__).parent.parent.parent / "docs" / "otp_server_56053e4b_(poznan).log"
+    log = Path(__file__).parent.parent.parent / "docs" / "serverlog" / "otp_server_56053e4b_(poznan).log"
     if not log.exists():
         import pytest
-        pytest.skip("Poznań fixture log not present in docs/")
+        pytest.skip("Poznań fixture log not present in docs/serverlog/")
     signals = summarize_rt_log(log.read_text(encoding="utf-8", errors="replace"))
     assert signals["no_pattern"] > 0
     assert signals["applied_polling"] == 0
@@ -354,10 +354,10 @@ def test_summarize_rt_log_poznan_fixture():
 
 def test_summarize_rt_log_gdansk_good_fixture():
     """Verdict against the committed Gdańsk good-run evidence log."""
-    log = Path(__file__).parent.parent.parent / "docs" / "otp_server_e3327fe0_20260620-205143(gdansk).log"
+    log = Path(__file__).parent.parent.parent / "docs" / "serverlog" / "otp_server_e3327fe0_20260620-205143(gdansk).log"
     if not log.exists():
         import pytest
-        pytest.skip("Gdańsk fixture log not present in docs/")
+        pytest.skip("Gdańsk fixture log not present in docs/serverlog/")
     signals = summarize_rt_log(log.read_text(encoding="utf-8", errors="replace"))
     assert signals["non_increasing"] > 0
     assert signals["no_pattern"] == 0
