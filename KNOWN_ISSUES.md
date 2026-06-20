@@ -84,6 +84,42 @@ Documented in the UI; not fixed. See [#8](../../issues/8) for details.
 The Java/OTP download algorithm supports x64 (Windows / Linux / macOS Intel).
 **Workaround:** install the native build manually. See [#9](../../issues/9) for details.
 
+## 10. RT-1 infeasible for feeds with independent trip\_id namespaces (Poznań, Kraków)
+
+**Severity:** high (makes `RunRealtimeAccessibility` output meaningless for affected cities). · **Tracker:** [#10](../../issues/10)
+
+`RunRealtimeAccessibility` reports `rt_effective=0` / `RT-NOT-APPLIED_` for Poznań and Kraków because the live GTFS-RT TripUpdates feed assigns trip_ids from a pipeline completely independent of the published static GTFS — zero ids overlap, so OTP logs `No pattern found for tripId` for every update. `fuzzyTripMatching` cannot help because the `.pb` lacks `start_time` / `direction_id`.
+
+Diagnostic (2026-06-20, time-matched fresh downloads):
+
+| City | Overlap | Fuzzy feasible? | Verdict |
+|------|---------|-----------------|---------|
+| Poznań (ZTM) | 0 / 333 (static: 35 777 trips) | No — `start_time` / `direction_id` absent | NEITHER |
+| Kraków (ZTP tram) | 0 / 527 | No — different route_id namespace, no `start_time` | NEITHER |
+| **Gdańsk** (Open Gdańsk) | **213 / 213** | N/A | ✅ EXACT-MATCH |
+
+**Workaround:** none for RT-1. Forward path for these cities is RT-2 `RecordGtfsRt` + RT-3 `BuildRealizedGtfs` (v0.5) — record a day's `.pb` snapshots and synthesize a realized static GTFS whose ids match by construction. The output layer is correctly marked `RT-NOT-APPLIED_` so it cannot be mistaken for a realtime result.
+
+## 11. Date-embedded trip\_ids (Gdańsk) require same-day static GTFS re-download
+
+**Severity:** medium (RT silently applies nothing if static is stale). · **Tracker:** [#11](../../issues/11)
+
+Gdańsk trip_ids encode the service date (e.g. `10`**`20260620`**`1957_32_171-01`). The static GTFS regenerates daily with new ids, so a static downloaded yesterday will produce `No pattern found for tripId` for all live TripUpdates — same symptom as the Poznań data-mismatch, even though the same data pair works perfectly when both are fresh (213/213 overlap confirmed 2026-06-20).
+
+**Workaround:** re-download the static GTFS on the same day as each `RunRealtimeAccessibility` session and rebuild the OTP graph. Use `DownloadTransitData` to refresh before each run.
+
+## 12. OTP 1.5 rejects minority of TripUpdates with non-increasing TripTimes
+
+**Severity:** low (minority of trips affected, no data loss). · **Tracker:** [#12](../../issues/12) · **Status:** won't fix — OTP 1.5 limitation.
+
+When OTP 1.5 propagates arrival/departure delays from a TripUpdate, it can produce stop times that are logically impossible (bus arrives before it departed from the previous stop). OTP rejects those specific TripUpdates with `ERROR TripTimes are non-increasing after applying GTFS-RT delay propagation` / `WARN Failed to apply TripUpdate`. Confirmed on Gdańsk (3–5 trips per 60 s poll out of 213). The remaining majority apply silently. OTP upstream issues: #1250, #2780, #2560. Not fixable in the plugin.
+
+## 13. Warszawa, Wrocław, Łódź: no GTFS-RT TripUpdates feed — RT-1 not applicable
+
+**Severity:** n/a. · **Tracker:** [#13](../../issues/13) · **Status:** won't fix — data availability limitation.
+
+These cities publish static GTFS and (in some cases) real-time VehiclePositions or Alerts, but **no GTFS-RT TripUpdates** feed. `RunRealtimeAccessibility` requires TripUpdates to modify scheduled departure/arrival times; without it there is nothing to apply. The algorithm's help text lists the affected cities. The solution for these cities is RT-2 `RecordGtfsRt` + RT-3 `BuildRealizedGtfs` (v0.5).
+
 ---
 
 This list is not exhaustive. If you hit something not listed here, please open a GitHub issue.

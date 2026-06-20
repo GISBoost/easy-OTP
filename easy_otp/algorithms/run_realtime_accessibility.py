@@ -687,16 +687,16 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         # write_router_config overwrites router-config.json to add the
         # stop-time-updater on top of the shared analyst routingDefaults.
         fuzzy_matching = self.parameterAsBool(parameters, self.GTFS_RT_FUZZY_MATCHING, context)
-        write_router_config(router_dir, rt_url, feed_id, polling_sec, fuzzy_matching=fuzzy_matching)
-        rt_config_path = router_dir / "router-config.json"
-        feedback.pushInfo(self.tr(
-            f"Wrote GTFS-RT router-config.json to {router_dir} "
-            f"(feedId={feed_id}, frequencySec={polling_sec}, "
-            f"fuzzyTripMatching={fuzzy_matching})."
-        ))
-
+        rt_config_path = None
         server_ctx = None
         try:
+            write_router_config(router_dir, rt_url, feed_id, polling_sec, fuzzy_matching=fuzzy_matching)
+            rt_config_path = router_dir / "router-config.json"
+            feedback.pushInfo(self.tr(
+                f"Wrote GTFS-RT router-config.json to {router_dir} "
+                f"(feedId={feed_id}, frequencySec={polling_sec}, "
+                f"fuzzyTripMatching={fuzzy_matching})."
+            ))
             feedback.pushInfo(self.tr(f"Starting OTP server on port {port}…"))
             server_ctx = OtpServer(
                 java_path=java,
@@ -941,17 +941,18 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
             # remove it (OtpServer already removes it on its own teardown paths, so
             # this is normally a no-op FileNotFoundError); a leftover RT config must
             # never poison a static analysis on the same router_id.
-            try:
-                rt_config_path.unlink()
-            except FileNotFoundError:
-                pass  # already removed by OtpServer teardown — the normal path
-            except OSError as e:
-                feedback.pushWarning(self.tr(
-                    f"Could not remove RT router-config.json at "
-                    f"{rt_config_path}: {e}. Remove it manually before running a "
-                    f"static analysis on this graph, or the live RT updater will "
-                    f"silently apply."
-                ))
+            if rt_config_path is not None:
+                try:
+                    rt_config_path.unlink()
+                except FileNotFoundError:
+                    pass  # already removed by OtpServer teardown — the normal path
+                except OSError as e:
+                    feedback.pushWarning(self.tr(
+                        f"Could not remove RT router-config.json at "
+                        f"{rt_config_path}: {e}. Remove it manually before running a "
+                        f"static analysis on this graph, or the live RT updater will "
+                        f"silently apply."
+                    ))
 
     def postProcessAlgorithm(self, context, feedback):  # noqa: N802 — Qt API name
         dest_id = getattr(self, "_output_hex_dest_id", None)
@@ -1295,11 +1296,18 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
                 return
 
             # TimetableSnapshotSource matched path: validator errors prove trip_id match.
-            if non_incr > 0 or (failed > 0 and no_pattern == 0):
+            if non_incr > 0:
                 feedback.pushInfo(self.tr(
                     "Pre-flight: GTFS-RT updates matched (OTP validator rejected "
                     f"{failed} update(s) with non-increasing times — known OTP 1.5 "
                     "limitation); RT is live. Generating surfaces."
+                ))
+                return
+            if failed > 0 and no_pattern == 0:
+                feedback.pushInfo(self.tr(
+                    f"Pre-flight: GTFS-RT updates matched (OTP rejected {failed} "
+                    "update(s) during validation — trip_id resolution succeeded); "
+                    "RT is live. Generating surfaces."
                 ))
                 return
 

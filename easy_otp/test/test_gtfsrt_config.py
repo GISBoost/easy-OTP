@@ -335,6 +335,13 @@ def test_assess_failed_apply_no_no_pattern():
     assert assess_rt_effectiveness(signals, {}) == 1
 
 
+def test_assess_updater_present_but_data_mismatch():
+    """no_pattern>0 beats non-empty updaters — rule 3 fires before rule 5."""
+    signals = _sigs(no_pattern=5, failed_apply=5)
+    updaters = {"0": "Streaming stoptime updater with update source = GtfsRealtime"}
+    assert assess_rt_effectiveness(signals, updaters) == 0
+
+
 # ---------------------------------------------------------------------------
 # Fixture-based integration tests (skipped if log files absent)
 # ---------------------------------------------------------------------------
