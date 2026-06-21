@@ -42,15 +42,15 @@ Download the latest release ZIP from GitHub:
 
 **[easy-OTP Releases → https://github.com/GISBoost/easy-OTP/releases/latest](https://github.com/GISBoost/easy-OTP/releases/latest)**
 
-Download `easy_otp-0.3.5.zip` from the Assets section. This is the correctly
+Download `easy_otp-0.4.0.zip` from the Assets section. This is the correctly
 structured plugin ZIP — do **not** use the auto-generated "Source code" archives
 on the same page, as those have the wrong directory layout for QGIS.
 
 ### Plugin Installation
 
-1. Download `easy_otp-0.3.5.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
+1. Download `easy_otp-0.4.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
 2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
-3. Select the downloaded `easy_otp-0.3.5.zip` and click **Install Plugin**.
+3. Select the downloaded `easy_otp-0.4.0.zip` and click **Install Plugin**.
 4. After installation, **Plugins → easy-OTP → Enable** (if not enabled
    automatically).
 5. The algorithms appear in **Processing Toolbox** under the **easy-OTP** group.
@@ -319,6 +319,82 @@ Cells present in only one scenario are written as **NoData** in the delta, so a
 cell that gained or lost coverage entirely is not silently treated as zero
 change. The output hex layer is styled automatically with the bundled
 `easy_otp/styles/delta_class.qml`.
+
+### Realtime algorithms *(new in v0.4)*
+
+Three algorithms under **easy-OTP → Realtime** measure or record what actually
+happened on a given day, instead of what the planned timetable predicted.
+
+**Important:** results from all three algorithms are **non-reproducible** — they
+depend on live network conditions and snapshot data captured at a specific moment.
+Output layers carry `analysis_type = "realtime"` to distinguish them from
+static-analysis results.
+
+#### RunRealtimeAccessibility (RT-1)
+
+**Processing Toolbox → easy-OTP → Realtime → Run realtime accessibility**
+
+Runs the standard temporal-accessibility pipeline but with a live GTFS-RT
+TripUpdates feed wired into OTP's `stop-time-updater`. OTP applies the real-time
+delays before generating each travel-time surface.
+
+Key parameters:
+
+| Parameter | Notes |
+|---|---|
+| **GTFS-RT feed URL** | HTTP(S) endpoint returning a binary `FeedMessage` (.pb) |
+| **Feed ID** | Must match exactly the `feed_id` OTP assigned to the loaded static GTFS (check the build log if unsure) |
+| **All standard RunTemporalAccessibility parameters** | Same as the static analysis |
+
+After the run, the Processing log reports the tri-state RT effectiveness:
+`RT-EFFECTIVE` (delays applied), `RT-NOT-APPLIED` (OTP received updates but
+matched zero trips — e.g. Poznań/Kraków namespace mismatch, see Known Issues),
+or `RT-INCONCLUSIVE` (no update cycles completed).
+
+#### RecordGtfsRt (RT-2)
+
+**Processing Toolbox → easy-OTP → Realtime → Record GTFS-RT feed**
+
+Archives a GTFS-RT TripUpdates feed for offline analysis. Polls the feed at a
+configurable interval and writes raw `.pb` snapshots plus a `recording.json`
+manifest. Intended as input for RT-3.
+
+Key parameters:
+
+| Parameter | Notes |
+|---|---|
+| **GTFS-RT feed URL** | HTTP(S) endpoint |
+| **Output directory** | Folder that will receive `*.pb` files and `recording.json` |
+| **Poll interval** | 15–600 seconds (default 60 s) |
+| **Recording duration** | Minutes to record (Cancel also stops safely) |
+
+Cancel-safe: the manifest is written incrementally so a partial archive is always
+valid input for RT-3.
+
+#### BuildRealizedGtfs (RT-3)
+
+**Processing Toolbox → easy-OTP → Realtime → Build realized GTFS**
+
+Reconstructs a "realized" static GTFS from a RecordGtfsRt archive. Aggregates
+per-stop-pair segment times (keyed by `route_id`, `direction_id`, `from_stop_id`,
+`to_stop_id`) and produces two output GTFS feeds:
+
+- **P50 feed** — median segment times (representative typical day)
+- **P85 feed** — 85th-percentile segment times (pessimistic scenario)
+
+Both output feeds can be passed directly to `RunTemporalAccessibility` to produce
+a realized accessibility surface.
+
+> **Note — google.protobuf required.** On first use, the plugin prompts to
+> bootstrap `google.protobuf` via `dependencies.py` (same mechanism as openpyxl).
+> The install takes 5–30 seconds and does not require admin rights or a QGIS restart.
+> The library is needed only for RT-3; all other algorithms work without it.
+>
+> The output is an **approximation** — only trips with matched stop pairs in both
+> the archive and the static GTFS are reconstructed. Trips with zero RT coverage
+> retain planned times from the static feed.
+
+---
 
 ### Preparing the population layer (R1a) *(new in v0.2)*
 
