@@ -9,6 +9,7 @@ from .algorithms.download_transit_data import DownloadTransitData
 from .algorithms.generate_hex_grid import GenerateHexGrid
 from .algorithms.population_overlay import PopulationOverlay
 from .algorithms.prepare_student_layer import PrepareStudentLayer
+from .algorithms.record_gtfsrt import RecordGtfsRt
 from .algorithms.run_realtime_accessibility import RunRealtimeAccessibility
 from .algorithms.run_temporal_accessibility import RunTemporalAccessibility
 from .algorithms.test_otp_server import TestOtpServer
@@ -27,6 +28,7 @@ class EasyOtpProvider(QgsProcessingProvider):
     def loadAlgorithms(self) -> None:  # noqa: N802 — Qt API name
         self.addAlgorithm(RunTemporalAccessibility())
         self.addAlgorithm(RunRealtimeAccessibility())
+        self.addAlgorithm(RecordGtfsRt())
         self.addAlgorithm(CompareTemporalAccessibility())
         self.addAlgorithm(CountFromExistingSurfaces())
         self.addAlgorithm(GenerateHexGrid())
