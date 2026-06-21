@@ -2,8 +2,8 @@
 name=Easy-OTP
 qgisMinimumVersion=3.22
 description=Automated temporal accessibility analysis using OpenTripPlanner.
-about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces (optional XLSX report), CompareTemporalAccessibility (delta analysis between two scenarios), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay, DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
-version=0.3.6
+about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Analysis algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces, CompareTemporalAccessibility (delta analysis), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay. Realtime algorithms: RunRealtimeAccessibility (RT-1, live GTFS-RT feed integrated into OTP), RecordGtfsRt (RT-2, GTFS-RT TripUpdates archiver for offline analysis). Setup: DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
+version=0.3.7
 author=Michal Kaczorowski
 email=michal.kaczorowsx@gmail.com
 license=GPL-2.0-or-later
@@ -16,7 +16,15 @@ tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,t
 homepage=https://github.com/GISBoost/easy-OTP
 repository=https://github.com/GISBoost/easy-OTP
 tracker=https://github.com/GISBoost/easy-OTP/issues
-changelog=0.3.6
+changelog=0.3.7
+    - feat(realtime): RecordGtfsRt (RT-2) — GTFS-RT TripUpdates snapshot archiver;
+      polls a feed at a configurable interval (15–600 s) and writes raw .pb files
+      plus a recording.json manifest; cancel-safe and partial-archive-safe.
+    - feat(realtime): RunRealtimeAccessibility (RT-1) — live GTFS-RT TripUpdates
+      feed integrated into OTP stop-time-updater; tri-state RT effectiveness
+      detection (effective / not-applied / inconclusive).
+    - fix(deps): install openpyxl via in-process urllib wheel download (no admin).
+    0.3.6
     - fix(ux): the OTP server again runs in a visible, closeable Java console
       window (close it to stop the server); the graph build phase stays
       windowless. Removed the PowerShell log-tail window and the

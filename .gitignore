@@ -12,6 +12,8 @@ build-config.json
 
 # --- GTFS-RT artifacts / rt_diagnose tooling (never versioned) ---
 *.pb
+rt_archive/
+recording.json
 tools/rt_diagnose/.venv/
 
 # --- Crash artifacts ---

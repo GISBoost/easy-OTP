@@ -4,7 +4,10 @@ from qgis.core import QgsApplication
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtWidgets import QMessageBox
 
-from .core.dependencies import ensure_openpyxl, install_openpyxl
+from .core.dependencies import (
+    ensure_openpyxl,
+    install_openpyxl,
+)
 from .provider import EasyOtpProvider
 
 
