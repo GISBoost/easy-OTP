@@ -85,8 +85,8 @@ def write_manifest(
 ) -> None:
     """Write (or overwrite) ``recording.json`` in *directory*.
 
-    RT-3 reads this file to self-configure: it discovers the feed URL,
-    feed_id, and sampling interval without user re-entry.
+    Informational metadata for the archive.  RT-3 does not read this file
+    currently; all required parameters are entered directly in BuildRealizedGtfs.
     """
     manifest = {
         "url": url,

@@ -1,8 +1,10 @@
-"""Bootstrap helper: ensures openpyxl is available in the QGIS Python environment.
+"""Bootstrap helpers for optional dependencies in the QGIS Python environment.
 
 No QGIS or Qt imports — safe to call before QgsApplication is initialised.
-Called by EasyOtpPlugin.initGui() before provider registration.
-This is the sole permitted exception to the project's "zero pip install" rule.
+Two bootstrapped packages are permitted:
+  - openpyxl: called by EasyOtpPlugin.initGui() at plugin startup.
+  - google.protobuf + gtfs-realtime-bindings: called lazily by BuildRealizedGtfs
+    (RT-3 only).  No other algorithm needs this dependency.
 """
 
 import hashlib
@@ -15,11 +17,13 @@ import tempfile
 import urllib.request
 import zipfile
 
-_OPENPYXL_VERSION = "3.1.5"     # requires Python >=3.8; pure-python wheel confirmed
-_ET_XMLFILE_VERSION = "2.0.0"   # sole dependency of openpyxl; requires Python >=3.8
+_OPENPYXL_VERSION = "3.1.5"          # requires Python >=3.8; pure-python wheel confirmed
+_ET_XMLFILE_VERSION = "2.0.0"        # sole dependency of openpyxl; requires Python >=3.8
+_PROTOBUF_VERSION = "3.20.3"         # last 3.x; py2.py3-none-any.whl confirmed on PyPI
+_GTFSRT_BINDINGS_VERSION = "1.0.0"   # requires protobuf>=3.13,<4.0dev; py3-none-any.whl confirmed
 _PYPI_JSON_URL = "https://pypi.org/pypi/{pkg}/{version}/json"
 _WHEEL_USER_AGENT = "easy-OTP/0.3 urllib"
-_HASH_CHUNK = 1 * 1024 * 1024   # 1 MB blocks for SHA-256
+_HASH_CHUNK = 1 * 1024 * 1024        # 1 MB blocks for SHA-256
 
 
 def ensure_openpyxl() -> bool:
@@ -235,6 +239,109 @@ def install_openpyxl() -> tuple[bool, str]:
             "Possible causes: no internet access, or pip SSL unavailable.\n\n"
             "Install manually from the OSGeo4W Shell (Windows):\n\n"
             "    python -m pip install openpyxl\n\n"
+            "Then restart QGIS.",
+        )
+    except subprocess.TimeoutExpired:
+        return False, "pip timed out after 120 s."
+    except OSError as exc:
+        return False, f"Could not launch pip: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# google.protobuf + gtfs-realtime-bindings — RT-3 (BuildRealizedGtfs) only
+# ---------------------------------------------------------------------------
+
+def ensure_gtfsrt_bindings() -> bool:
+    """Return True if google.transit.gtfs_realtime_pb2 is importable."""
+    try:
+        from google.transit import gtfs_realtime_pb2  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _install_gtfsrt_bindings_via_urllib() -> tuple[bool, str]:
+    """Download and extract protobuf + gtfs-realtime-bindings wheels via in-process urllib.
+
+    Same mechanism as _install_openpyxl_via_urllib.  Bypasses child-pip SSL issues.
+    """
+    try:
+        target = _writable_target_dir()
+        for pkg, ver in [
+            ("protobuf", _PROTOBUF_VERSION),
+            ("gtfs-realtime-bindings", _GTFSRT_BINDINGS_VERSION),
+        ]:
+            _fetch_and_extract_wheel(pkg, ver, target)
+        if target not in sys.path:
+            sys.path.insert(0, target)
+        importlib.invalidate_caches()
+        if ensure_gtfsrt_bindings():
+            return True, f"gtfs-realtime-bindings installed via urllib into {target}"
+        return False, "Wheels extracted but gtfs_realtime_pb2 still not importable — restart QGIS."
+    except Exception as exc:
+        return False, f"In-process urllib wheel install failed: {exc}"
+
+
+def install_gtfsrt_bindings() -> tuple[bool, str]:
+    """Install google.protobuf + gtfs-realtime-bindings into the QGIS Python environment.
+
+    Called lazily by BuildRealizedGtfs (RT-3) — the ONLY algorithm that needs this.
+    Three-attempt pattern mirrors install_openpyxl.
+
+    Returns (success: bool, message: str).
+    """
+    ok, msg = _install_gtfsrt_bindings_via_urllib()
+    if ok:
+        return True, msg
+
+    python_exe = _get_python_executable()
+    pkgs = ["protobuf==" + _PROTOBUF_VERSION, "gtfs-realtime-bindings==" + _GTFSRT_BINDINGS_VERSION]
+    base_cmd = [python_exe, "-m", "pip", "install"] + pkgs
+
+    # Attempt 1 — with --user
+    try:
+        result = subprocess.run(  # nosec S603
+            base_cmd + ["--user"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            _add_user_site_to_path()
+            importlib.invalidate_caches()
+            if ensure_gtfsrt_bindings():
+                return True, "gtfs-realtime-bindings installed successfully."
+    except subprocess.TimeoutExpired:
+        return False, "pip --user timed out after 120 s."
+    except OSError:
+        pass
+
+    # Attempt 2 — without --user
+    try:
+        result = subprocess.run(  # nosec S603
+            base_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            importlib.invalidate_caches()
+            if ensure_gtfsrt_bindings():
+                return True, "gtfs-realtime-bindings installed successfully."
+            return (
+                False,
+                "pip reported success but gtfs_realtime_pb2 is still not importable. "
+                "Please restart QGIS and try again.",
+            )
+        stderr = (result.stderr or "").strip()[-500:]
+        return (
+            False,
+            f"Could not install gtfs-realtime-bindings automatically:\n\n{stderr}\n\n"
+            "Both the in-process urllib download and pip have failed.\n"
+            "Possible causes: no internet access, or pip SSL unavailable.\n\n"
+            "Install manually from the OSGeo4W Shell (Windows):\n\n"
+            f"    python -m pip install protobuf=={_PROTOBUF_VERSION} "
+            f"gtfs-realtime-bindings=={_GTFSRT_BINDINGS_VERSION}\n\n"
             "Then restart QGIS.",
         )
     except subprocess.TimeoutExpired:

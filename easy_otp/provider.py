@@ -9,6 +9,7 @@ from .algorithms.download_transit_data import DownloadTransitData
 from .algorithms.generate_hex_grid import GenerateHexGrid
 from .algorithms.population_overlay import PopulationOverlay
 from .algorithms.prepare_student_layer import PrepareStudentLayer
+from .algorithms.build_realized_gtfs import BuildRealizedGtfs
 from .algorithms.record_gtfsrt import RecordGtfsRt
 from .algorithms.run_realtime_accessibility import RunRealtimeAccessibility
 from .algorithms.run_temporal_accessibility import RunTemporalAccessibility
@@ -29,6 +30,7 @@ class EasyOtpProvider(QgsProcessingProvider):
         self.addAlgorithm(RunTemporalAccessibility())
         self.addAlgorithm(RunRealtimeAccessibility())
         self.addAlgorithm(RecordGtfsRt())
+        self.addAlgorithm(BuildRealizedGtfs())
         self.addAlgorithm(CompareTemporalAccessibility())
         self.addAlgorithm(CountFromExistingSurfaces())
         self.addAlgorithm(GenerateHexGrid())
