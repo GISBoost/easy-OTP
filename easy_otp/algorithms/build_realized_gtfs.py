@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 
 from qgis.PyQt.QtCore import QCoreApplication
+from qgis.PyQt.QtWidgets import QMessageBox
 from qgis.core import (
     QgsProcessingAlgorithm,
     QgsProcessingException,
@@ -28,7 +29,7 @@ from qgis.core import (
     QgsProcessingParameterString,
 )
 
-from ..core.dependencies import ensure_gtfsrt_bindings
+from ..core.dependencies import ensure_gtfsrt_bindings, install_gtfsrt_bindings
 from ..core.gtfsrt_realizer import (
     aggregate_segments,
     check_trip_overlap,
@@ -142,15 +143,40 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         )
 
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802 — Qt API name
-        # --- Step 1: dependency check (installed at plugin startup via initGui dialog) ---
+        # --- Step 1: dependency check — offer auto-install on first use ---
         if not ensure_gtfsrt_bindings():
-            raise QgsProcessingException(self.tr(
-                "google.protobuf / gtfs-realtime-bindings is not installed.\n\n"
-                "Install from the OSGeo4W Shell:\n\n"
-                "    python -m pip install protobuf==3.20.3 "
-                "gtfs-realtime-bindings==1.0.0\n\n"
-                "Then restart QGIS."
+            reply = QMessageBox.question(
+                None,
+                self.tr("easy-OTP: missing dependency"),
+                self.tr(
+                    "google.protobuf / gtfs-realtime-bindings is not installed.\n\n"
+                    "It is required by Build Realized GTFS (RT-3) only.\n\n"
+                    "Install it now? (downloads wheels via urllib; "
+                    "requires internet access)\n\n"
+                    "Choosing 'No' will stop the algorithm."
+                ),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply != QMessageBox.Yes:
+                raise QgsProcessingException(
+                    self.tr("Dependency not installed — algorithm cancelled.")
+                )
+            feedback.pushInfo(self.tr(
+                "Installing google.protobuf + gtfs-realtime-bindings…"
             ))
+            success, msg = install_gtfsrt_bindings()
+            if not success:
+                raise QgsProcessingException(
+                    self.tr(
+                        "Auto-install failed:\n\n%1\n\n"
+                        "Install manually from the OSGeo4W Shell:\n\n"
+                        "    python -m pip install protobuf==3.20.3 "
+                        "gtfs-realtime-bindings==1.0.0\n\n"
+                        "Then restart QGIS."
+                    ).replace("%1", msg)
+                )
+            feedback.pushInfo(self.tr("Installed successfully."))
 
         # --- Step 2: read parameters ---
         snapshot_dir = Path(
