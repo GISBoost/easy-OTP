@@ -63,15 +63,16 @@ using the `openpyxl` library. All other algorithms work without it.
 When QGIS loads easy-OTP and `openpyxl` is not found in the Python environment,
 a dialog appears with two choices:
 
-- **Yes** — runs `pip install openpyxl` against QGIS's own Python interpreter.
-  Requires internet access. Takes 5–30 seconds. No QGIS restart is needed in
-  most cases.
+- **Yes** — the plugin first tries to download the `openpyxl` wheel directly
+  via `urllib` (in-process HTTPS, which works even on QGIS 3.22 where the child
+  `pip` subprocess has no SSL); if that fails it falls back to
+  `pip install openpyxl`. Requires internet access. Takes 5–30 seconds. No QGIS
+  restart is needed in most cases.
 - **No** — the plugin loads normally. All algorithms except R1a work without
   openpyxl; R1a will raise an error if you try to run it without the library.
 
-If automatic installation fails (e.g. in a locked corporate environment or QGIS
-3.22 where SSL is unavailable in subprocess pip), install manually from the
-**OSGeo4W Shell** (Windows) or a terminal with QGIS's Python:
+If automatic installation fails (e.g. no internet access), install manually from
+the **OSGeo4W Shell** (Windows) or a terminal with QGIS's Python:
 
 ```
 python -m pip install openpyxl

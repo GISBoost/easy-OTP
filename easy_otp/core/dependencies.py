@@ -5,10 +5,21 @@ Called by EasyOtpPlugin.initGui() before provider registration.
 This is the sole permitted exception to the project's "zero pip install" rule.
 """
 
+import hashlib
 import importlib
+import json
 import os
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
+
+_OPENPYXL_VERSION = "3.1.5"     # requires Python >=3.8; pure-python wheel confirmed
+_ET_XMLFILE_VERSION = "2.0.0"   # sole dependency of openpyxl; requires Python >=3.8
+_PYPI_JSON_URL = "https://pypi.org/pypi/{pkg}/{version}/json"
+_WHEEL_USER_AGENT = "easy-OTP/0.3 urllib"
+_HASH_CHUNK = 1 * 1024 * 1024   # 1 MB blocks for SHA-256
 
 
 def ensure_openpyxl() -> bool:
@@ -60,20 +71,122 @@ def _add_user_site_to_path() -> None:
         pass
 
 
+def _safe_zipextract(zf: zipfile.ZipFile, dest_path: str) -> None:
+    """Extract zip safely, skipping members with path traversal (zip slip)."""
+    dest_root = os.path.realpath(dest_path)
+    prefix = dest_root + os.sep
+    for member in zf.infolist():
+        target = os.path.realpath(os.path.join(dest_root, member.filename))
+        if target != dest_root and not target.startswith(prefix):
+            continue  # skip zip-slip attempt
+        zf.extract(member, dest_root)
+
+
+def _writable_target_dir() -> str:
+    """Return a writable directory for wheel extraction.
+
+    Tries user site-packages first; falls back to easy_otp/_vendor/.
+    """
+    try:
+        import site
+        user_site = site.getusersitepackages()
+        if user_site and site.ENABLE_USER_SITE:
+            os.makedirs(user_site, exist_ok=True)
+            probe = os.path.join(user_site, ".easy_otp_write_test")
+            with open(probe, "w"):
+                pass
+            os.remove(probe)
+            return user_site
+    except Exception:
+        pass
+    # Fallback: easy_otp/_vendor/ (sibling of core/)
+    vendor = os.path.join(os.path.dirname(os.path.dirname(__file__)), "_vendor")
+    os.makedirs(vendor, exist_ok=True)
+    return vendor
+
+
+def _resolve_wheel(pkg: str, version: str) -> tuple[str, str]:
+    """Query PyPI JSON API; return (wheel_url, sha256) for the pure-python wheel."""
+    url = _PYPI_JSON_URL.format(pkg=pkg, version=version)
+    req = urllib.request.Request(url, headers={"User-Agent": _WHEEL_USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 — HTTPS URL hardcoded to pypi.org; stdlib urllib only, no requests
+        data = json.loads(resp.read().decode())
+    for entry in data.get("urls", []):
+        if (entry.get("packagetype") == "bdist_wheel"
+                and entry["filename"].endswith("-none-any.whl")):
+            return entry["url"], entry["digests"]["sha256"]
+    raise RuntimeError(
+        f"No pure-python wheel (-none-any.whl) found for {pkg}=={version} on PyPI."
+    )
+
+
+def _fetch_and_extract_wheel(pkg: str, version: str, target_dir: str) -> None:
+    """Download wheel from PyPI, verify SHA-256, extract safely into target_dir."""
+    wheel_url, expected_sha256 = _resolve_wheel(pkg, version)
+    with tempfile.NamedTemporaryFile(dir=target_dir, suffix=".whl", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        req = urllib.request.Request(wheel_url, headers={"User-Agent": _WHEEL_USER_AGENT})
+        with urllib.request.urlopen(req, timeout=120) as resp:  # nosec B310 — HTTPS URL returned by PyPI JSON API; integrity verified by SHA-256 below
+            h = hashlib.sha256()
+            with open(tmp_path, "wb") as fh:
+                while True:
+                    chunk = resp.read(_HASH_CHUNK)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    h.update(chunk)
+        got = h.hexdigest()
+        if got.lower() != expected_sha256.lower():
+            raise RuntimeError(
+                f"SHA-256 mismatch for {pkg} wheel: expected {expected_sha256}, got {got}."
+            )
+        with zipfile.ZipFile(tmp_path) as zf:
+            _safe_zipextract(zf, target_dir)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+def _install_openpyxl_via_urllib() -> tuple[bool, str]:
+    """Download and extract openpyxl + et_xmlfile wheels via in-process urllib.
+
+    Bypasses the child python.exe subprocess (which has no ssl module on
+    QGIS 3.22/Windows OSGeo4W). Still requires internet access.
+    """
+    try:
+        target = _writable_target_dir()
+        for pkg, ver in [
+            ("et_xmlfile", _ET_XMLFILE_VERSION),
+            ("openpyxl", _OPENPYXL_VERSION),
+        ]:
+            _fetch_and_extract_wheel(pkg, ver, target)
+        if target not in sys.path:
+            sys.path.insert(0, target)
+        importlib.invalidate_caches()
+        if ensure_openpyxl():
+            return True, f"openpyxl installed via urllib into {target}"
+        return False, "Wheel extracted but openpyxl still not importable — restart QGIS."
+    except Exception as exc:
+        return False, f"In-process urllib wheel install failed: {exc}"
+
+
 def install_openpyxl() -> tuple[bool, str]:
-    """Install openpyxl via pip into the QGIS Python environment.
+    """Install openpyxl into the QGIS Python environment.
 
-    Attempt 1: <python> -m pip install --user openpyxl
-      (writes to user site-packages; no admin rights needed)
-    Attempt 2: <python> -m pip install openpyxl
-      (writes to QGIS site-packages; requires admin on Windows)
-
-    After a successful pip exit, adds user site-packages to sys.path (if
-    needed), invalidates the import cache, and re-checks importability.
-    If the import still fails, the user is asked to restart QGIS.
+    Attempt 0: in-process urllib wheel download (works even when child pip has no SSL).
+    Attempt 1: <python> -m pip install --user openpyxl (no admin rights needed).
+    Attempt 2: <python> -m pip install openpyxl (system-wide; may need admin on Windows).
 
     Returns (success: bool, message: str).
     """
+    # Attempt 0 — in-process urllib wheel download (bypasses child-pip SSL requirement)
+    ok, msg = _install_openpyxl_via_urllib()
+    if ok:
+        return True, msg
+
     python_exe = _get_python_executable()
     base_cmd = [python_exe, "-m", "pip", "install", "openpyxl"]
 
@@ -115,7 +228,15 @@ def install_openpyxl() -> tuple[bool, str]:
                 "Please restart QGIS and try again.",
             )
         stderr = (result.stderr or "").strip()[-500:]
-        return False, f"pip failed (exit {result.returncode}):\n{stderr}"
+        return (
+            False,
+            f"Could not install openpyxl automatically:\n\n{stderr}\n\n"
+            "Both the in-process urllib download and pip have failed.\n"
+            "Possible causes: no internet access, or pip SSL unavailable.\n\n"
+            "Install manually from the OSGeo4W Shell (Windows):\n\n"
+            "    python -m pip install openpyxl\n\n"
+            "Then restart QGIS.",
+        )
     except subprocess.TimeoutExpired:
         return False, "pip timed out after 120 s."
     except OSError as exc:

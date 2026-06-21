@@ -31,7 +31,8 @@ class EasyOtpPlugin:
                 "The openpyxl library is not installed in your QGIS Python "
                 "environment. It is required by the Prepare Student Layer "
                 "(R1a) algorithm to read GUS NSP 2021 Excel files.\n\n"
-                "Install it now? (uses pip; requires internet access)\n\n"
+                "Install it now? (downloads wheel via urllib, falls back to pip; "
+                "requires internet access)\n\n"
                 "Choosing 'No' is safe — all other algorithms work "
                 "without openpyxl, but R1a will raise an error when run."
             ),

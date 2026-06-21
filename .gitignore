@@ -35,6 +35,7 @@ __pycache__/
 *.pyd
 .Python
 *.egg-info/
+easy_otp/_vendor/
 
 # --- QGIS artifacts ---
 *.qgz~
