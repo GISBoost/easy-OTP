@@ -18,8 +18,14 @@ this dependency.
 import os
 from pathlib import Path
 
-from qgis.PyQt.QtCore import QCoreApplication
-from qgis.PyQt.QtWidgets import QMessageBox
+from qgis.PyQt.QtCore import (
+    QCoreApplication,
+    QMetaObject,
+    QObject,
+    Qt,
+    pyqtSlot,
+)
+from qgis.PyQt.QtWidgets import QApplication, QMessageBox
 from qgis.core import (
     QgsProcessingAlgorithm,
     QgsProcessingException,
@@ -38,6 +44,37 @@ from ..core.gtfsrt_realizer import (
     rebuild_stop_times,
     repackage_gtfs,
 )
+
+
+def _ask_on_main_thread(title: str, text: str) -> int:
+    """Show QMessageBox.question on the GUI thread; safe to call from a background thread.
+
+    processAlgorithm runs inside QgsProcessingAlgRunnerTask (a QgsTask, background thread).
+    Qt forbids creating/showing widgets from non-main threads — doing so causes a crash.
+    BlockingQueuedConnection posts the call to the main thread's event loop and blocks
+    the calling thread until the slot returns, giving us the user's answer synchronously.
+    """
+    class _Asker(QObject):
+        def __init__(self, title: str, text: str) -> None:
+            super().__init__()
+            self._title = title
+            self._text = text
+            self.reply = QMessageBox.No
+
+        @pyqtSlot()
+        def ask(self) -> None:
+            self.reply = QMessageBox.question(
+                None,
+                self._title,
+                self._text,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+
+    asker = _Asker(title, text)
+    asker.moveToThread(QApplication.instance().thread())
+    QMetaObject.invokeMethod(asker, "ask", Qt.BlockingQueuedConnection)
+    return asker.reply
 
 
 class BuildRealizedGtfs(QgsProcessingAlgorithm):
@@ -145,8 +182,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802 — Qt API name
         # --- Step 1: dependency check — offer auto-install on first use ---
         if not ensure_gtfsrt_bindings():
-            reply = QMessageBox.question(
-                None,
+            reply = _ask_on_main_thread(
                 self.tr("easy-OTP: missing dependency"),
                 self.tr(
                     "google.protobuf / gtfs-realtime-bindings is not installed.\n\n"
@@ -155,8 +191,6 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                     "requires internet access)\n\n"
                     "Choosing 'No' will stop the algorithm."
                 ),
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
             )
             if reply != QMessageBox.Yes:
                 raise QgsProcessingException(
