@@ -1,5 +1,6 @@
 """Main algorithm: full temporal-accessibility pipeline via OpenTripPlanner."""
 
+from datetime import datetime
 from pathlib import Path
 
 from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QSettings, QTime, QVariant
@@ -8,6 +9,9 @@ from qgis.core import (
     QgsFeature,
     QgsFeatureSink,
     QgsField,
+    QgsFields,
+    QgsGeometry,
+    QgsPointXY,
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
@@ -23,6 +27,7 @@ from qgis.core import (
     QgsProcessingParameterString,
     QgsProcessingParameterVectorLayer,
     QgsProcessingUtils,
+    QgsWkbTypes,
 )
 
 from ..core.otp_client import OtpClient, OtpClientError
@@ -45,6 +50,7 @@ from ..core.raster_processing import build_surface_vrt, count_below_threshold
 from ..core.surface_runner import SurfaceJobParams, run_surface_loop
 from ..core.time_utils import build_time_list
 from ..core.zonal import classify_service_time, log_summary_stats, run_zonal_stats
+from ..core.origin_utils import _origin_attributes
 from .generate_hex_grid import build_hex_grid, extent_of_count_nonzero
 
 
@@ -84,6 +90,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
     WORK_DIR = "WORK_DIR"
     OUTPUT_HEX = "OUTPUT_HEX"
     OUTPUT_COUNT_RASTER = "OUTPUT_COUNT_RASTER"
+    OUTPUT_ORIGIN = "OUTPUT_ORIGIN"
 
     EXPORT_REPORT = "EXPORT_REPORT"
     REPORT_PATH = "REPORT_PATH"
@@ -395,6 +402,15 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 self.tr("Output count raster"),
             )
         )
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.OUTPUT_ORIGIN,
+                self.tr("Origin point (analysis metadata)"),
+                type=QgsProcessing.TypeVectorPoint,
+                optional=True,
+                createByDefault=True,
+            )
+        )
 
     def _add_advanced(self, param) -> None:
         param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
@@ -402,6 +418,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
 
     def processAlgorithm(self, parameters, context, feedback):  # noqa: N802 — Qt API name
         self._output_hex_dest_id = None
+        self._output_origin_dest_id = None
         use_saved = self.parameterAsBool(parameters, self.USE_SAVED_JAVA, context)
         if use_saved:
             saved = QSettings().value("easy_otp/java_path", "")
@@ -508,6 +525,8 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
 
         threshold_min = self.parameterAsInt(parameters, self.TRAVEL_TIME_THRESHOLD, context)
         arrive_by = self.parameterAsBool(parameters, self.ARRIVE_BY, context)
+        walk_speed = self.parameterAsDouble(parameters, self.WALK_SPEED, context)
+        max_walk_distance = self.parameterAsInt(parameters, self.MAX_WALK_DISTANCE, context)
         out_count_str = self.parameterAsOutputLayer(parameters, self.OUTPUT_COUNT_RASTER, context)
         if not out_count_str:
             raise QgsProcessingException(self.tr(
@@ -621,12 +640,12 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             job = SurfaceJobParams(
                 from_place_lat_lon=from_place_lat_lon,
                 date_mmddyyyy=date_s,
-                max_walk_distance=self.parameterAsInt(parameters, self.MAX_WALK_DISTANCE, context),
+                max_walk_distance=max_walk_distance,
                 walk_reluctance=self.parameterAsDouble(parameters, self.WALK_RELUCTANCE, context),
                 wait_reluctance=self.parameterAsDouble(parameters, self.WAIT_RELUCTANCE, context),
                 transfer_penalty=self.parameterAsInt(parameters, self.TRANSFER_PENALTY, context),
                 min_transfer_time=self.parameterAsInt(parameters, self.MIN_TRANSFER_TIME, context),
-                walk_speed=self.parameterAsDouble(parameters, self.WALK_SPEED, context),
+                walk_speed=walk_speed,
                 arrive_by=arrive_by,
             )
             feedback.pushInfo(self.tr(
@@ -740,6 +759,49 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 out_feat.setAttributes(feat.attributes() + [arrive_by])
                 sink.addFeature(out_feat, QgsFeatureSink.FastInsert)
 
+            # --- origin point output ---
+            origin_fields = QgsFields()
+            for _fname, _ftype in [
+                ("router_id",         QVariant.String),
+                ("lon",               QVariant.Double),
+                ("lat",               QVariant.Double),
+                ("analysis_type",     QVariant.String),
+                ("analysis_date",     QVariant.String),
+                ("time_start",        QVariant.String),
+                ("time_end",          QVariant.String),
+                ("interval_min",      QVariant.Int),
+                ("threshold_min",     QVariant.Int),
+                ("arrive_by",         QVariant.Bool),
+                ("walk_speed",        QVariant.Double),
+                ("max_walk_distance", QVariant.Double),
+                ("created_at",        QVariant.String),
+            ]:
+                origin_fields.append(QgsField(_fname, _ftype))
+            origin_sink, origin_dest_id = self.parameterAsSink(
+                parameters, self.OUTPUT_ORIGIN, context,
+                origin_fields, QgsWkbTypes.Point, wgs84,
+            )
+            if origin_sink is not None:
+                attrs = _origin_attributes(
+                    router_id=router_id,
+                    lon=pt.x(),
+                    lat=pt.y(),
+                    date_s=qdt_date.date().toString("yyyy-MM-dd"),
+                    start_s=start_t.toString("HH:mm"),
+                    end_s=end_t.toString("HH:mm"),
+                    interval_min=interval_min,
+                    threshold_min=threshold_min,
+                    arrive_by=arrive_by,
+                    walk_speed=walk_speed,
+                    max_walk_distance=max_walk_distance,
+                    created_at=datetime.now().isoformat(timespec="seconds"),
+                )
+                origin_feat = QgsFeature(origin_fields)
+                origin_feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(pt.x(), pt.y())))
+                origin_feat.setAttributes(list(attrs.values()))
+                origin_sink.addFeature(origin_feat, QgsFeatureSink.FastInsert)
+                self._output_origin_dest_id = origin_dest_id
+
             log_summary_stats(classified_layer, feedback)
 
             if self.parameterAsBool(parameters, self.EXPORT_REPORT, context):
@@ -772,10 +834,13 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             if server_ctx is not None:
                 server_ctx.__exit__(None, None, None)
                 server_ctx = None
-            return {
+            results = {
                 self.OUTPUT_COUNT_RASTER: str(out_count_path),
                 self.OUTPUT_HEX: dest_id,
             }
+            if self._output_origin_dest_id:
+                results[self.OUTPUT_ORIGIN] = self._output_origin_dest_id
+            return results
         except BaseException:
             if server_ctx is not None:
                 server_ctx.__exit__(*self._exc_info())
@@ -790,6 +855,14 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
                 if qml_path.exists():
                     layer.loadNamedStyle(str(qml_path))
                     layer.triggerRepaint()
+        origin_dest_id = getattr(self, "_output_origin_dest_id", None)
+        if origin_dest_id:
+            origin_layer = QgsProcessingUtils.mapLayerFromString(origin_dest_id, context)
+            if origin_layer:
+                qml_path = Path(__file__).parent.parent / "styles" / "origin_point.qml"
+                if qml_path.exists():
+                    origin_layer.loadNamedStyle(str(qml_path))
+                    origin_layer.triggerRepaint()
         return {}
 
     def _log_router_diagnostic(
@@ -810,7 +883,7 @@ class RunTemporalAccessibility(QgsProcessingAlgorithm):
             feedback.pushWarning(self.tr(f"Could not fetch router diagnostic: {e}"))
             return None
 
-        from datetime import datetime, timezone
+        from datetime import timezone
 
         def _epoch_to_iso(value) -> str:
             try:
