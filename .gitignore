@@ -16,6 +16,9 @@ rt_archive/
 recording.json
 tools/rt_diagnose/.venv/
 
+# --- i18n developer tooling (build scripts, LLM translation helpers) ---
+tools/i18n/
+
 # --- Crash artifacts ---
 bash.exe.stackdump
 
