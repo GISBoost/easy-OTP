@@ -128,8 +128,9 @@ def count_below_threshold(
                     projection = ds.GetProjection()
                     accumulator = np.zeros((rows, cols), dtype=np.int32)
                     feedback.pushInfo(
-                        f"Surface dtype={gdal.GetDataTypeName(band.DataType)} "
-                        f"NoData={nodata_val} (n_surfaces={total})"
+                        _tr("Surface dtype={0} NoData={1} (n_surfaces={2})").format(
+                            gdal.GetDataTypeName(band.DataType), nodata_val, total
+                        )
                     )
 
                 if nodata_val is not None:

@@ -1,7 +1,9 @@
 """Main plugin class: registers and unregisters the easy-OTP Processing provider."""
 
+import os
+
 from qgis.core import QgsApplication
-from qgis.PyQt.QtCore import QCoreApplication
+from qgis.PyQt.QtCore import QCoreApplication, QSettings, QTranslator
 from qgis.PyQt.QtWidgets import QMessageBox
 
 from .core.dependencies import (
@@ -15,6 +17,14 @@ class EasyOtpPlugin:
     def __init__(self, iface):
         self.iface = iface
         self.provider = None
+        self._translator = None
+
+        locale = QSettings().value("locale/userLocale", "en_US")[:2]
+        qm = os.path.join(os.path.dirname(__file__), "i18n", f"easy_otp_{locale}.qm")
+        if os.path.exists(qm):
+            self._translator = QTranslator()
+            self._translator.load(qm)
+            QCoreApplication.installTranslator(self._translator)
 
     def tr(self, message: str) -> str:  # noqa: N802 — QGIS i18n convention
         return QCoreApplication.translate(self.__class__.__name__, message)
@@ -66,6 +76,9 @@ class EasyOtpPlugin:
                 )
 
     def unload(self):
+        if self._translator is not None:
+            QCoreApplication.removeTranslator(self._translator)
+            self._translator = None
         if self.provider is not None:
             QgsApplication.processingRegistry().removeProvider(self.provider)
             self.provider = None

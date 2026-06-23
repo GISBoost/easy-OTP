@@ -12,6 +12,7 @@ icon=resources/icon.svg
 experimental=True
 deprecated=False
 hasProcessingProvider=yes
+hasTranslations=yes
 tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,travel time,population,jre,java
 homepage=https://github.com/GISBoost/easy-OTP
 repository=https://github.com/GISBoost/easy-OTP
