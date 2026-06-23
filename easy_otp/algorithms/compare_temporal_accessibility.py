@@ -95,7 +95,7 @@ class CompareTemporalAccessibility(QgsProcessingAlgorithm):
     OUTPUT_HEX_DELTA = "OUTPUT_HEX_DELTA"
 
     def tr(self, string: str) -> str:
-        return QCoreApplication.translate("Processing", string)
+        return QCoreApplication.translate(type(self).__name__, string)
 
     def name(self) -> str:
         return "comparetemporalaccessibility"

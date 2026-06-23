@@ -30,7 +30,7 @@ class PopulationOverlay(QgsProcessingAlgorithm):
     OUTPUT = "OUTPUT"
 
     def tr(self, string: str) -> str:
-        return QCoreApplication.translate("Processing", string)
+        return QCoreApplication.translate(type(self).__name__, string)
 
     def name(self) -> str:
         return "populationoverlay"

@@ -86,7 +86,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
     OUTPUT_P85 = "OUTPUT_P85"
 
     def tr(self, string: str) -> str:
-        return QCoreApplication.translate("Processing", string)
+        return QCoreApplication.translate(type(self).__name__, string)
 
     def name(self) -> str:
         return "buildrealizedgtfs"
@@ -340,7 +340,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             feedback.setProgress(80)
 
             # --- Step 9a: write P50 zip ---
-            feedback.pushInfo("Writing P50 feed → " + p50_path)
+            feedback.pushInfo(self.tr("Writing P50 feed → ") + p50_path)
             partial_outputs.append(p50_path)
             repackage_gtfs(static_gtfs, p50_path, p50_corrections, drop_trip_ids)
             partial_outputs.remove(p50_path)  # P50 complete — safe to keep on cancel
@@ -350,7 +350,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             if write_p85 and p85_corrections is not None:
                 if feedback.isCanceled():
                     return {self.OUTPUT_P50: p50_path, self.OUTPUT_P85: ""}
-                feedback.pushInfo("Writing P85 feed → " + p85_path)
+                feedback.pushInfo(self.tr("Writing P85 feed → ") + p85_path)
                 partial_outputs.append(p85_path)
                 repackage_gtfs(static_gtfs, p85_path, p85_corrections, drop_trip_ids)
                 partial_outputs.remove(p85_path)  # P85 complete
@@ -361,19 +361,30 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             # --- Step 10: summary ---
             total_trips = len(static_index.trip_stops) - len(drop_trip_ids)
             p85_stats_line = (
-                f"  P85 corrected    : {p85_corrected:,}  |  gaps: {p85_gaps:,}\n"
+                self.tr("  P85 corrected    : {0}  |  gaps: {1}\n").format(
+                    f"{p85_corrected:,}", f"{p85_gaps:,}"
+                )
                 if write_p85 and p85_corrections is not None else ""
             )
             feedback.pushInfo(
-                f"\nDone.\n"
-                f"  Snapshots parsed : {len(snapshot_paths)}\n"
-                f"  Segments observed: {len(segment_times):,}\n"
-                f"  P50 corrected    : {p50_corrected:,}  |  gaps: {p50_gaps:,}\n"
-                + p85_stats_line +
-                f"  Trips dropped    : {len(drop_trip_ids)} (CANCELED, policy=skip)\n"
-                f"  Trips in output  : {total_trips:,}\n"
-                f"  P50 feed         : {p50_path}\n"
-                + (f"  P85 feed         : {p85_path}\n" if write_p85 else "")
+                self.tr(
+                    "\nDone.\n"
+                    "  Snapshots parsed : {0}\n"
+                    "  Segments observed: {1}\n"
+                    "  P50 corrected    : {2}  |  gaps: {3}\n"
+                ).format(
+                    len(snapshot_paths),
+                    f"{len(segment_times):,}",
+                    f"{p50_corrected:,}",
+                    f"{p50_gaps:,}",
+                )
+                + p85_stats_line
+                + self.tr(
+                    "  Trips dropped    : {0} (CANCELED, policy=skip)\n"
+                    "  Trips in output  : {1}\n"
+                    "  P50 feed         : {2}\n"
+                ).format(len(drop_trip_ids), f"{total_trips:,}", p50_path)
+                + (self.tr("  P85 feed         : {0}\n").format(p85_path) if write_p85 else "")
             )
 
             return {self.OUTPUT_P50: p50_path, self.OUTPUT_P85: p85_path}

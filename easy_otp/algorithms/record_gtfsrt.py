@@ -45,7 +45,7 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
     SAMPLING_INTERVAL_SEC = "SAMPLING_INTERVAL_SEC"
 
     def tr(self, string: str) -> str:
-        return QCoreApplication.translate("Processing", string)
+        return QCoreApplication.translate(type(self).__name__, string)
 
     def name(self) -> str:
         return "recordgtfsrt"
