@@ -8,6 +8,7 @@ from .algorithms.download_jre import DownloadJre
 from .algorithms.download_transit_data import DownloadTransitData
 from .algorithms.generate_hex_grid import GenerateHexGrid
 from .algorithms.generate_isochrones import GenerateIsochrones
+from .algorithms.generate_isochrones_over_time import GenerateIsochronesOverTime
 from .algorithms.population_overlay import PopulationOverlay
 from .algorithms.prepare_student_layer import PrepareStudentLayer
 from .algorithms.build_realized_gtfs import BuildRealizedGtfs
@@ -36,6 +37,7 @@ class EasyOtpProvider(QgsProcessingProvider):
         self.addAlgorithm(CountFromExistingSurfaces())
         self.addAlgorithm(GenerateHexGrid())
         self.addAlgorithm(GenerateIsochrones())
+        self.addAlgorithm(GenerateIsochronesOverTime())
         self.addAlgorithm(PopulationOverlay())
         self.addAlgorithm(PrepareStudentLayer())
         self.addAlgorithm(TestOtpServer())
