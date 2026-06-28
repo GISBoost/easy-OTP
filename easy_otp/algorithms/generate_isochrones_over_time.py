@@ -64,8 +64,6 @@ from .generate_isochrones import _geom_to_multipolygon
 
 _MODE_OPTIONS = ["TRANSIT", "BUS", "RAIL", "TRAM", "SUBWAY", "WALK", "CAR", "BICYCLE"]
 _DIRECTION_OPTIONS = ["FROM", "TO"]
-_INTERVAL_OPTIONS = ["1 min", "15 min", "60 min"]
-_INTERVAL_VALUES = [1, 15, 60]
 
 
 class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
@@ -200,11 +198,12 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
-            QgsProcessingParameterEnum(
+            QgsProcessingParameterNumber(
                 self.INTERVAL,
-                self.tr("Time interval between isochrones"),
-                options=_INTERVAL_OPTIONS,
-                defaultValue=1,  # index 1 = "15 min"
+                self.tr("Time interval between isochrones (minutes)"),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=15,
+                minValue=1,
             )
         )
         self.addParameter(
@@ -467,8 +466,7 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                 "TIME_START must be before TIME_END."
             ))
 
-        interval_idx = self.parameterAsEnum(parameters, self.INTERVAL, context)
-        interval_min = _INTERVAL_VALUES[interval_idx]
+        interval_min = self.parameterAsInt(parameters, self.INTERVAL, context)
 
         times = build_time_list(
             t_start.hour(), t_start.minute(),
