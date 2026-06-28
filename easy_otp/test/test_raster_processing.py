@@ -193,3 +193,27 @@ def test_empty_surfaces_raises():
         out = Path(td) / "count.tif"
         with pytest.raises(RuntimeError):
             count_below_threshold([], 30, out, _mock_feedback())
+
+
+def test_count_below_threshold_bands_as_service_points():
+    """count_below_threshold works identically when bands represent service points (N-3).
+
+    3 surfaces = 3 service points at a fixed time.
+    Pixel A: all 3 within threshold (value 5 ≤ 10) → count=3.
+    Pixel B: 1 within threshold (value 9 ≤ 10), 2 above → count=1.
+    Pixel C: all above threshold (value 120, OTP sentinel) → count=0 → NoData.
+    Pixel D: outside graph (value 128, unreachable sentinel) → count=0 → NoData.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        # 1×4 raster (one row, four cols: A, B, C, D)
+        s1 = _make_surface(td, "pt1.tif", np.array([[5,  9, 120, 128]], dtype=np.uint8), nodata=None)
+        s2 = _make_surface(td, "pt2.tif", np.array([[5, 15, 120, 128]], dtype=np.uint8), nodata=None)
+        s3 = _make_surface(td, "pt3.tif", np.array([[5, 15, 120, 128]], dtype=np.uint8), nodata=None)
+
+        result = _count([s1, s2, s3], 10, td)
+
+        assert result[0, 0] == 3, "pixel A: all 3 points within threshold"
+        assert result[0, 1] == 1, "pixel B: only 1 point within threshold"
+        assert result[0, 2] == 0, "pixel C: OTP 120-min sentinel — not within threshold"
+        assert result[0, 3] == 0, "pixel D: OTP 128 unreachable sentinel — not within threshold"

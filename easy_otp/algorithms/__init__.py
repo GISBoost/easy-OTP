@@ -10,6 +10,7 @@ from .prepare_student_layer import PrepareStudentLayer
 from .build_realized_gtfs import BuildRealizedGtfs
 from .record_gtfsrt import RecordGtfsRt
 from .run_realtime_accessibility import RunRealtimeAccessibility
+from .run_service_coverage import RunServiceCoverage
 from .run_temporal_accessibility import RunTemporalAccessibility
 from .test_otp_server import TestOtpServer
 
@@ -26,6 +27,7 @@ __all__ = [
     "PrepareStudentLayer",
     "RecordGtfsRt",
     "RunRealtimeAccessibility",
+    "RunServiceCoverage",
     "RunTemporalAccessibility",
     "TestOtpServer",
 ]

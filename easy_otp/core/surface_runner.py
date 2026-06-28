@@ -106,3 +106,80 @@ def run_surface_loop(
 
     feedback.setProgress(100)
     return written
+
+
+def run_surface_loop_over_points(
+    client: OtpClient,
+    points: list[tuple[float, float]],
+    time_hhmmss: str,
+    job: SurfaceJobParams,
+    surfaces_dir: Path,
+    feedback,
+    download_timeout_s: float = 180.0,
+    mode: str = "TRANSIT,WALK",
+) -> list[Path]:
+    """For each (lat, lon) in *points* create one GeoTIFF surface at a fixed time.
+
+    Companion to :func:`run_surface_loop` — same cancellation and cleanup
+    semantics, but the loop axis is service points rather than timestamps.
+    ``job.from_place_lat_lon`` is unused; each point overrides it.
+    ``arrive_by`` is always ``False`` (direction-agnostic coverage count).
+
+    Output files are named ``surface_point_NNNN.tiff`` (zero-padded index,
+    deterministic order matching the input list).
+    """
+    surfaces_dir.mkdir(parents=True, exist_ok=True)
+    total = len(points)
+    if total == 0:
+        raise QgsProcessingException(
+            _tr("SERVICE_POINTS layer has no features — nothing to generate.")
+        )
+
+    written: list[Path] = []
+    for i, point in enumerate(points):
+        if feedback.isCanceled():
+            raise QgsProcessingException(_tr("Run cancelled by user."))
+
+        feedback.setProgress(int(i / total * 100))
+        feedback.pushInfo(_tr("Surface {}/{} for point lat={:.5f}, lon={:.5f}").format(
+            i + 1, total, point[0], point[1]
+        ))
+
+        out_path = surfaces_dir / f"surface_point_{i:04d}.tiff"
+
+        try:
+            surface_id = client.create_surface(
+                from_place_lat_lon=point,
+                date_mmddyyyy=job.date_mmddyyyy,
+                time_hhmmss=time_hhmmss,
+                max_walk_distance=job.max_walk_distance,
+                walk_reluctance=job.walk_reluctance,
+                wait_reluctance=job.wait_reluctance,
+                transfer_penalty=job.transfer_penalty,
+                min_transfer_time=job.min_transfer_time,
+                walk_speed=job.walk_speed,
+                arrive_by=False,
+                mode=mode,
+                log_fn=None,
+            )
+            if feedback.isCanceled():
+                raise QgsProcessingException(_tr("Run cancelled by user."))
+            client.download_surface_raster(
+                surface_id,
+                out_path,
+                timeout_s=download_timeout_s,
+                log_fn=None,
+            )
+        except OtpClientError as e:
+            out_path.unlink(missing_ok=True)
+            raise QgsProcessingException(
+                _tr("OTP surface generation failed for point {}: {}").format(i + 1, e)
+            ) from e
+        except BaseException:
+            out_path.unlink(missing_ok=True)
+            raise
+
+        written.append(out_path)
+
+    feedback.setProgress(100)
+    return written

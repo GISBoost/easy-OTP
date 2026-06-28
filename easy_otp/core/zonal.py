@@ -61,13 +61,23 @@ def _classify_value(val: "float | None", interval_min: int, n_surfaces: int) -> 
     return "episodically accessible"
 
 
+_STAT_CODES: dict[str, int] = {"mean": 2, "max": 6, "sum": 1}
+
+
 def run_zonal_stats(
     count_raster_path: Path,
     hex_layer: "QgsVectorLayer",
     context: "QgsProcessingContext",
     feedback: "QgsProcessingFeedback",
+    stat: str = "mean",
+    prefix: str = "otp_",
 ) -> "QgsVectorLayer":
-    """Aggregate count raster to hex cells; return layer with ``otp_mean`` field.
+    """Aggregate count raster to grid cells; return layer with ``<prefix><stat>`` field.
+
+    ``stat`` is one of ``"mean"``, ``"max"``, ``"sum"``; defaults to ``"mean"``
+    (matching the article convention and all existing call sites).
+    ``prefix`` is the output field name prefix; defaults to ``"otp_"`` for
+    backward compatibility — existing callers produce ``otp_mean`` unchanged.
 
     CRS differences between raster and grid are handled internally by
     native:zonalstatisticsfb (it transforms the vector features to the raster's
@@ -75,6 +85,12 @@ def run_zonal_stats(
     """
     import processing  # noqa: PLC0415 — available only inside the QGIS interpreter
     from qgis.core import QgsRasterLayer  # noqa: PLC0415
+
+    stat_code = _STAT_CODES.get(stat)
+    if stat_code is None:
+        raise ValueError(
+            f"Unknown stat '{stat}'. Valid options: {list(_STAT_CODES)}"
+        )
 
     raster_layer = QgsRasterLayer(str(count_raster_path), "count_raster", "gdal")
     if not raster_layer.isValid():
@@ -86,10 +102,9 @@ def run_zonal_stats(
     grid_crs = hex_layer.crs()
     if raster_crs != grid_crs:
         feedback.pushInfo(_tr(
-            f"Raster CRS ({raster_crs.authid()}) differs from grid CRS "
-            f"({grid_crs.authid()}); native:zonalstatisticsfb will handle "
-            f"the transform internally."
-        ))
+            "Raster CRS ({}) differs from grid CRS ({}); "
+            "native:zonalstatisticsfb will handle the transform internally."
+        ).format(raster_crs.authid(), grid_crs.authid()))
 
     result = processing.run(
         "native:zonalstatisticsfb",
@@ -97,8 +112,8 @@ def run_zonal_stats(
             "INPUT": hex_layer,
             "INPUT_RASTER": raster_layer,
             "RASTER_BAND": 1,
-            "COLUMN_PREFIX": "otp_",
-            "STATISTICS": [2],  # mean
+            "COLUMN_PREFIX": prefix,
+            "STATISTICS": [stat_code],
             "OUTPUT": "TEMPORARY_OUTPUT",
         },
         context=context,
