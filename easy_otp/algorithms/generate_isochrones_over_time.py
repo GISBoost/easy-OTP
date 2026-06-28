@@ -39,6 +39,7 @@ from qgis.core import (
     QgsProcessingParameterNumber,
     QgsProcessingParameterPoint,
     QgsProcessingParameterString,
+    QgsPointXY,
     QgsWkbTypes,
 )
 
@@ -94,6 +95,7 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
     KEEP_SERVER_ALIVE = "KEEP_SERVER_ALIVE"
     OUTPUT_ISOCHRONES = "OUTPUT_ISOCHRONES"
     OUTPUT_AREA_CSV = "OUTPUT_AREA_CSV"
+    OUTPUT_ORIGIN = "OUTPUT_ORIGIN"
 
     def tr(self, string: str) -> str:
         return QCoreApplication.translate(type(self).__name__, string)
@@ -238,6 +240,15 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
             _csv_param.flags() | QgsProcessingParameterDefinition.FlagOptional
         )
         self.addParameter(_csv_param)
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.OUTPUT_ORIGIN,
+                self.tr("Origin point (run metadata)"),
+                type=QgsProcessing.TypeVectorPoint,
+                optional=True,
+                createByDefault=True,
+            )
+        )
 
         # --- Advanced routing ---
         self._add_advanced(
@@ -555,6 +566,7 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
             ("mode",       QVariant.String),
             ("date",       QVariant.String),
             ("direction",  QVariant.String),
+            ("area_km2",   QVariant.Double),
         ]:
             out_fields.append(QgsField(fname, ftype))
 
@@ -564,6 +576,26 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
         )
         if sink is None:
             raise QgsProcessingException(self.tr("Could not create output layer."))
+
+        # ── Origin point sink ─────────────────────────────────────────────
+        origin_fields = QgsFields()
+        for _fn, _ft in [
+            ("lat",          QVariant.Double),
+            ("lon",          QVariant.Double),
+            ("mode",         QVariant.String),
+            ("direction",    QVariant.String),
+            ("date",         QVariant.String),
+            ("time_start",   QVariant.String),
+            ("time_end",     QVariant.String),
+            ("interval_min", QVariant.Int),
+            ("cutoffs_min",  QVariant.String),
+            ("router_id",    QVariant.String),
+        ]:
+            origin_fields.append(QgsField(_fn, _ft))
+        origin_sink, origin_dest_id = self.parameterAsSink(
+            parameters, self.OUTPUT_ORIGIN, context,
+            origin_fields, QgsWkbTypes.Point, wgs84,
+        )
 
         # ── OTP server lifecycle ──────────────────────────────────────────
         existing = probe_otp(port)
@@ -608,6 +640,17 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                 raise QgsProcessingException(str(e)) from e
 
             self._log_router_diagnostic(client, feedback)
+
+            # ── Origin point feature ───────────────────────────────────────
+            if origin_sink is not None:
+                origin_feat = QgsFeature(origin_fields)
+                origin_feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(from_lon, from_lat)))
+                origin_feat.setAttributes([
+                    from_lat, from_lon, mode_str, direction_str, date_iso,
+                    t_start.toString("HH:mm"), t_end.toString("HH:mm"),
+                    interval_min, ",".join(str(c) for c in cutoffs_min), router_id,
+                ])
+                origin_sink.addFeature(origin_feat, QgsFeatureSink.FastInsert)
 
             # ── Timestamp loop ─────────────────────────────────────────────
             isochrone_client = IsochroneClient(port=port, router=router_id)
@@ -668,9 +711,15 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                         ))
                         continue
 
+                    metric_geom = QgsGeometry(geom)
+                    metric_geom.transform(to_metric)
+                    area_km2 = round(metric_geom.area() / 1e6, 4)
+
                     out_feat = QgsFeature(out_fields)
                     out_feat.setGeometry(geom)
-                    out_feat.setAttributes([dt, cutoff_min, mode_str, date_iso, direction_str])
+                    out_feat.setAttributes([
+                        dt, cutoff_min, mode_str, date_iso, direction_str, area_km2,
+                    ])
                     if sink.addFeature(out_feat, QgsFeatureSink.FastInsert):
                         ok_polygons += 1
                     else:
@@ -679,9 +728,6 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                         ))
 
                     if csv_path:
-                        metric_geom = QgsGeometry(geom)
-                        metric_geom.transform(to_metric)
-                        area_km2 = round(metric_geom.area() / 1e6, 4)
                         area_rows.append((time_str, cutoff_min, area_km2))
 
                 ok_count += 1
@@ -691,6 +737,15 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                 f"Done: {ok_count} timestamps OK, {failed_count} failed, "
                 f"{ok_polygons} polygons written."
             ))
+
+            if ok_polygons == 0 and ok_count > 0:
+                feedback.pushWarning(self.tr(
+                    "No polygons were written. OTP returned null geometry for every "
+                    "timestamp — this typically means the origin point could not be "
+                    "snapped to a '{mode}'-accessible road. Check that the point is on "
+                    "or near a driveable road (not inside a pedestrian zone, private "
+                    "area, or unmapped location) and retry."
+                ).format(mode=mode_str))
 
             if csv_path:
                 with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -706,6 +761,8 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
             result = {self.OUTPUT_ISOCHRONES: dest_id}
             if csv_path:
                 result[self.OUTPUT_AREA_CSV] = csv_path
+            if origin_sink is not None:
+                result[self.OUTPUT_ORIGIN] = origin_dest_id
             return result
 
         except BaseException:
