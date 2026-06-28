@@ -379,13 +379,13 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                     "and supply the path manually."
                 ))
             java = Path(saved)
-            feedback.pushInfo(self.tr(f"Using Java path from QSettings: {java}"))
+            feedback.pushInfo(self.tr("Using Java path from QSettings: {}").format(java))
         else:
             java = self._require_file(parameters, context, self.JAVA_PATH, "Java 8 binary")
         is_java8, java_ver, java_err = check_java_version(java)
         if not is_java8:
             raise QgsProcessingException(self.tr(java_err))
-        feedback.pushInfo(self.tr(f"Java OK: version {java_ver}"))
+        feedback.pushInfo(self.tr("Java OK: version {}").format(java_ver))
 
         jar = self._require_file(
             parameters, context, self.OTP_JAR_PATH, "OTP 1.5.0 jar",
@@ -425,9 +425,8 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
             if gtfs_dir.is_dir():
                 gtfs_files = sorted(gtfs_dir.glob("*.zip"))
                 feedback.pushInfo(self.tr(
-                    f"Discovered {len(gtfs_files)} GTFS feed(s): "
-                    f"{', '.join(p.name for p in gtfs_files)}"
-                ))
+                    "Discovered {} GTFS feed(s): {}"
+                ).format(len(gtfs_files), ", ".join(p.name for p in gtfs_files)))
         if is_transit and not gtfs_files:
             raise QgsProcessingException(self.tr(
                 "GTFS_FILES folder is required for transit mode '{}'. "
@@ -436,8 +435,8 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
             ).format(mode_str))
         if not is_transit and not gtfs_files:
             feedback.pushInfo(self.tr(
-                f"No GTFS supplied — building street-only graph for mode '{mode_str}'."
-            ))
+                "No GTFS supplied — building street-only graph for mode '{}'."
+            ).format(mode_str))
 
         # ── Date / time window ────────────────────────────────────────────
         qdt_date = self.parameterAsDateTime(parameters, self.ANALYSIS_DATE, context)
@@ -483,11 +482,13 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
             self._warn_gtfs_date(gtfs_files, analysis_qdate, feedback)
 
         feedback.pushInfo(self.tr(
-            f"Mode={mode_str}, Direction={direction_str}, "
-            f"Cutoffs={cutoffs_min} min, "
-            f"Window={t_start.toString('HH:mm')}–{t_end.toString('HH:mm')}, "
-            f"Interval={interval_min} min → {n_times} timestamps, "
-            f"total requests={n_times * len(cutoffs_min)}."
+            "Mode={}, Direction={}, Cutoffs={} min, "
+            "Window={}–{}, Interval={} min → {} timestamps, "
+            "total requests={}."
+        ).format(
+            mode_str, direction_str, cutoffs_min,
+            t_start.toString("HH:mm"), t_end.toString("HH:mm"),
+            interval_min, n_times, n_times * len(cutoffs_min),
         ))
 
         # ── Origin point → WGS84 ──────────────────────────────────────────
@@ -498,9 +499,7 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
             xform = QgsCoordinateTransform(origin_crs, wgs84, context.transformContext())
             origin_pt = xform.transform(origin_pt)
         from_lat, from_lon = origin_pt.y(), origin_pt.x()
-        feedback.pushInfo(self.tr(
-            f"Origin: lat={from_lat:.6f} lon={from_lon:.6f}"
-        ))
+        feedback.pushInfo(self.tr("Origin: lat={:.6f} lon={:.6f}").format(from_lat, from_lon))
 
         # ── Work dir ─────────────────────────────────────────────────────
         work_dir_str = self.parameterAsFile(parameters, self.WORK_DIR, context)
@@ -535,13 +534,13 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
             router_dir = existing_dir
             server_work_dir = existing_dir.parent.parent
             feedback.pushInfo(self.tr(
-                f"Using existing graph: {router_dir} (router_id={router_id}); skipping build."
-            ))
+                "Using existing graph: {} (router_id={}); skipping build."
+            ).format(router_dir, router_id))
             ensure_router_config(router_dir, None, feedback)
         else:
             server_work_dir = work_dir
             router_id = compute_router_id(pbf, gtfs_files)
-            feedback.pushInfo(self.tr(f"Router ID: {router_id}"))
+            feedback.pushInfo(self.tr("Router ID: {}").format(router_id))
             router_dir = ensure_router_dir(work_dir, router_id, pbf, gtfs_files)
             gtfs_source_dir = Path(gtfs_dir_str) if gtfs_dir_str else None
             ensure_router_config(router_dir, gtfs_source_dir, feedback)
@@ -603,15 +602,15 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                 ver = existing.get("serverVersion", {})
                 ver_str = ver.get("version") if isinstance(ver, dict) else str(ver)
                 feedback.pushInfo(self.tr(
-                    f"Reusing OTP already running on port {port} (version {ver_str})."
-                ))
+                    "Reusing OTP already running on port {} (version {})."
+                ).format(port, ver_str))
             else:
                 if port_is_listening(port):
                     raise QgsProcessingException(self.tr(
-                        f"Port {port} is held by a non-OTP process. Pick a "
-                        f"different OTP_PORT or stop the conflicting service."
-                    ))
-                feedback.pushInfo(self.tr(f"Starting OTP server on port {port}…"))
+                        "Port {} is held by a non-OTP process. Pick a "
+                        "different OTP_PORT or stop the conflicting service."
+                    ).format(port))
+                feedback.pushInfo(self.tr("Starting OTP server on port {}…").format(port))
                 server_ctx = OtpServer(
                     java_path=java,
                     jar_path=jar,
@@ -673,7 +672,7 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                 if feedback.isCanceled():
                     break
                 feedback.setProgress(int(100 * i / n_times))
-                feedback.pushInfo(self.tr(f"[{i + 1}/{n_times}] {time_str}"))
+                feedback.pushInfo(self.tr("[{}/{}] {}").format(i + 1, n_times, time_str))
 
                 try:
                     geojson_str = isochrone_client.get_isochrone(
@@ -692,7 +691,7 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                         min_transfer_time=min_transfer_time,
                     )
                 except OtpClientError as exc:
-                    feedback.pushWarning(self.tr(f"  {time_str}: {exc}. Skipping."))
+                    feedback.pushWarning(self.tr("  {}: {}. Skipping.").format(time_str, exc))
                     failed_count += 1
                     continue
 
@@ -705,8 +704,8 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                     geom = _geom_to_multipolygon(raw_geom)
                     if geom is None or geom.isEmpty():
                         feedback.pushWarning(self.tr(
-                            f"  {time_str} cutoff={cutoff_min} min: no polygon parts, skipped."
-                        ))
+                            "  {} cutoff={} min: no polygon parts, skipped."
+                        ).format(time_str, cutoff_min))
                         continue
 
                     metric_geom = QgsGeometry(geom)
@@ -722,8 +721,8 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                         ok_polygons += 1
                     else:
                         feedback.pushWarning(self.tr(
-                            f"  {time_str} cutoff={cutoff_min} min: sink rejected feature."
-                        ))
+                            "  {} cutoff={} min: sink rejected feature."
+                        ).format(time_str, cutoff_min))
 
                     if csv_path:
                         area_rows.append((time_str, cutoff_min, area_km2))
@@ -732,9 +731,8 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
 
             feedback.setProgress(100)
             feedback.pushInfo(self.tr(
-                f"Done: {ok_count} timestamps OK, {failed_count} failed, "
-                f"{ok_polygons} polygons written."
-            ))
+                "Done: {} timestamps OK, {} failed, {} polygons written."
+            ).format(ok_count, failed_count, ok_polygons))
 
             if ok_polygons == 0 and ok_count > 0:
                 feedback.pushWarning(self.tr(
@@ -750,7 +748,7 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                     w = csv.writer(f)
                     w.writerow(["time", "cutoff_min", "area_km2"])
                     w.writerows(area_rows)
-                feedback.pushInfo(self.tr(f"Area CSV written: {csv_path}"))
+                feedback.pushInfo(self.tr("Area CSV written: {}").format(csv_path))
 
             if server_ctx is not None:
                 server_ctx.__exit__(None, None, None)
@@ -772,7 +770,7 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
         try:
             info = client.get_router_info()
         except OtpClientError as e:
-            feedback.pushWarning(self.tr(f"Could not fetch router diagnostic: {e}"))
+            feedback.pushWarning(self.tr("Could not fetch router diagnostic: {}").format(e))
             return
         from datetime import datetime, timezone
 
@@ -784,9 +782,11 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
 
         feedback.pushInfo(self.tr("--- OTP router diagnostic ---"))
         feedback.pushInfo(self.tr(
-            f"hasTransit = {info.get('hasTransit')}; "
-            f"transitServiceStarts = {_epoch_to_iso(info.get('transitServiceStarts'))}; "
-            f"transitServiceEnds = {_epoch_to_iso(info.get('transitServiceEnds'))}"
+            "hasTransit = {}; transitServiceStarts = {}; transitServiceEnds = {}"
+        ).format(
+            info.get("hasTransit"),
+            _epoch_to_iso(info.get("transitServiceStarts")),
+            _epoch_to_iso(info.get("transitServiceEnds")),
         ))
         feedback.pushInfo(self.tr("-----------------------------"))
 
@@ -797,9 +797,9 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
         if day_of_week >= 6:
             day_name = "Saturday" if day_of_week == 6 else "Sunday"
             feedback.pushWarning(self.tr(
-                f"ANALYSIS_DATE is a {day_name} ({date_str}). Weekend transit "
+                "ANALYSIS_DATE is a {} ({}). Weekend transit "
                 "schedules may differ significantly from weekday analyses."
-            ))
+            ).format(day_name, date_str))
         for gtfs_path in gtfs_files:
             try:
                 with _zf.ZipFile(str(gtfs_path)) as z:
@@ -809,9 +809,9 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                     )
                     if cal_name is None:
                         feedback.pushWarning(self.tr(
-                            f"No calendar.txt in {gtfs_path.name} — cannot validate "
+                            "No calendar.txt in {} — cannot validate "
                             "analysis date against GTFS service range."
-                        ))
+                        ).format(gtfs_path.name))
                         continue
                     with z.open(cal_name) as raw:
                         reader = csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8-sig"))
@@ -824,33 +824,33 @@ class GenerateIsochronesOverTime(QgsProcessingAlgorithm):
                                 pass
                 if active == 0:
                     feedback.pushWarning(self.tr(
-                        f"{gtfs_path.name}: no services active on {date_str}. "
+                        "{}: no services active on {}. "
                         "OTP may return all-unreachable isochrones for this date."
-                    ))
+                    ).format(gtfs_path.name, date_str))
                 else:
                     feedback.pushInfo(self.tr(
-                        f"{gtfs_path.name}: {active} service(s) active on {date_str}."
-                    ))
+                        "{}: {} service(s) active on {}."
+                    ).format(gtfs_path.name, active, date_str))
             except Exception as exc:  # noqa: BLE001
                 feedback.pushWarning(self.tr(
-                    f"Could not read {gtfs_path.name} for date validation: {exc}"
-                ))
+                    "Could not read {} for date validation: {}"
+                ).format(gtfs_path.name, exc))
 
     def _require_file(
         self, parameters, context, key: str, label: str, fix_hint: str = ""
     ) -> Path:
         raw = self.parameterAsFile(parameters, key, context)
         if not raw:
-            raise QgsProcessingException(self.tr(
-                f"{label} is required (parameter {key})." +
-                (f" {fix_hint}" if fix_hint else "")
-            ))
+            msg = self.tr("{} is required (parameter {}).").format(label, key)
+            if fix_hint:
+                msg += " " + fix_hint
+            raise QgsProcessingException(msg)
         path = Path(raw)
         if not path.is_file():
-            raise QgsProcessingException(self.tr(
-                f"{label} not found at: {path} (parameter {key})." +
-                (f" {fix_hint}" if fix_hint else "")
-            ))
+            msg = self.tr("{} not found at: {} (parameter {}).").format(label, path, key)
+            if fix_hint:
+                msg += " " + fix_hint
+            raise QgsProcessingException(msg)
         return path
 
     @staticmethod
