@@ -3,7 +3,7 @@ name=Easy-OTP
 qgisMinimumVersion=3.22
 description=Automated temporal accessibility analysis using OpenTripPlanner.
 about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Analysis algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces, CompareTemporalAccessibility (delta analysis), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay. Realtime algorithms: RunRealtimeAccessibility (RT-1, live GTFS-RT feed integrated into OTP), RecordGtfsRt (RT-2, GTFS-RT TripUpdates archiver for offline analysis), BuildRealizedGtfs (RT-3, reconstructs a realized static GTFS — P50 median and P85 85th-percentile feeds — from a RecordGtfsRt snapshot archive; output feeds can be passed directly to RunTemporalAccessibility; requires google.protobuf bootstrapped on first use). Setup: DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
-version=0.4.0
+version=0.5.0
 author=Michal Kaczorowski
 email=michal.kaczorowsx@gmail.com
 license=GPL-2.0-or-later
@@ -17,7 +17,15 @@ tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,t
 homepage=https://github.com/GISBoost/easy-OTP
 repository=https://github.com/GISBoost/easy-OTP
 tracker=https://github.com/GISBoost/easy-OTP/issues
-changelog=0.4.0
+changelog=0.5.0
+    * Analysis:
+    - feat(analysis): RunTemporalAccessibility now saves origin point as a named
+      output vector layer (point geometry + CRS) with run metadata fields:
+      run_date, run_time, time_window, interval_min, router_id, arrive_by.
+    * i18n:
+    - feat(i18n): Polish (pl) UI translation — easy_otp_pl.qm compiled and
+      bundled; tr() context fixed to class name so Processing strings translate.
+    0.4.0
     * Realtime (new section):
     - feat(realtime): RT-3 BuildRealizedGtfs — reconstruct realized static GTFS
       (P50 median + P85 85th-percentile feeds) from a RecordGtfsRt snapshot archive;
