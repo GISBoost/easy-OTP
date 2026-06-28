@@ -120,6 +120,20 @@ When OTP 1.5 propagates arrival/departure delays from a TripUpdate, it can produ
 
 These cities publish static GTFS and (in some cases) real-time VehiclePositions or Alerts, but **no GTFS-RT TripUpdates** feed. `RunRealtimeAccessibility` requires TripUpdates to modify scheduled departure/arrival times; without it there is nothing to apply. The algorithm's help text lists the affected cities. The solution for these cities is RT-2 `RecordGtfsRt` + RT-3 `BuildRealizedGtfs` (v0.5).
 
+## 14. CAR isochrones return null geometry when origin is not on a driveable road
+
+**Severity:** medium (CAR mode unusable if origin placement is wrong). · **Tracker:** [#14](../../issues/14)
+
+OTP 1.5 cannot snap the origin point to a car-accessible edge when the point is inside a pedestrian zone, private compound, or area tagged `motor_vehicle=no`. The shortest-path tree stays at 3 split-vertices and expands nowhere; OTP returns `"geometry": null` for every cutoff. TRANSIT and BICYCLE work from the same point because pedestrian/bicycle edges are almost always available.
+
+Confirmed via OTP server log: `SPTWalker: Generated 0 points from 3 vertices / 3 states`.
+
+As of v0.5.2, `GenerateIsochronesOverTime` emits a targeted warning when all timestamps return null geometry, suggesting the user move the origin to a driveable road. A matching improvement is still needed in `GenerateIsochrones` (N-1).
+
+**Workaround:** place the origin point on a road tagged `highway=residential` or higher, without `access=private` / `motor_vehicle=no`. Verify routing via the OTP debug UI at `http://localhost:<port>` before running the algorithm.
+
+**Status:** partial fix in v0.5.2 (diagnostic warning). Root cause is OTP snapping behaviour — not fixable in the plugin.
+
 ---
 
 This list is not exhaustive. If you hit something not listed here, please open a GitHub issue.
