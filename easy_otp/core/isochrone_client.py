@@ -15,13 +15,14 @@ from typing import Optional
 
 from .otp_client import OtpClientError
 
-_TRANSIT_MODES = {"TRANSIT", "BUS", "RAIL", "TRAM", "SUBWAY"}
+TRANSIT_MODES: frozenset = frozenset({"TRANSIT", "BUS", "RAIL", "TRAM", "SUBWAY"})
+_TRANSIT_MODES = TRANSIT_MODES  # kept for backward compat
 
 
 def _effective_mode(mode: str) -> str:
     """Append ,WALK for transit modes; leave WALK/CAR/BICYCLE bare."""
     upper = mode.upper()
-    if upper in _TRANSIT_MODES:
+    if upper in TRANSIT_MODES:
         return f"{upper},WALK"
     return upper
 
@@ -86,8 +87,13 @@ class IsochroneClient:
         query = urllib.parse.urlencode(params)
         url = f"{self.base_url}/routers/{self.router}/isochrone?{query}"
         effective_timeout = timeout_s if timeout_s is not None else self.timeout_s
+        # OTP 1.5 isochrone endpoint supports multiple output formats (GeoJSON,
+        # Shapefile ZIP). Without an explicit Accept header it may return a ZIP
+        # archive (magic bytes "PK") for certain parameter combinations (e.g.
+        # when toPlace is set). Force JSON to guarantee text output.
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
         try:
-            with urllib.request.urlopen(url, timeout=effective_timeout) as resp:  # nosec B310
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:  # nosec B310
                 body = resp.read()
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:500]

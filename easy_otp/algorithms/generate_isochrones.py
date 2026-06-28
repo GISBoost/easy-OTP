@@ -13,7 +13,7 @@ import json
 import zipfile as _zf
 from pathlib import Path
 
-from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QSettings, QVariant
+from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, QSettings, QTime, QVariant
 from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
@@ -38,7 +38,7 @@ from qgis.core import (
     QgsWkbTypes,
 )
 
-from ..core.isochrone_client import IsochroneClient, _TRANSIT_MODES
+from ..core.isochrone_client import IsochroneClient, TRANSIT_MODES
 from ..core.otp_client import OtpClient, OtpClientError
 from ..core.otp_server import (
     OtpServer,
@@ -204,10 +204,11 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
-            QgsProcessingParameterString(
+            QgsProcessingParameterDateTime(
                 self.TIME,
-                self.tr("Departure time (HH:MM:SS)"),
-                defaultValue="08:00:00",
+                self.tr("Departure time"),
+                type=QgsProcessingParameterDateTime.Time,
+                defaultValue=QTime(8, 0, 0),
             )
         )
         self.addParameter(
@@ -378,16 +379,15 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
         mode_str = _MODE_OPTIONS[mode_idx]
         direction_idx = self.parameterAsEnum(parameters, self.DIRECTION, context)
         direction_str = _DIRECTION_OPTIONS[direction_idx]
-        is_transit = mode_str.upper() in _TRANSIT_MODES
+        is_transit = mode_str.upper() in TRANSIT_MODES
 
         cutoffs_raw = self.parameterAsString(parameters, self.CUTOFFS_MIN, context).strip()
         try:
             cutoffs_min = sorted({int(x.strip()) for x in cutoffs_raw.split(",") if x.strip()})
         except ValueError:
             raise QgsProcessingException(self.tr(
-                f"CUTOFFS_MIN must be a comma-separated list of positive integers, "
-                f"got: {cutoffs_raw!r}"
-            ))
+                "CUTOFFS_MIN must be a comma-separated list of positive integers, got: {}"
+            ).format(cutoffs_raw))
         if not cutoffs_min or any(c <= 0 for c in cutoffs_min):
             raise QgsProcessingException(self.tr(
                 "CUTOFFS_MIN must contain at least one positive integer."
@@ -411,10 +411,10 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
                 ))
         if is_transit and not gtfs_files:
             raise QgsProcessingException(self.tr(
-                f"GTFS_FILES folder is required for transit mode '{mode_str}'. "
+                "GTFS_FILES folder is required for transit mode '{}'. "
                 "Supply a folder containing one or more GTFS .zip archives, "
                 "or choose a non-transit mode (WALK/CAR/BICYCLE) for street-only routing."
-            ))
+            ).format(mode_str))
         if not is_transit and not gtfs_files:
             feedback.pushInfo(self.tr(
                 f"No GTFS supplied — building street-only graph for mode '{mode_str}'."
@@ -423,7 +423,15 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
         # ── Date / time ───────────────────────────────────────────────────
         qdt_date = self.parameterAsDateTime(parameters, self.ANALYSIS_DATE, context)
         date_s = qdt_date.date().toString("MM-dd-yyyy")
-        time_s = self.parameterAsString(parameters, self.TIME, context).strip() or "08:00:00"
+        # QgsProcessingParameterDateTime(type=Time) stores values as QTime in
+        # QGIS 3.40. parameterAsDateTime() on a raw QTime returns an invalid
+        # QDateTime. Read the raw value directly (same workaround as RunTA).
+        raw_time = parameters.get(self.TIME)
+        time_t = (
+            raw_time if isinstance(raw_time, QTime)
+            else self.parameterAsDateTime(parameters, self.TIME, context).time()
+        )
+        time_s = time_t.toString("HH:mm:ss") if time_t.isValid() else "08:00:00"
 
         if is_transit and gtfs_files:
             self._warn_gtfs_date(gtfs_files, qdt_date.date(), feedback)
@@ -446,9 +454,14 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
             existing_dir = Path(existing_graph_dir_str)
             if not (existing_dir / "Graph.obj").exists():
                 raise QgsProcessingException(self.tr(
-                    f"EXISTING_GRAPH_DIR does not contain Graph.obj: {existing_dir}. "
+                    "EXISTING_GRAPH_DIR does not contain Graph.obj: {}. "
                     "Point to the router directory (e.g. …/graphs/abc123/)."
-                ))
+                ).format(existing_dir))
+            if existing_dir.parent.name != "graphs":
+                raise QgsProcessingException(self.tr(
+                    "EXISTING_GRAPH_DIR must be inside a 'graphs/' folder "
+                    "(expected …/graphs/<router_id>/, got {})."
+                ).format(existing_dir))
             router_id = existing_dir.name
             router_dir = existing_dir
             server_work_dir = existing_dir.parent.parent
@@ -472,7 +485,7 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
                 except RuntimeError as e:
                     raise QgsProcessingException(str(e)) from e
                 write_meta(router_dir, jar, [pbf, *gtfs_files])
-        pointsets = ensure_pointsets_dir(work_dir)
+        pointsets = ensure_pointsets_dir(server_work_dir)
 
         # ── Output sink ───────────────────────────────────────────────────
         out_fields = QgsFields()
@@ -599,6 +612,7 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
                         date_mmddyyyy=date_s,
                         time_hhmmss=time_s,
                         direction=direction_str,
+                        arrive_by=direction_str == "TO",
                         max_walk_distance=max_walk_distance,
                         walk_reluctance=walk_reluctance,
                         wait_reluctance=wait_reluctance,
@@ -614,7 +628,7 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
                     continue
 
                 for item in parsed:
-                    cutoff_min = item["cutoff_sec"] // 60
+                    cutoff_min = round(item["cutoff_sec"] / 60)
                     raw_geom = QgsJsonUtils.geometryFromGeoJson(json.dumps(item["geometry"]))
                     geom = _geom_to_multipolygon(raw_geom)
                     if geom is None or geom.isEmpty():

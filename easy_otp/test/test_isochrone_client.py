@@ -48,18 +48,18 @@ def _make_mock_resp(body: bytes):
 
 
 def _call_and_capture_url(**overrides):
-    """Call get_isochrone with _BASE_CALL + overrides; return (client, url_called)."""
+    """Call get_isochrone with _BASE_CALL + overrides; return URL string called."""
     client = IsochroneClient(port=8801, router="default")
     captured = {}
 
-    def fake_urlopen(url, timeout=None):
-        captured["url"] = url
+    def fake_urlopen(req, timeout=None):
+        captured["req"] = req
         return _make_mock_resp(_FIXTURE_GEOJSON.encode())
 
     with patch("easy_otp.core.isochrone_client.urllib.request.urlopen", side_effect=fake_urlopen):
         client.get_isochrone(**{**_BASE_CALL, **overrides})
 
-    return captured["url"]
+    return captured["req"].full_url
 
 
 # ── _effective_mode ──────────────────────────────────────────────────────────
@@ -194,6 +194,39 @@ def test_parse_fixture_reads_properties_time():
     result = IsochroneClient.parse_isochrones(_FIXTURE_GEOJSON)
     result_cutoffs = {r["cutoff_sec"] for r in result}
     assert result_cutoffs == times_in_fixture
+
+
+# ── Accept header ────────────────────────────────────────────────────────────
+
+def test_accept_json_header_set():
+    """Every OTP isochrone request must carry Accept: application/json."""
+    client = IsochroneClient()
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["req"] = req
+        return _make_mock_resp(_FIXTURE_GEOJSON.encode())
+
+    with patch("easy_otp.core.isochrone_client.urllib.request.urlopen", side_effect=fake_urlopen):
+        client.get_isochrone(**_BASE_CALL)
+
+    # urllib.request.Request.get_header() uses title-case keys
+    assert captured["req"].get_header("Accept") == "application/json"
+
+
+def test_accept_json_header_set_for_to_direction():
+    """Accept: application/json must also be present for DIRECTION=TO requests."""
+    client = IsochroneClient()
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["req"] = req
+        return _make_mock_resp(_FIXTURE_GEOJSON.encode())
+
+    with patch("easy_otp.core.isochrone_client.urllib.request.urlopen", side_effect=fake_urlopen):
+        client.get_isochrone(**{**_BASE_CALL, "direction": "TO", "arrive_by": True})
+
+    assert captured["req"].get_header("Accept") == "application/json"
 
 
 # ── error path ───────────────────────────────────────────────────────────────
