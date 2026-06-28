@@ -3,6 +3,7 @@ from .count_from_surfaces import CountFromExistingSurfaces
 from .download_jre import DownloadJre
 from .download_transit_data import DownloadTransitData
 from .generate_hex_grid import GenerateHexGrid
+from .generate_isochrones import GenerateIsochrones
 from .population_overlay import PopulationOverlay
 from .prepare_student_layer import PrepareStudentLayer
 from .build_realized_gtfs import BuildRealizedGtfs
@@ -18,6 +19,7 @@ __all__ = [
     "DownloadJre",
     "DownloadTransitData",
     "GenerateHexGrid",
+    "GenerateIsochrones",
     "PopulationOverlay",
     "PrepareStudentLayer",
     "RecordGtfsRt",
