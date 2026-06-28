@@ -59,6 +59,33 @@ _MODE_OPTIONS = ["TRANSIT", "BUS", "RAIL", "TRAM", "SUBWAY", "WALK", "CAR", "BIC
 _DIRECTION_OPTIONS = ["FROM", "TO"]
 
 
+def _geom_to_multipolygon(geom: QgsGeometry) -> "QgsGeometry | None":
+    """Normalise any OTP isochrone geometry to MultiPolygon.
+
+    makeValid() in GEOS 3.13+ can return GeometryCollection when the input
+    polygon is self-intersecting (splits the ring into polygon parts +
+    degenerate linestrings). Extract only the polygon parts and rebuild.
+    """
+    if geom is None or geom.isEmpty():
+        return None
+    geom = geom.makeValid()
+    if geom is None or geom.isEmpty():
+        return None
+    geom_type = QgsWkbTypes.geometryType(geom.wkbType())
+    if geom_type == QgsWkbTypes.PolygonGeometry:
+        geom.convertToMultiType()
+        return geom
+    # GeometryCollection: keep polygon parts only, discard linestrings/points
+    parts = []
+    for g in geom.asGeometryCollection():
+        if QgsWkbTypes.geometryType(g.wkbType()) == QgsWkbTypes.PolygonGeometry:
+            if g.isMultipart():
+                parts.extend(g.asMultiPolygon())
+            else:
+                parts.append(g.asPolygon())
+    return QgsGeometry.fromMultiPolygonXY(parts) if parts else None
+
+
 class GenerateIsochrones(QgsProcessingAlgorithm):
     ORIGIN_POINTS = "ORIGIN_POINTS"
     OSM_PBF = "OSM_PBF"
@@ -588,13 +615,14 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
 
                 for item in parsed:
                     cutoff_min = item["cutoff_sec"] // 60
-                    geom = QgsJsonUtils.geometryFromGeoJson(json.dumps(item["geometry"]))
+                    raw_geom = QgsJsonUtils.geometryFromGeoJson(json.dumps(item["geometry"]))
+                    geom = _geom_to_multipolygon(raw_geom)
                     if geom is None or geom.isEmpty():
                         feedback.pushWarning(self.tr(
-                            f"Point {point_id}: empty geometry for cutoff {cutoff_min} min."
+                            f"Point {point_id}: no polygon parts for cutoff {cutoff_min} min "
+                            f"(raw type={QgsWkbTypes.displayString(raw_geom.wkbType()) if raw_geom else 'null'})."
                         ))
                         continue
-                    geom = geom.makeValid()
                     out_feat = QgsFeature(out_fields)
                     out_feat.setGeometry(geom)
                     out_feat.setAttributes([
@@ -606,8 +634,13 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
                         time_s,
                         direction_str,
                     ])
-                    sink.addFeature(out_feat, QgsFeatureSink.FastInsert)
-                    total_polygons += 1
+                    if sink.addFeature(out_feat, QgsFeatureSink.FastInsert):
+                        total_polygons += 1
+                    else:
+                        feedback.pushWarning(self.tr(
+                            f"Point {point_id}: sink rejected cutoff {cutoff_min} min polygon "
+                            f"(type={QgsWkbTypes.displayString(geom.wkbType())})."
+                        ))
 
                 ok_count += 1
 
