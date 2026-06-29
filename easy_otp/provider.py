@@ -15,6 +15,7 @@ from .algorithms.build_realized_gtfs import BuildRealizedGtfs
 from .algorithms.record_gtfsrt import RecordGtfsRt
 from .algorithms.run_origin_destination_times import RunOriginDestinationTimes
 from .algorithms.run_realtime_accessibility import RunRealtimeAccessibility
+from .algorithms.run_travel_time_matrix import RunTravelTimeMatrix
 from .algorithms.run_service_coverage import RunServiceCoverage
 from .algorithms.run_temporal_accessibility import RunTemporalAccessibility
 from .algorithms.test_otp_server import TestOtpServer
@@ -41,6 +42,7 @@ class EasyOtpProvider(QgsProcessingProvider):
         self.addAlgorithm(GenerateIsochrones())
         self.addAlgorithm(GenerateIsochronesOverTime())
         self.addAlgorithm(RunOriginDestinationTimes())
+        self.addAlgorithm(RunTravelTimeMatrix())
         self.addAlgorithm(RunServiceCoverage())
         self.addAlgorithm(PopulationOverlay())
         self.addAlgorithm(PrepareStudentLayer())
