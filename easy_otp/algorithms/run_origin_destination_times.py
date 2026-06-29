@@ -282,8 +282,10 @@ class RunOriginDestinationTimes(QgsProcessingAlgorithm):
             QgsProcessingParameterNumber(
                 self.MAX_WORKERS,
                 self.tr(
-                    "Concurrent workers (threads) - more threads can overload OTP/RAM; "
-                    "default 4 is safe for most setups"
+                    "Concurrent workers sending parallel /plan requests to OTP "
+                    "(I/O-bound, not CPU threads — safe to set above physical core count). "
+                    "More workers speed up large grids but stress OTP RAM and response time. "
+                    "Default 4 is safe for most setups."
                 ),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=4,
@@ -505,6 +507,10 @@ class RunOriginDestinationTimes(QgsProcessingAlgorithm):
         # --- Build output fields ---
         origin_fields = origins_source.fields()
         out_fields = QgsFields(origin_fields)
+        out_fields.append(QgsField("lat", QVariant.Double))
+        out_fields.append(QgsField("lon", QVariant.Double))
+        out_fields.append(QgsField("direction", QVariant.String))
+        out_fields.append(QgsField("mode", QVariant.String))
         out_fields.append(QgsField("status", QVariant.String))
         out_fields.append(QgsField("duration", QVariant.Double))
         if detail:
@@ -741,6 +747,10 @@ class RunOriginDestinationTimes(QgsProcessingAlgorithm):
                 out_feat = QgsFeature(out_fields)
                 out_feat.setGeometry(feat.geometry())
                 attrs = list(feat.attributes())
+                attrs.append(round(lat, 6))
+                attrs.append(round(lon, 6))
+                attrs.append(direction)
+                attrs.append(mode)
                 attrs.append(trip.get("status"))
                 attrs.append(trip.get("duration"))
                 if detail:
@@ -759,7 +769,8 @@ class RunOriginDestinationTimes(QgsProcessingAlgorithm):
             # --- Optional table export ---
             if table_path:
                 self._write_table(
-                    origins, origin_fields, results, table_path, detail, diagnose
+                    origins, origin_fields, results, table_path, detail, diagnose,
+                    direction, mode,
                 )
                 feedback.pushInfo(self.tr("Table saved to: {0}").format(table_path))
 
@@ -890,23 +901,31 @@ class RunOriginDestinationTimes(QgsProcessingAlgorithm):
                 self.tr("  status={0}: {1} cell(s)").format(code, count)
             )
 
-    def _write_table(self, origins, origin_fields, results, path_str, detail, diagnose) -> None:
+    def _write_table(
+        self, origins, origin_fields, results, path_str, detail, diagnose,
+        direction: str, mode: str,
+    ) -> None:
         from ..core.dependencies import ensure_openpyxl  # noqa: PLC0415
 
         path = Path(path_str)
         field_names = [f.name() for f in origin_fields]
+        meta_cols = ["lat", "lon", "direction", "mode"]
         stat_cols = ["status", "duration"]
         if detail:
             stat_cols += ["transittime", "walktime", "waitingtime", "transfers"]
         if diagnose:
             stat_cols.append("diag")
-        all_cols = field_names + stat_cols
+        all_cols = field_names + meta_cols + stat_cols
 
         rows = []
         for feat, lat, lon in origins:
             fid = feat.id()
             trip = results.get(fid, {})
             row = {name: val for name, val in zip(field_names, feat.attributes())}
+            row["lat"] = round(lat, 6)
+            row["lon"] = round(lon, 6)
+            row["direction"] = direction
+            row["mode"] = mode
             for col in stat_cols:
                 row[col] = trip.get(col)
             rows.append(row)
