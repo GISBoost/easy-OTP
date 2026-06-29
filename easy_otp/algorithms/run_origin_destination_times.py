@@ -427,6 +427,9 @@ class RunOriginDestinationTimes(QgsProcessingAlgorithm):
         mode_idx = self.parameterAsEnum(parameters, self.MODE, context)
         mode = _MODE_OPTIONS[mode_idx]
         need_gtfs = mode in _TRANSIT_MODES
+        # OTP 1.5: pure mode=TRANSIT blocks all walking, including to/from stops.
+        # Must append WALK so OTP can reach transit stops on foot.
+        otp_mode = f"{mode},WALK" if need_gtfs else mode
 
         gtfs_files = []
         if need_gtfs:
@@ -633,7 +636,7 @@ class RunOriginDestinationTimes(QgsProcessingAlgorithm):
                 timeout_s=30.0,
             )
             query_kwargs = dict(
-                mode=mode,
+                mode=otp_mode,
                 date_mmddyyyy=date_s,
                 time_hhmmss=time_s,
                 max_walk_distance=float(max_walk_distance),
@@ -647,7 +650,7 @@ class RunOriginDestinationTimes(QgsProcessingAlgorithm):
                 self.tr(
                     "Running {0} /plan queries (mode={1}, date={2}, time={3}, "
                     "maxWalkDistance={4}, workers={5})..."
-                ).format(len(origins), mode, date_s, time_s, max_walk_distance, max_workers)
+                ).format(len(origins), otp_mode, date_s, time_s, max_walk_distance, max_workers)
             )
 
             results = {}  # fid → trip dict
