@@ -11,6 +11,7 @@ from .build_realized_gtfs import BuildRealizedGtfs
 from .record_gtfsrt import RecordGtfsRt
 from .run_origin_destination_times import RunOriginDestinationTimes
 from .run_realtime_accessibility import RunRealtimeAccessibility
+from .run_travel_time_matrix import RunTravelTimeMatrix
 from .run_service_coverage import RunServiceCoverage
 from .run_temporal_accessibility import RunTemporalAccessibility
 from .test_otp_server import TestOtpServer
@@ -29,6 +30,7 @@ __all__ = [
     "RecordGtfsRt",
     "RunOriginDestinationTimes",
     "RunRealtimeAccessibility",
+    "RunTravelTimeMatrix",
     "RunServiceCoverage",
     "RunTemporalAccessibility",
     "TestOtpServer",
