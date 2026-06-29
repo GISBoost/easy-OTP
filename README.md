@@ -320,6 +320,67 @@ cell that gained or lost coverage entirely is not silently treated as zero
 change. The output hex layer is styled automatically with the bundled
 `easy_otp/styles/delta_class.qml`.
 
+### Run origin-destination times (RunOriginDestinationTimes) *(new in v0.5)*
+
+**Processing Toolbox → easy-OTP → Analysis → Run origin-destination times**
+
+Batch point-to-point routing from many origins to one destination (or from
+one destination to many origins). For each cell in an origin layer the algorithm
+sends one `/plan` request to OTP and stores the resulting travel time in the
+output attribute table. Designed for studies where you know the destination
+(e.g. a hospital, a university campus, a railway station) and want to see the
+travel time from every grid cell across the study area.
+
+#### Direction
+
+| Direction | OTP query | Typical use |
+|---|---|---|
+| **TO_DESTINATION** *(default)* | Depart from each origin, arrive at destination | "How long does it take to reach the hospital?" |
+| **FROM_DESTINATION** | Depart from destination, arrive at each origin | Arrive-by equivalent — "Can you reach home from the station in time?" |
+
+#### Key parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| **Origins layer** | — | Any vector layer; hexagonal grids, census tracts, or point layers. Polygon centroids are used as OTP fromPlace. |
+| **Destination (click on map)** | — | Single point. Snapped to WGS84 before sending to OTP. |
+| **Direction** | TO_DESTINATION | See table above. |
+| **Transport mode** | TRANSIT | `TRANSIT`, `WALK`, `CAR`, `BICYCLE`, `BUS`, `RAIL`, `TRAM`, `SUBWAY`. For transit modes, walking to/from stops is added automatically. |
+| **Analysis date** | — | Date in YYYY-MM-DD format; must be covered by the GTFS feed in the graph. |
+| **Departure time** | `08:00:00` | HH:MM:SS — applies to each origin independently. |
+| **Include detail fields** | off | Adds `transittime`, `walktime`, `waitingtime`, `transfers` to the output. |
+| **Concurrent workers** | 4 | Parallel HTTP requests to OTP. I/O-bound — safe to set above physical core count. Higher values speed up large grids but increase OTP RAM pressure. |
+| **Snap origins to road network** | off | Snaps origin centroids to the nearest road segment before routing (requires a roads/OSM lines layer). Useful when origins fall slightly off the drivable network. |
+| **Output table (.csv or .xlsx)** | *(optional)* | If provided, results are also exported to a flat file. Columns match the output layer. |
+
+#### Output layer fields
+
+| Field | Type | Description |
+|---|---|---|
+| *[origin layer fields]* | *varies* | All attribute fields from the origins layer, copied verbatim. |
+| `lat` | Double | WGS84 latitude of the origin centroid. |
+| `lon` | Double | WGS84 longitude of the origin centroid. |
+| `direction` | String | `TO_DESTINATION` or `FROM_DESTINATION` — same for all rows in a single run. |
+| `mode` | String | Selected transport mode (e.g. `TRANSIT`) — same for all rows in a single run. |
+| `status` | String | `OK` on success; OTP error code on failure (`404` = PATH_NOT_FOUND, `406` = NO_TRANSIT_TIMES, `409` = TOO_CLOSE, `410` = OUTSIDE_BOUNDS, `440`/`450` = geocode failure). |
+| `duration` | Double | Total trip time in decimal minutes. `NULL` when status ≠ OK. |
+| `transittime` | Double | Time aboard transit vehicles in decimal minutes *(detail mode only)*. |
+| `walktime` | Double | Walking time in decimal minutes *(detail mode only)*. |
+| `waitingtime` | Double | Waiting time for transit in decimal minutes *(detail mode only)*. |
+| `transfers` | Integer | Number of transfers *(detail mode only)*. |
+| `diag` | String | Raw OTP error message *(Diagnose unreachable origins mode only)*. |
+
+#### Performance notes
+
+- 1 worker: ~3 min 15 s for ~1 900 origins (serial).
+- 8 workers: ~30 s for the same grid (parallel HTTP requests).
+- Workers are I/O-bound, not CPU-bound — setting `MAX_WORKERS` to 8–16 is
+  safe even on a 4-core machine.
+- Very large grids (10 000+ origins) may require reducing workers to avoid
+  exhausting OTP's thread pool.
+
+---
+
 ### Realtime algorithms *(new in v0.4)*
 
 Three algorithms under **easy-OTP → Realtime** measure or record what actually
@@ -566,8 +627,8 @@ Java/OTP/data downloaders) are already part of v0.3.5. Planned and in-progress w
 - **GTFS-RT recording + realized timetable** (`RecordGtfsRt`, `BuildRealizedGtfs`) —
   archive RT snapshots and reconstruct a "realized" timetable for re-analysis (v0.5).
 - **Validate GTFS feed** — diagnostic Setup algorithm checking feed correctness before analysis.
-- **Multi-destination accessibility** — accessibility to many destinations at once
-  (e.g. all hospitals or all campuses).
+- **Multi-destination accessibility** — batch routing from many origins to one
+  destination: **done** (`RunOriginDestinationTimes`, v0.5).
 - **Walk-only isochrone** — static pedestrian isochrone as a baseline.
 - **H3 grid** — H3 grid indexing alongside the plain hexagonal grid.
 - **Car Dependency Index (CDI)** — car-vs-transit accessibility contrast module.
