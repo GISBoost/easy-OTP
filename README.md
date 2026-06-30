@@ -7,6 +7,7 @@ grid cell is within your travel-time threshold, and classifies cells into four
 service-time categories consistent with the academic literature.
 
 Requires **QGIS 3.22 LTR** or newer. No R, no GRASS. One optional `pip install` (openpyxl) — see below.
+The plugin UI is available in English and **Polish** *(new in v0.5)*.
 
 ---
 
@@ -42,15 +43,15 @@ Download the latest release ZIP from GitHub:
 
 **[easy-OTP Releases → https://github.com/GISBoost/easy-OTP/releases/latest](https://github.com/GISBoost/easy-OTP/releases/latest)**
 
-Download `easy_otp-0.4.0.zip` from the Assets section. This is the correctly
+Download `easy_otp-0.5.0.zip` from the Assets section. This is the correctly
 structured plugin ZIP — do **not** use the auto-generated "Source code" archives
 on the same page, as those have the wrong directory layout for QGIS.
 
 ### Plugin Installation
 
-1. Download `easy_otp-0.4.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
+1. Download `easy_otp-0.5.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
 2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
-3. Select the downloaded `easy_otp-0.4.0.zip` and click **Install Plugin**.
+3. Select the downloaded `easy_otp-0.5.0.zip` and click **Install Plugin**.
 4. After installation, **Plugins → easy-OTP → Enable** (if not enabled
    automatically).
 5. The algorithms appear in **Processing Toolbox** under the **easy-OTP** group.
@@ -282,6 +283,9 @@ The plugin will:
 - Run zonal statistics on the hex grid.
 - Classify cells into four service-time categories.
 - Load the result into QGIS with the built-in style applied.
+- Save the **origin point** as a named vector layer with run metadata fields:
+  `run_date`, `run_time`, `time_window`, `interval_min`, `router_id`, `arrive_by`
+  *(new in v0.5)*.
 
 A full 1-minute window run (961 surfaces) on Wrocław-sized data takes roughly
 20–25 minutes. A 15-minute window run (65 surfaces) takes about 2 minutes.
