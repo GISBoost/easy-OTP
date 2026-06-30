@@ -17,6 +17,10 @@ FIXTURE_PATH = (
     Path(__file__).parent.parent.parent
     / "docs" / "gisboostgithub" / "OpenTripPlanner" / "isochrone.geojson"
 )
+
+if not FIXTURE_PATH.exists():
+    pytest.skip(reason="isochrone.geojson fixture not present", allow_module_level=True)
+
 _FIXTURE_GEOJSON = FIXTURE_PATH.read_text(encoding="utf-8")
 
 # ── helpers ──────────────────────────────────────────────────────────────────

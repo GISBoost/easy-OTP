@@ -634,7 +634,7 @@ class GenerateIsochrones(QgsProcessingAlgorithm):
                     if geom is None or geom.isEmpty():
                         feedback.pushWarning(self.tr(
                             f"Point {point_id}: no polygon parts for cutoff {cutoff_min} min "
-                            f"(raw type={QgsWkbTypes.displayString(raw_geom.wkbType()) if raw_geom else 'null'})."
+                            f"(raw type={QgsWkbTypes.displayString(raw_geom.wkbType()) if raw_geom else 'null'})."  # noqa: E501
                         ))
                         continue
                     out_feat = QgsFeature(out_fields)

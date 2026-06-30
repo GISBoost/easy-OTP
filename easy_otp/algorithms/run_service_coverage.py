@@ -531,7 +531,7 @@ class RunServiceCoverage(QgsProcessingAlgorithm):
         )
         feedback.pushInfo(self.tr(
             "Analysis snapshot: date={}, time={}, mode={}, threshold={} min"
-        ).format(date_s, time_hhmmss, mode_str, self.parameterAsInt(parameters, self.THRESHOLD_MIN, context)))
+        ).format(date_s, time_hhmmss, mode_str, self.parameterAsInt(parameters, self.THRESHOLD_MIN, context)))  # noqa: E501
 
         # ── Aggregation params ───────────────────────────────────────────────
         aggregation_idx = self.parameterAsEnum(parameters, self.AGGREGATION, context)
@@ -589,7 +589,7 @@ class RunServiceCoverage(QgsProcessingAlgorithm):
                     raise QgsProcessingException(self.tr(
                         "Graph cache miss: expected {}.\n"
                         "However, a graph was found at {} — "
-                        "WORK_DIR appears to point to the 'graphs' subfolder rather than its parent.\n"
+                        "WORK_DIR appears to point to the 'graphs' subfolder rather than its parent.\n"  # noqa: E501
                         "Fix option A: set WORK_DIR to '{}'.\n"
                         "Fix option B: set EXISTING_GRAPH_DIR to '{}'."
                     ).format(
@@ -796,7 +796,6 @@ class RunServiceCoverage(QgsProcessingAlgorithm):
     def _log_coverage_summary(self, count_path: Path, n_points: int, feedback) -> None:
         try:
             from osgeo import gdal  # noqa: PLC0415
-            import numpy as np      # noqa: PLC0415
 
             ds = gdal.Open(str(count_path))
             arr = ds.GetRasterBand(1).ReadAsArray()

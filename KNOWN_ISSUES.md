@@ -134,6 +134,33 @@ As of v0.5.2, `GenerateIsochronesOverTime` emits a targeted warning when all tim
 
 **Status:** partial fix in v0.5.2 (diagnostic warning). Root cause is OTP snapping behaviour — not fixable in the plugin.
 
+## 15. RunOriginDestinationTimes: OTP PATH\_NOT\_FOUND (404) for origins outside transit reach
+
+**Severity:** medium (many cells may show NULL travel time). · **Tracker:** [#15](../../issues/15)
+
+`RunOriginDestinationTimes` returns `status=404` (OTP `PATH_NOT_FOUND`) for origin
+cells that cannot be reached with the default `MAX_WALK_DISTANCE=800 m`. Adjacent
+cells may alternate OK/404 due to OTP 1.5 network snapping behaviour: the origin
+centroid is linked to the nearest graph edge (preferring car edges over pedestrian
+ones), so cells in parks, courtyards, or near road-type boundaries can miss the
+transit network even when transit stops are nearby. In reference data
+(`docs/gisboostgithub/pop_results2.csv`), 30/50 cells returned 404 at the 800 m
+default; raising `MAX_WALK_DISTANCE` to 9 999 m yielded 100% OK responses.
+
+**Mitigations built into the algorithm:**
+- **`MAX_WALK_DISTANCE`** parameter (default 800 m) — the primary lever. Raise to
+  1 500–9 999 m to reduce/eliminate 404s; note that very high values allow
+  unrealistically long walk legs (user's methodological choice).
+- **`SNAP_ORIGINS_TO_NETWORK`** toggle — snaps centroids to the nearest road edge
+  before routing; requires an OSM-lines or roads layer as input.
+- **`DIAGNOSE_UNREACHABLE`** mode — adds a `diag` field (`off_network` /
+  `no_transit`) by sending a walk-only fallback for each 404 cell.
+- **`status` field** — stores the exact OTP error code (`404`, `406`, `409`,
+  `410`, `440`, `450`) so users can distinguish true off-network cells from
+  transit-gap cells.
+
+**Status:** known; mitigations documented in the UI and in the README.
+
 ---
 
 This list is not exhaustive. If you hit something not listed here, please open a GitHub issue.

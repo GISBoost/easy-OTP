@@ -2,8 +2,8 @@
 name=Easy-OTP
 qgisMinimumVersion=3.22
 description=Automated temporal accessibility analysis using OpenTripPlanner.
-about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Analysis algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces, CompareTemporalAccessibility (delta analysis), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay. Realtime algorithms: RunRealtimeAccessibility (RT-1, live GTFS-RT feed integrated into OTP), RecordGtfsRt (RT-2, GTFS-RT TripUpdates archiver for offline analysis), BuildRealizedGtfs (RT-3, reconstructs a realized static GTFS — P50 median and P85 85th-percentile feeds — from a RecordGtfsRt snapshot archive; output feeds can be passed directly to RunTemporalAccessibility; requires google.protobuf bootstrapped on first use). Setup: DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
-version=0.5.0
+about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Analysis algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces, CompareTemporalAccessibility (delta analysis), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay, GenerateIsochrones (isochrone polygons from/to 1..N points, one time, multiple cutoffs), GenerateIsochronesOverTime (one point, isochrones across the day for the Temporal Controller), RunServiceCoverage (count of service points reachable per cell within a threshold at one time; raster + optional grid), RunOriginDestinationTimes (per-origin trip stats to one destination: duration, in-vehicle, walk, wait, transfers; parallelised), RunTravelTimeMatrix (N×M origin–destination travel-time matrix). Realtime algorithms: RunRealtimeAccessibility (RT-1, live GTFS-RT feed integrated into OTP), RecordGtfsRt (RT-2, GTFS-RT TripUpdates archiver for offline analysis), BuildRealizedGtfs (RT-3, reconstructs a realized static GTFS — P50 median and P85 85th-percentile feeds — from a RecordGtfsRt snapshot archive; output feeds can be passed directly to RunTemporalAccessibility; requires google.protobuf bootstrapped on first use). Setup: DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
+version=0.6.0
 author=Michal Kaczorowski
 email=michal.kaczorowsx@gmail.com
 license=GPL-2.0-or-later
@@ -17,7 +17,24 @@ tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,t
 homepage=https://github.com/GISBoost/easy-OTP
 repository=https://github.com/GISBoost/easy-OTP
 tracker=https://github.com/GISBoost/easy-OTP/issues
-changelog=0.5.0
+changelog=0.6.0
+    * Analysis — Network & Accessibility (new algorithms):
+      - feat(analysis): GenerateIsochrones (N-1) — /isochrone polygons for 1..N
+        origins, FROM/TO direction, multiple cutoffs; optional street-only graph
+        for non-transit modes (no GTFS needed).
+      - feat(analysis): GenerateIsochronesOverTime (N-2) — one point, isochrones
+        across a time window; time field drives the Temporal Controller.
+      - feat(analysis): RunServiceCoverage (N-3) — multi-point service coverage;
+        reachable-count raster + optional hex/square/own-layer aggregation.
+      - feat(analysis): RunOriginDestinationTimes (N-4) — per-origin detailed
+        trip statistics to one destination (minutes); ThreadPoolExecutor;
+        404/snapping mitigations (maxWalkDistance lever, optional snap-to-network,
+        errorId diagnostics).
+      - feat(analysis): RunTravelTimeMatrix (N-5) — N×M OD travel-time matrix;
+        long/wide CSV (XLSX if openpyxl present), optional OD line layer.
+      - feat(core): isochrone_client and plan_client REST clients (urllib;
+        OTP 1.5 /isochrone and /plan endpoints).
+    0.5.0
     * Analysis:
     - feat(analysis): RunTemporalAccessibility now saves origin point as a named
       output vector layer (point geometry + CRS) with run metadata fields:

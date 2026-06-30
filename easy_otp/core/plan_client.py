@@ -144,10 +144,10 @@ class PlanClient:
             return PlanClient._null_result("NO_ITINERARY")
 
         return {
-            "status": "OK",
-            "duration":    round(itin["duration"]     / 60, 2),
-            "transittime": round(itin["transitTime"]  / 60, 2),
-            "walktime":    round(itin["walkTime"]      / 60, 2),
-            "waitingtime": round(itin["waitingTime"]   / 60, 2),
-            "transfers":   int(itin["transfers"]),
+            "status":      "OK",                                # noqa: E241
+            "duration":    round(itin["duration"] / 60, 2),    # noqa: E241
+            "transittime": round(itin["transitTime"] / 60, 2),
+            "walktime":    round(itin["walkTime"] / 60, 2),    # noqa: E241
+            "waitingtime": round(itin["waitingTime"] / 60, 2),
+            "transfers":   int(itin["transfers"]),              # noqa: E241
         }

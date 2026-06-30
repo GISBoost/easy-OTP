@@ -318,7 +318,7 @@ class RunOriginDestinationTimes(QgsProcessingAlgorithm):
                 self.DIAGNOSE_UNREACHABLE,
                 self.tr(
                     "Diagnose unreachable cells (walk-fallback for 404 in transit mode): "
-                    "adds 'diag' field with off_network / no_transit; doubles requests for 404 cells"
+                    "adds 'diag' field with off_network / no_transit; doubles requests for 404 cells"  # noqa: E501
                 ),
                 defaultValue=False,
             )

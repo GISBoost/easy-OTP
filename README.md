@@ -43,15 +43,15 @@ Download the latest release ZIP from GitHub:
 
 **[easy-OTP Releases → https://github.com/GISBoost/easy-OTP/releases/latest](https://github.com/GISBoost/easy-OTP/releases/latest)**
 
-Download `easy_otp-0.5.0.zip` from the Assets section. This is the correctly
+Download `easy_otp-0.6.0.zip` from the Assets section. This is the correctly
 structured plugin ZIP — do **not** use the auto-generated "Source code" archives
 on the same page, as those have the wrong directory layout for QGIS.
 
 ### Plugin Installation
 
-1. Download `easy_otp-0.5.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
+1. Download `easy_otp-0.6.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
 2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
-3. Select the downloaded `easy_otp-0.5.0.zip` and click **Install Plugin**.
+3. Select the downloaded `easy_otp-0.6.0.zip` and click **Install Plugin**.
 4. After installation, **Plugins → easy-OTP → Enable** (if not enabled
    automatically).
 5. The algorithms appear in **Processing Toolbox** under the **easy-OTP** group.
@@ -323,6 +323,45 @@ Cells present in only one scenario are written as **NoData** in the delta, so a
 cell that gained or lost coverage entirely is not silently treated as zero
 change. The output hex layer is styled automatically with the bundled
 `easy_otp/styles/delta_class.qml`.
+
+### Network & Accessibility Analysis *(new in v0.6)*
+
+Five new algorithms bring isochrone-based and OD-routing analyses to easy-OTP,
+completing the v0.6 release.
+
+**GenerateIsochrones (N-1)** *(new in v0.6)* — Isochrone polygons for 1..N origin or
+destination points at one time, with multiple travel-time cutoffs (e.g. 15/30/45 min).
+Supports `FROM` (reachable from a point) and `TO` (areas that can reach a point)
+directions. Transport modes: `TRANSIT`, `WALK`, `BUS`, `RAIL`, `TRAM`, `SUBWAY`, `CAR`,
+`BICYCLE`. WALK and TRANSIT modes are well tested; `CAR`/`BICYCLE` isochrones are exposed
+but quality depends on graph coverage — verify on your data before use.
+
+**GenerateIsochronesOverTime (N-2)** *(new in v0.6)* — One origin point, one or more
+cutoffs, iterated across a configurable time window (e.g. every 15 min from 06:00 to
+22:00). Each output polygon carries a `time` field compatible with the QGIS Temporal
+Controller, enabling day-long animations of service reach.
+
+**RunServiceCoverage (N-3)** *(new in v0.6)* — Multi-point service coverage: "how many
+service points are reachable from each cell within threshold T at a given moment?" One
+travel-time surface is generated per service point; pixels below the threshold are counted
+into a `reachable_count` raster (0..N). Optional aggregation to a hexagonal grid, square
+grid, or a user-supplied polygon layer.
+
+**RunOriginDestinationTimes (N-4)** *(new in v0.6)* — Batch point-to-point routing from
+many origins to one destination, with full trip statistics (duration, in-vehicle time,
+walk, wait, transfers) per origin. Parallelised via `ThreadPoolExecutor`.
+Note: OTP `PATH_NOT_FOUND` (404) errors increase when origins are far from the transit
+network. Raise `MAX_WALK_DISTANCE` (default 800 m; setting 9 999 m typically eliminates
+most 404s) or enable the optional snap-to-network option. See detailed documentation below
+and Known Issues.
+
+**RunTravelTimeMatrix (N-5)** *(new in v0.6)* — Full N × M origin–destination travel-time
+matrix. Produces a long-format CSV (one row per OD pair) and optionally a wide matrix
+(origins as rows, destinations as columns) and an OD line layer for quick visualisation.
+XLSX output when openpyxl is installed; falls back to CSV. Use for gravity models and
+comparative accessibility reports.
+
+---
 
 ### Run origin-destination times (RunOriginDestinationTimes) *(new in v0.5)*
 
