@@ -1282,6 +1282,606 @@ Użyj tego do wstępnego wygenerowania siatki dla Uruchomienia temporalnej dost�
         </message>
     </context>
     <context>
+        <name>GenerateIsochrones</name>
+        <message>
+            <source>Generate isochrones</source>
+            <translation>Generuj isochrony</translation>
+        </message>
+        <message>
+            <source>3 · Analysis</source>
+            <translation>3 · Analiza</translation>
+        </message>
+        <message>
+            <source>Generates travel-time isochrone polygons from one or many origin points using OpenTripPlanner 1.5.0.
+
+For each origin point one GET /isochrone request is sent with the configured cutoff thresholds. All resulting polygons are merged into a single output layer with attributes: point_id, name, cutoff_min, mode, date, time, direction.
+
+DIRECTION=FROM: catchment reachable from the point.
+DIRECTION=TO: catchment that can reach the point.
+
+For non-transit modes (WALK/CAR/BICYCLE) GTFS is optional — OTP will build a street-only graph from the OSM extract.
+
+Requires user-provided Java 8 and otp-1.5.0-shaded.jar.</source>
+            <translation>Generuje poligony isochron czasowych podróży z jednego lub wielu punktów początkowych za pomocą OpenTripPlanner 1.5.0.
+
+Dla każdego punktu początkowego wysyłany jest jeden żądanie GET /isochrone z skonfigurowanymi progami odcięcia. Wszystkie powstałe poligony są łączone w jedną warstwę wyjściową z atrybutami: point_id, name, cutoff_min, mode, date, time, direction.
+
+DIRECTION=FROM: obszar zasięgu dostępny z punktu.
+DIRECTION=TO: obszar zasięgu, który może dotrzeć do punktu.
+
+Dla trybów transportowych (WALK/CAR/BICYCLE) GTFS jest opcjonalny — OTP zbuduje graf tylko uliczny na podstawie ekstrakcji OSM.
+
+Wymaga podanego przez użytkownika Java 8 i otp-1.5.0-shaded.jar.</translation>
+        </message>
+        <message>
+            <source>Origin points (1..N)</source>
+            <translation>Punkty początkowe (1..N)</translation>
+        </message>
+        <message>
+            <source>OSM extract (.osm.pbf)</source>
+            <translation>Ekstrakcja OSM (.osm.pbf)</translation>
+        </message>
+        <message>
+            <source>GTFS folder (required for transit modes; optional for WALK/CAR/BICYCLE)</source>
+            <translation>Folder GTFS (wymagany dla trybów transportowych; opcjonalny dla WALK/CAR/BICYCLE)</translation>
+        </message>
+        <message>
+            <source>Transport mode</source>
+            <translation>Tryb transportu</translation>
+        </message>
+        <message>
+            <source>Direction (FROM: reachable from point; TO: can reach point)</source>
+            <translation>Kierunek (FROM: dostępny z punktu; TO: może dotrzeć do punktu)</translation>
+        </message>
+        <message>
+            <source>Cutoff thresholds (minutes, comma-separated)</source>
+            <translation>Progi odcięcia (minuty, oddzielone przecinkami)</translation>
+        </message>
+        <message>
+            <source>Analysis date</source>
+            <translation>Data analizy</translation>
+        </message>
+        <message>
+            <source>Departure time</source>
+            <translation>Czas odjazdu</translation>
+        </message>
+        <message>
+            <source>Working directory (graph, cache)</source>
+            <translation>Katalog roboczy (graf, pamięć podręczna)</translation>
+        </message>
+        <message>
+            <source>Output isochrones (polygon layer)</source>
+            <translation>Isochrony wyjściowe (warstwa poligonu)</translation>
+        </message>
+        <message>
+            <source>Maximum walk distance (m)</source>
+            <translation>Maksymalny dystans pieszy (m)</translation>
+        </message>
+        <message>
+            <source>Walk reluctance</source>
+            <translation>Niechęć do chodzenia</translation>
+        </message>
+        <message>
+            <source>Wait reluctance</source>
+            <translation>Niechęć do oczekiwania</translation>
+        </message>
+        <message>
+            <source>Transfer penalty (s)</source>
+            <translation>Kara za przesiadkę (s)</translation>
+        </message>
+        <message>
+            <source>Minimum transfer time (s)</source>
+            <translation>Minimalny czas przesiadki (s)</translation>
+        </message>
+        <message>
+            <source>Use Java path saved by 'Download Java Runtime Environment' (QSettings)</source>
+            <translation>Użyj ścieżki Java zapisanej przez 'Download Java Runtime Environment' (QSettings)</translation>
+        </message>
+        <message>
+            <source>Java 8 binary</source>
+            <translation>Binarny plik Java 8</translation>
+        </message>
+        <message>
+            <source>OpenTripPlanner 1.5.0 jar (otp-1.5.0-shaded.jar)</source>
+            <translation>Plik jar OpenTripPlanner 1.5.0 (otp-1.5.0-shaded.jar)</translation>
+        </message>
+        <message>
+            <source>OTP heap for graph build (e.g. 2G)</source>
+            <translation>Pamięć OTP do budowania grafu (np. 2G)</translation>
+        </message>
+        <message>
+            <source>OTP heap for server (e.g. 4G)</source>
+            <translation>Pamięć OTP dla serwera (np. 4G)</translation>
+        </message>
+        <message>
+            <source>OTP server port</source>
+            <translation>Port serwera OTP</translation>
+        </message>
+        <message>
+            <source>Existing graph router directory (skip build)</source>
+            <translation>Istniejący katalog routera grafu (pomijanie budowania)</translation>
+        </message>
+        <message>
+            <source>Keep OTP server alive after run</source>
+            <translation>Utrzymaj serwer OTP przy życiu po uruchomieniu</translation>
+        </message>
+        <message>
+            <source>No Java path saved in QSettings. Run 'Download Java Runtime Environment' first, or uncheck 'Use saved Java path (QSettings)' and supply the path manually.</source>
+            <translation>Brak ścieżki Java zapisanej w QSettings. Najpierw uruchom 'Pobierz środowisko wykonawcze Java', lub odznacz 'Używaj zapisanej ścieżki Java (QSettings)' i podaj ścieżkę ręcznie.</translation>
+        </message>
+        <message>
+            <source>Using Java path from QSettings: {java}</source>
+            <translation>Używana ścieżka Java z QSettings: {java}</translation>
+        </message>
+        <message>
+            <source>Java OK: version {java_ver}</source>
+            <translation>Java OK: wersja {java_ver}</translation>
+        </message>
+        <message>
+            <source>Download otp-1.5.0-shaded.jar from Maven Central (groupId=org.opentripplanner, artifactId=otp, version=1.5.0, classifier=shaded) and set the 'OpenTripPlanner 1.5.0 jar' parameter.</source>
+            <translation>Pobierz otp-1.5.0-shaded.jar z Maven Central (groupId=org.opentripplanner, artifactId=otp, version=1.5.0, classifier=shaded) i ustaw parametr 'OpenTripPlanner 1.5.0 jar'.</translation>
+        </message>
+        <message>
+            <source>CUTOFFS_MIN must be a comma-separated list of positive integers, got: {}</source>
+            <translation>CUTOFFS_MIN musi być listą oddzieloną przecinkami dodatnich liczb całkowitych, otrzymano: {}</translation>
+        </message>
+        <message>
+            <source>CUTOFFS_MIN must contain at least one positive integer.</source>
+            <translation>CUTOFFS_MIN musi zawierać co najmniej jedną dodatnią liczbę całkowitą.</translation>
+        </message>
+        <message>
+            <source>Mode={mode_str}, Direction={direction_str}, Cutoffs={cutoffs_min} min ({cutoffs_sec} s)</source>
+            <translation>Tryb={mode_str}, Kierunek={direction_str}, Odcięcia={cutoffs_min} min ({cutoffs_sec} s)</translation>
+        </message>
+        <message>
+            <source>Discovered {len(gtfs_files)} GTFS feed(s): {', '.join(p.name for p in gtfs_files)}</source>
+            <translation>Odkryto {len(gtfs_files)} plik/i feedu GTFS: {', '.join(p.name for p in gtfs_files)}</translation>
+        </message>
+        <message>
+            <source>GTFS_FILES folder is required for transit mode '{}'. Supply a folder containing one or more GTFS .zip archives, or choose a non-transit mode (WALK/CAR/BICYCLE) for street-only routing.</source>
+            <translation>Katalog GTFS_FILES jest wymagany dla trybu transportowego '{}'. Podaj katalog zawierający jeden lub więcej archiwów .zip GTFS, lub wybierz tryb nie-transportowy (WALK/CAR/BICYCLE) dla routingu tylko po ulicach.</translation>
+        </message>
+        <message>
+            <source>No GTFS supplied — building street-only graph for mode '{mode_str}'.</source>
+            <translation>Nie podano GTFS — budowanie grafu tylko po ulicach dla trybu '{mode_str}'.</translation>
+        </message>
+        <message>
+            <source>Working directory is required.</source>
+            <translation>Wymagany jest katalog roboczy.</translation>
+        </message>
+        <message>
+            <source>EXISTING_GRAPH_DIR does not contain Graph.obj: {}. Point to the router directory (e.g. …/graphs/abc123/).</source>
+            <translation>Katalog EXISTING_GRAPH_DIR nie zawiera Graph.obj: {}. Wskaż do katalogu routera (np. …/graphs/abc123/).</translation>
+        </message>
+        <message>
+            <source>EXISTING_GRAPH_DIR must be inside a 'graphs/' folder (expected …/graphs/&lt;router_id&gt;/, got {}).</source>
+            <translation>EXISTING_GRAPH_DIR musi znajdować się w folderze 'graphs/' (oczekiwano …/graphs/&lt;router_id&gt;/, otrzymano {}).</translation>
+        </message>
+        <message>
+            <source>Using existing graph: {router_dir} (router_id={router_id}); skipping build.</source>
+            <translation>Używany istniejący graf: {router_dir} (router_id={router_id}); pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Router ID: {router_id}</source>
+            <translation>ID routera: {router_id}</translation>
+        </message>
+        <message>
+            <source>Graph cache hit — skipping build.</source>
+            <translation>Pobranie bufora grafu — pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Building OTP graph (this can take minutes)…</source>
+            <translation>Budowanie grafu OTP (może to trwać kilka minut)…</translation>
+        </message>
+        <message>
+            <source>Could not create output layer.</source>
+            <translation>Nie można utworzyć warstwy wyjściowej.</translation>
+        </message>
+        <message>
+            <source>Reusing OTP already running on port {port} (version {ver_str}).</source>
+            <translation>Ponowne użycie OTP już działającego na porcie {port} (wersja {ver_str}).</translation>
+        </message>
+        <message>
+            <source>Port {port} is held by a non-OTP process. Pick a different OTP_PORT or stop the conflicting service.</source>
+            <translation>Port {port} jest zajęty przez proces niebędący OTP. Wybierz inny OTP_PORT lub zatrzymaj konfliktujący serwis.</translation>
+        </message>
+        <message>
+            <source>Starting OTP server on port {port}…</source>
+            <translation>Uruchamianie serwera OTP na porcie {port}…</translation>
+        </message>
+        <message>
+            <source>ORIGIN_POINTS layer has no features.</source>
+            <translation>Warstwa ORIGIN_POINTS nie posiada obiektów.</translation>
+        </message>
+        <message>
+            <source>Processing {n_points} origin point(s)…</source>
+            <translation>Przetwarzanie {n_points} punktu/punktów początkowego…</translation>
+        </message>
+        <message>
+            <source>[{i + 1}/{n_points}] point_id={point_id} name={name_val!r} lat={from_lat:.6f} lon={from_lon:.6f}</source>
+            <translation>[{i + 1}/{n_points}] point_id={point_id} name={name_val!r} lat={from_lat:.6f} lon={from_lon:.6f}</translation>
+        </message>
+        <message>
+            <source>Point {point_id} ({name_val!r}) failed: {e}. Skipping.</source>
+            <translation>Punkt {point_id} ({name_val!r}) nie powiódł się: {e}. Pomijanie.</translation>
+        </message>
+        <message>
+            <source>Point {point_id}: no polygon parts for cutoff {cutoff_min} min (raw type={QgsWkbTypes.displayString(raw_geom.wkbType()) if raw_geom else 'null'}).</source>
+            <translation>Punkt {point_id}: brak części wielokąta dla odcięcia {cutoff_min} min (surowy typ={QgsWkbTypes.displayString(raw_geom.wkbType()) if raw_geom else 'null'}).</translation>
+        </message>
+        <message>
+            <source>Point {point_id}: sink rejected cutoff {cutoff_min} min polygon (type={QgsWkbTypes.displayString(geom.wkbType())}).</source>
+            <translation>Punkt {point_id}: odprowadzono do zlewu wielokąt dla odcięcia {cutoff_min} min (typ={QgsWkbTypes.displayString(geom.wkbType())}).</translation>
+        </message>
+        <message>
+            <source>Done: {ok_count} points OK, {failed_count} failed, {total_polygons} polygons written.</source>
+            <translation>Zakończono: {ok_count} punktów OK, {failed_count} niepowodzeń, zapisano {total_polygons} wielokątów.</translation>
+        </message>
+        <message>
+            <source>Could not fetch router diagnostic: {e}</source>
+            <translation>Nie można pobrać diagnostyki routera: {e}</translation>
+        </message>
+        <message>
+            <source>--- OTP router diagnostic ---</source>
+            <translation>--- Diagnostyka routera OTP ---</translation>
+        </message>
+        <message>
+            <source>hasTransit = {info.get('hasTransit')}; transitServiceStarts = {_epoch_to_iso(info.get('transitServiceStarts'))}; transitServiceEnds = {_epoch_to_iso(info.get('transitServiceEnds'))}</source>
+            <translation>hasTransit = {info.get('hasTransit')}; transitServiceStarts = {_epoch_to_iso(info.get('transitServiceStarts'))}; transitServiceEnds = {_epoch_to_iso(info.get('transitServiceEnds'))}</translation>
+        </message>
+        <message>
+            <source>-----------------------------</source>
+            <translation>-----------------------------</translation>
+        </message>
+        <message>
+            <source>ANALYSIS_DATE is a {day_name} ({date_str}). Weekend transit schedules may differ significantly from weekday analyses.</source>
+            <translation>DATA ANALIZY to {day_name} ({date_str}). Rozkłady jazdy weekendowe mogą znacznie różnić się od analiz dni roboczych.</translation>
+        </message>
+        <message>
+            <source>No calendar.txt in {gtfs_path.name} — cannot validate analysis date against GTFS service range.</source>
+            <translation>Brak pliku calendar.txt w {gtfs_path.name} — niemożliwa walidacja daty analizy względem zakresu usługi GTFS.</translation>
+        </message>
+        <message>
+            <source>{gtfs_path.name}: no services active on {date_str}. OTP may return all-unreachable isochrones for this date.</source>
+            <translation>{gtfs_path.name}: brak usług aktywnych w dniu {date_str}. OTP może zwrócić isochrone całkowicie niedostępne dla tej daty.</translation>
+        </message>
+        <message>
+            <source>{gtfs_path.name}: {active} service(s) active on {date_str}.</source>
+            <translation>{gtfs_path.name}: {active} usługa(i) aktywna(e) na {date_str}.</translation>
+        </message>
+        <message>
+            <source>Could not read {gtfs_path.name} for date validation: {exc}</source>
+            <translation>Nie można odczytać {gtfs_path.name} w celu walidacji daty: {exc}</translation>
+        </message>
+        <message>
+            <source>{label} is required (parameter {key}).</source>
+            <translation>{label} jest wymagany (parametr {key}).</translation>
+        </message>
+        <message>
+            <source>{label} not found at: {path} (parameter {key}).</source>
+            <translation>{label} nie znaleziono pod adresem: {path} (parametr {key}).</translation>
+        </message>
+    </context>
+    <context>
+        <name>GenerateIsochronesOverTime</name>
+        <message>
+            <source>Generate isochrones over time</source>
+            <translation>Generuj isochrony w czasie</translation>
+        </message>
+        <message>
+            <source>3 · Analysis</source>
+            <translation>3 · Analiza</translation>
+        </message>
+        <message>
+            <source>Generates travel-time isochrone polygons for one origin point across the day using OpenTripPlanner 1.5.0.
+
+For each timestamp in the configured window one GET /isochrone request is sent. All resulting polygons are merged into a single output layer with a 'time' field (QDateTime) compatible with the QGIS Temporal Controller — enabling day-long animation of the isochrone.
+
+Number of polygons = timestamps × cutoffs. Keep cutoffs to 1–2 to avoid very large output layers.
+
+DIRECTION=FROM: catchment reachable from the point.
+DIRECTION=TO: catchment that can reach the point.
+
+For non-transit modes (WALK/CAR/BICYCLE) GTFS is optional.
+Requires user-provided Java 8 and otp-1.5.0-shaded.jar.
+
+Complement to 'Generate isochrones' (N-1: many points, one time).</source>
+            <translation>Generuje wielokąty isochronowe czasu podróży dla jednego punktu początkowego przez cały dzień przy użyciu OpenTripPlanner 1.5.0.
+
+Dla każdego znacznika czasu w skonfigurowanym oknie wysyłany jest jeden żądanie GET /isochrone. Wszystkie powstałe wielokąty są łączone w jedną warstwę wyjściową z polem 'time' (QDateTime) kompatybilnym z Kontrolerem Czasu QGIS — co umożliwia animację isochrony przez cały dzień.
+
+Liczba wielokątów = znaczniki czasu × progi. Utrzymuj progi na poziomie 1–2, aby uniknąć bardzo dużych warstw wyjściowych.
+
+DIRECTION=FROM: obszar zasięgu dostępny z punktu.
+DIRECTION=TO: obszar zasięgu, który może dotrzeć do punktu.
+
+Dla trybów transportu innych niż tranzyt (WALK/CAR/BICYCLE) GTFS jest opcjonalny.
+Wymaga podanego przez użytkownika Java 8 i otp-1.5.0-shaded.jar.
+
+Uzupełnienie do 'Generate isochrones' (N-1: wiele punktów, jeden czas).</translation>
+        </message>
+        <message>
+            <source>Origin point</source>
+            <translation>Punkt początkowy</translation>
+        </message>
+        <message>
+            <source>OSM extract (.osm.pbf)</source>
+            <translation>Ekstrakcja OSM (.osm.pbf)</translation>
+        </message>
+        <message>
+            <source>GTFS folder (required for transit modes; optional for WALK/CAR/BICYCLE)</source>
+            <translation>Folder GTFS (wymagany dla trybów tranzytu; opcjonalny dla WALK/CAR/BICYCLE)</translation>
+        </message>
+        <message>
+            <source>Transport mode</source>
+            <translation>Tryb transportu</translation>
+        </message>
+        <message>
+            <source>Direction (FROM: reachable from point; TO: can reach point)</source>
+            <translation>Kierunek (FROM: dostępny z punktu; TO: może dotrzeć do punktu)</translation>
+        </message>
+        <message>
+            <source>Cutoff thresholds (minutes, comma-separated). Tip: use 1–2 cutoffs — polygons = timestamps × cutoffs.</source>
+            <translation>Progi odcięcia (minuty, oddzielone przecinkami). Wskazówka: użyj 1–2 progów — wielokąty = znaczniki czasu × progi.</translation>
+        </message>
+        <message>
+            <source>Window start time</source>
+            <translation>Czas początkowy okna</translation>
+        </message>
+        <message>
+            <source>Window end time</source>
+            <translation>Czas końcowy okna</translation>
+        </message>
+        <message>
+            <source>Time interval between isochrones (minutes)</source>
+            <translation>Interwał czasowy między isochronami (minuty)</translation>
+        </message>
+        <message>
+            <source>Analysis date</source>
+            <translation>Data analizy</translation>
+        </message>
+        <message>
+            <source>Working directory (graph, cache)</source>
+            <translation>Katalog roboczy (graf, pamięć podręczna)</translation>
+        </message>
+        <message>
+            <source>Output isochrones (polygon layer)</source>
+            <translation>Isochrony wyjściowe (warstwa wielokątów)</translation>
+        </message>
+        <message>
+            <source>Area-over-time CSV (optional)</source>
+            <translation>CSV obszar-w-czasie (opcjonalny)</translation>
+        </message>
+        <message>
+            <source>Origin point (run metadata)</source>
+            <translation>Punkt początkowy (metadane uruchomienia)</translation>
+        </message>
+        <message>
+            <source>Maximum walk distance (m)</source>
+            <translation>Maksymalna odległość piesza (m)</translation>
+        </message>
+        <message>
+            <source>Walk reluctance</source>
+            <translation>Niechęć do chodzenia</translation>
+        </message>
+        <message>
+            <source>Wait reluctance</source>
+            <translation>Niechęć do oczekiwania</translation>
+        </message>
+        <message>
+            <source>Transfer penalty (s)</source>
+            <translation>Kara za przesiadkę (s)</translation>
+        </message>
+        <message>
+            <source>Minimum transfer time (s)</source>
+            <translation>Minimalny czas przesiadki (s)</translation>
+        </message>
+        <message>
+            <source>Use Java path saved by 'Download Java Runtime Environment' (QSettings)</source>
+            <translation>Użyj ścieżki Java zapisanej przez 'Download Java Runtime Environment' (QSettings)</translation>
+        </message>
+        <message>
+            <source>Java 8 binary</source>
+            <translation>Binarka Java 8</translation>
+        </message>
+        <message>
+            <source>OpenTripPlanner 1.5.0 jar (otp-1.5.0-shaded.jar)</source>
+            <translation>OpenTripPlanner 1.5.0 jar (otp-1.5.0-shaded.jar)</translation>
+        </message>
+        <message>
+            <source>OTP heap for graph build (e.g. 2G)</source>
+            <translation>Pamięć OTP do budowania grafu (np. 2G)</translation>
+        </message>
+        <message>
+            <source>OTP heap for server (e.g. 4G)</source>
+            <translation>Pamięć OTP dla serwera (np. 4G)</translation>
+        </message>
+        <message>
+            <source>OTP server port</source>
+            <translation>Port serwera OTP</translation>
+        </message>
+        <message>
+            <source>Existing graph router directory (skip build)</source>
+            <translation>Istniejący katalog routera grafu (pomijanie budowania)</translation>
+        </message>
+        <message>
+            <source>Keep OTP server alive after run</source>
+            <translation>Utrzymuj serwer OTP przy życiu po uruchomieniu</translation>
+        </message>
+        <message>
+            <source>No Java path saved in QSettings. Run 'Download Java Runtime Environment' first, or uncheck 'Use saved Java path (QSettings)' and supply the path manually.</source>
+            <translation>Brak ścieżki Java zapisanej w QSettings. Najpierw uruchom 'Pobierz środowisko wykonawcze Java', lub odznacz 'Użyj zapisanego ścieżki Java (QSettings)' i podaj ścieżkę ręcznie.</translation>
+        </message>
+        <message>
+            <source>Using Java path from QSettings: {}</source>
+            <translation>Używana ścieżka Java z QSettings: {}</translation>
+        </message>
+        <message>
+            <source>Java OK: version {}</source>
+            <translation>Java OK: wersja {}</translation>
+        </message>
+        <message>
+            <source>Download otp-1.5.0-shaded.jar from Maven Central (groupId=org.opentripplanner, artifactId=otp, version=1.5.0, classifier=shaded) and set the 'OpenTripPlanner 1.5.0 jar' parameter.</source>
+            <translation>Pobierz otp-1.5.0-shaded.jar z Maven Central (groupId=org.opentripplanner, artifactId=otp, version=1.5.0, classifier=shaded) i ustaw parametr 'OpenTripPlanner 1.5.0 jar'.</translation>
+        </message>
+        <message>
+            <source>CUTOFFS_MIN must be a comma-separated list of positive integers, got: {}</source>
+            <translation>CUTOFFS_MIN musi być listą oddzieloną przecinkami dodatnich liczb całkowitych, otrzymano: {}</translation>
+        </message>
+        <message>
+            <source>CUTOFFS_MIN must contain at least one positive integer.</source>
+            <translation>CUTOFFS_MIN musi zawierać co najmniej jedną dodatnią liczbę całkowitą.</translation>
+        </message>
+        <message>
+            <source>Discovered {} GTFS feed(s): {}</source>
+            <translation>Odkryto {} feed(y) GTFS: {}</translation>
+        </message>
+        <message>
+            <source>GTFS_FILES folder is required for transit mode '{}'. Supply a folder containing one or more GTFS .zip archives, or choose a non-transit mode (WALK/CAR/BICYCLE) for street-only routing.</source>
+            <translation>Folder GTFS_FILES jest wymagany dla trybu transportu '{}'. Podaj folder zawierający jeden lub więcej archiwów .zip GTFS, lub wybierz tryb nie-transportowy (WALK/CAR/BICYCLE) dla routingu tylko po ulicach.</translation>
+        </message>
+        <message>
+            <source>No GTFS supplied — building street-only graph for mode '{}'.</source>
+            <translation>Nie podano GTFS — budowanie grafu tylko po ulicach dla trybu '{}'.</translation>
+        </message>
+        <message>
+            <source>Invalid TIME_START or TIME_END value.</source>
+            <translation>Nieprawidłowa wartość TIME_START lub TIME_END.</translation>
+        </message>
+        <message>
+            <source>TIME_START must be before TIME_END.</source>
+            <translation>TIME_START musi być przed TIME_END.</translation>
+        </message>
+        <message>
+            <source>No timestamps generated for the given window and interval.</source>
+            <translation>Nie wygenerowano znaczników czasu dla podanego okna i interwału.</translation>
+        </message>
+        <message>
+            <source>Mode={}, Direction={}, Cutoffs={} min, Window={}–{}, Interval={} min → {} timestamps, total requests={}.</source>
+            <translation>Tryb={}, Kierunek={}, Odcięcia={} min, Okno={}–{}, Interwał={} min → {} znaczniki czasu, łącznie {} zapytań.</translation>
+        </message>
+        <message>
+            <source>Origin: lat={:.6f} lon={:.6f}</source>
+            <translation>Początek: lat={:.6f} lon={:.6f}</translation>
+        </message>
+        <message>
+            <source>Working directory is required.</source>
+            <translation>Wymagane jest katalog roboczy.</translation>
+        </message>
+        <message>
+            <source>EXISTING_GRAPH_DIR does not contain Graph.obj: {}. Point to the router directory (e.g. …/graphs/abc123/).</source>
+            <translation>EXISTING_GRAPH_DIR nie zawiera pliku Graph.obj: {}. Wskaż katalog routera (np. …/graphs/abc123/).</translation>
+        </message>
+        <message>
+            <source>EXISTING_GRAPH_DIR must be inside a 'graphs/' folder (expected …/graphs/&lt;router_id&gt;/, got {}).</source>
+            <translation>EXISTING_GRAPH_DIR musi znajdować się w folderze 'graphs/' (oczekiwano …/graphs/&lt;router_id&gt;/, otrzymano {}).</translation>
+        </message>
+        <message>
+            <source>Using existing graph: {} (router_id={}); skipping build.</source>
+            <translation>Używany istniejący graf: {} (router_id={}); pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Router ID: {}</source>
+            <translation>ID routera: {}</translation>
+        </message>
+        <message>
+            <source>Graph cache hit — skipping build.</source>
+            <translation>Odczyt z pamięci podręcznej grafu — pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Building OTP graph (this can take minutes)…</source>
+            <translation>Budowanie grafu OTP (może to potrwać kilka minut)…</translation>
+        </message>
+        <message>
+            <source>Could not create output layer.</source>
+            <translation>Nie udało się utworzyć warstwy wyjściowej.</translation>
+        </message>
+        <message>
+            <source>Reusing OTP already running on port {} (version {}).</source>
+            <translation>Ponowne użycie OTP działającego już na porcie {} (wersja {}).</translation>
+        </message>
+        <message>
+            <source>Port {} is held by a non-OTP process. Pick a different OTP_PORT or stop the conflicting service.</source>
+            <translation>Port {} jest zajęty przez proces niebędący OTP. Wybierz inny OTP_PORT lub zatrzymaj konfliktujący serwis.</translation>
+        </message>
+        <message>
+            <source>Starting OTP server on port {}…</source>
+            <translation>Uruchamianie serwera OTP na porcie {}…</translation>
+        </message>
+        <message>
+            <source>[{}/{}] {}</source>
+            <translation>[{}/{}] {}</translation>
+        </message>
+        <message>
+            <source>  {}: {}. Skipping.</source>
+            <translation>  {}: {}. Pominięto.</translation>
+        </message>
+        <message>
+            <source>  {} cutoff={} min: no polygon parts, skipped.</source>
+            <translation>  {} odcięcie={} min: brak części wielokąta, pominięto.</translation>
+        </message>
+        <message>
+            <source>  {} cutoff={} min: sink rejected feature.</source>
+            <translation>  {} odcięcie={} min: usunięto cechę (sink rejected feature).</translation>
+        </message>
+        <message>
+            <source>Done: {} timestamps OK, {} failed, {} polygons written.</source>
+            <translation>Zakończono: {} znaczników czasu OK, {} niepowodzeń, {} wielokątów zapisano.</translation>
+        </message>
+        <message>
+            <source>No polygons were written. OTP returned null geometry for every timestamp — this typically means the origin point could not be snapped to a '{mode}'-accessible road. Check that the point is on or near a driveable road (not inside a pedestrian zone, private area, or unmapped location) and retry.</source>
+            <translation>Nie zapisano żadnych wielokątów. OTP zwróciło geometrię null dla każdego znacznika czasu — zazwyczaj oznacza to, że punkt początkowy nie mógł zostać dopasowany do drogi dostępnej w trybie '{mode}'. Sprawdź, czy punkt znajduje się na lub blisko drogi przejezdnej (nie wewnątrz strefy pieszej, terenu prywatnego lub niezmapowanego miejsca) i spróbuj ponownie.</translation>
+        </message>
+        <message>
+            <source>Area CSV written: {}</source>
+            <translation>Zapisano CSV obszaru: {}</translation>
+        </message>
+        <message>
+            <source>Could not fetch router diagnostic: {}</source>
+            <translation>Nie udało się pobrać diagnostyki routera: {}</translation>
+        </message>
+        <message>
+            <source>--- OTP router diagnostic ---</source>
+            <translation>--- Diagnostyka routera OTP ---</translation>
+        </message>
+        <message>
+            <source>hasTransit = {}; transitServiceStarts = {}; transitServiceEnds = {}</source>
+            <translation>hasTransit = {}; transitServiceStarts = {}; transitServiceEnds = {}</translation>
+        </message>
+        <message>
+            <source>-----------------------------</source>
+            <translation>-----------------------------</translation>
+        </message>
+        <message>
+            <source>ANALYSIS_DATE is a {} ({}). Weekend transit schedules may differ significantly from weekday analyses.</source>
+            <translation>DATA_ANALIZY to {} ({}). Rozkłady jazdy weekendowe mogą znacznie różnić się od analiz dni roboczych.</translation>
+        </message>
+        <message>
+            <source>No calendar.txt in {} — cannot validate analysis date against GTFS service range.</source>
+            <translation>Brak pliku calendar.txt w {} — niemożliwa walidacja daty analizy względem zakresu usługi GTFS.</translation>
+        </message>
+        <message>
+            <source>{}: no services active on {}. OTP may return all-unreachable isochrones for this date.</source>
+            <translation>{}: brak usług aktywnych w {}. OTP może zwrócić isochrony całkowicie niedostępne dla tej daty.</translation>
+        </message>
+        <message>
+            <source>{}: {} service(s) active on {}.</source>
+            <translation>{}: {} usługa(i) aktywne w {}.</translation>
+        </message>
+        <message>
+            <source>Could not read {} for date validation: {}</source>
+            <translation>Nie udało się odczytać {} do walidacji daty: {}</translation>
+        </message>
+        <message>
+            <source>{} is required (parameter {}).</source>
+            <translation>Wymagany jest {} (parametr {}).</translation>
+        </message>
+        <message>
+            <source>{} not found at: {} (parameter {}).</source>
+            <translation>{} nie znaleziono pod adresem: {} (parametr {}).</translation>
+        </message>
+    </context>
+    <context>
         <name>PopulationOverlay</name>
         <message>
             <source>Population overlay</source>
@@ -1586,6 +2186,295 @@ Wspierane są tylko feedy TripUpdates. Miasta z feedami zawierającymi tylko Veh
         <message>
             <source>Recording finished: {ok_count} snapshots, {failed_count} failed, {size_kb:.1f} KB total. Manifest: {output_dir / 'recording.json'}</source>
             <translation>Nagrywanie zakończone: {ok_count} zrzutów, {failed_count} nieudane, łącznie {size_kb:.1f} KB. Manifest: {output_dir / 'recording.json'}</translation>
+        </message>
+    </context>
+    <context>
+        <name>RunOriginDestinationTimes</name>
+        <message>
+            <source>Run origin-destination times</source>
+            <translation>Uruchomienie czasów z punktu początkowego do docelowego</translation>
+        </message>
+        <message>
+            <source>3 · Analysis</source>
+            <translation>3 · Analiza</translation>
+        </message>
+        <message>
+            <source>Queries OTP /plan from each origin centroid to a single destination and records full trip statistics: total duration, transit time, walk time, waiting time, and number of transfers (decimal minutes).
+
+Port of the gisboost 'travel time from many places' R workflow (otpr::otp_get_times loop). Output schema matches docs/gisboostgithub/pop_results2.csv.
+
+Primary 404 lever: raise MAX_WALK_DISTANCE (e.g. to 1500-9999) to reduce or eliminate PATH_NOT_FOUND errors, at the cost of allowing unrealistically long walks. For total-travel-time-only analysis without statistics, consider RunServiceCoverage (surface method, faster).</source>
+            <translation>Zapytania OTP /plan od każdego środka początkowego do pojedynczego miejsca docelowego i rejestruje pełne statystyki podróży: całkowity czas trwania, czas przejazdu, czas spaceru, czas oczekiwania oraz liczbę przesiadek (w minutach dziesiętnych).
+
+Główny mechanizm 404: podniesienie MAX_WALK_DISTANCE (np. do 1500-9999) w celu zmniejszenia lub wyeliminowania błędów PATH_NOT_FOUND, kosztem dopuszczenia nierealistycznie długich spacerów. Dla analizy tylko całkowitego czasu podróży bez statystyk rozważ RunServiceCoverage (metoda powierzchniowa, szybsza).</translation>
+        </message>
+        <message>
+            <source>Origins layer (grid or points; centroids used as OTP fromPlace)</source>
+            <translation>Warstwa początkowych miejsc (siatka lub punkty; środki używane jako OTP fromPlace)</translation>
+        </message>
+        <message>
+            <source>Destination point (OTP toPlace)</source>
+            <translation>Miejsce docelowe (OTP toPlace)</translation>
+        </message>
+        <message>
+            <source>Direction</source>
+            <translation>Kierunek</translation>
+        </message>
+        <message>
+            <source>Transport mode</source>
+            <translation>Tryb transportu</translation>
+        </message>
+        <message>
+            <source>Analysis date</source>
+            <translation>Data analizy</translation>
+        </message>
+        <message>
+            <source>Departure time</source>
+            <translation>Czas odjazdu</translation>
+        </message>
+        <message>
+            <source>Detailed output (transit/walk/waiting time + transfers); uncheck for duration only</source>
+            <translation>Szczegółowy wynik (czas przejazdu/spaceru/oczekiwania + przesiadki); odznacz, aby pokazać tylko czas trwania</translation>
+        </message>
+        <message>
+            <source>OSM extract (.osm.pbf)</source>
+            <translation>Ekstrakcja OSM (.osm.pbf)</translation>
+        </message>
+        <message>
+            <source>GTFS folder (required for transit modes)</source>
+            <translation>Folder GTFS (wymagany dla trybów transportu)</translation>
+        </message>
+        <message>
+            <source>Working directory (graph, cache)</source>
+            <translation>Katalog roboczy (graf, pamięć podręczna)</translation>
+        </message>
+        <message>
+            <source>Output layer (origins + trip statistics)</source>
+            <translation>Warstwa wyjściowa (miejsca początkowe + statystyki podróży)</translation>
+        </message>
+        <message>
+            <source>Output table (.csv or .xlsx)</source>
+            <translation>Tabela wyjściowa (.csv lub .xlsx)</translation>
+        </message>
+        <message>
+            <source>CSV files (*.csv);;Excel files (*.xlsx)</source>
+            <translation>Pliki CSV (*.csv);;Pliki Excel (*.xlsx)</translation>
+        </message>
+        <message>
+            <source>Maximum walk distance (m) - primary 404 lever: raise to 1500-9999 to reduce PATH_NOT_FOUND errors; trades off realism of walk legs</source>
+            <translation>Maksymalny dystans spaceru (m) - główny mechanizm 404: podnieś do 1500-9999, aby zmniejszyć błędy PATH_NOT_FOUND; kompromis w kwestii realizmu odcinków spacerowych</translation>
+        </message>
+        <message>
+            <source>Walk reluctance</source>
+            <translation>Niechęć do chodzenia (Walk reluctance)</translation>
+        </message>
+        <message>
+            <source>Wait reluctance</source>
+            <translation>Niechęć do oczekiwania (Wait reluctance)</translation>
+        </message>
+        <message>
+            <source>Transfer penalty (s)</source>
+            <translation>Kara za przesiadkę (s)</translation>
+        </message>
+        <message>
+            <source>Minimum transfer time (s)</source>
+            <translation>Minimalny czas przesiadki (s)</translation>
+        </message>
+        <message>
+            <source>Concurrent workers sending parallel /plan requests to OTP (I/O-bound, not CPU threads — safe to set above physical core count). More workers speed up large grids but stress OTP RAM and response time. Default 4 is safe for most setups.</source>
+            <translation>Równoległe pracownicy wysyłający zapytania /plan do OTP (ograniczone I/O, nie wątki CPU — bezpieczne ustawienie powyżej liczby fizycznych rdzeni). Więcej pracowników przyspiesza duże siatki, ale obciąża RAM i czas odpowiedzi OTP. Domyślna wartość 4 jest bezpieczna dla większości konfiguracji.</translation>
+        </message>
+        <message>
+            <source>Snap origin centroids to nearest road vertex before querying (mitigates snap-related 404 errors; requires a roads layer below)</source>
+            <translation>Przycinanie centrów pochodzenia do najbliższego wierzchołka drogi przed zapytaniem (minimalizuje błędy 404 związane z przycięciem; wymaga warstwy dróg poniżej)</translation>
+        </message>
+        <message>
+            <source>Roads layer for snapping (e.g. OSM lines; required when snap is enabled)</source>
+            <translation>Warstwa dróg do przycinania (np. linie OSM; wymagana, gdy przycinanie jest włączone)</translation>
+        </message>
+        <message>
+            <source>Diagnose unreachable cells (walk-fallback for 404 in transit mode): adds 'diag' field with off_network / no_transit; doubles requests for 404 cells</source>
+            <translation>Diagnozowanie niedostępnych komórek (fallback dla chodzenia dla 404 w trybie transportu): dodaje pole 'diag' z off_network / no_transit; podwaja zapytania dla komórek 404</translation>
+        </message>
+        <message>
+            <source>Use Java path saved by 'Download Java Runtime Environment' (QSettings)</source>
+            <translation>Użyj ścieżki Java zapisanej przez 'Pobierz środowisko uruchomieniowe Java' (QSettings)</translation>
+        </message>
+        <message>
+            <source>Java 8 binary</source>
+            <translation>Binarny plik Java 8</translation>
+        </message>
+        <message>
+            <source>OpenTripPlanner 1.5.0 jar (otp-1.5.0-shaded.jar)</source>
+            <translation>Plik jar OpenTripPlanner 1.5.0 (otp-1.5.0-shaded.jar)</translation>
+        </message>
+        <message>
+            <source>OTP heap for graph build (e.g. 2G)</source>
+            <translation>Heap OTP dla budowania grafu (np. 2G)</translation>
+        </message>
+        <message>
+            <source>OTP heap for server (e.g. 4G)</source>
+            <translation>Heap OTP dla serwera (np. 4G)</translation>
+        </message>
+        <message>
+            <source>OTP server port</source>
+            <translation>Port serwera OTP</translation>
+        </message>
+        <message>
+            <source>Existing graph router directory (skip build)</source>
+            <translation>Istniejący katalog routera grafu (pomijanie budowania)</translation>
+        </message>
+        <message>
+            <source>Keep OTP server alive after run</source>
+            <translation>Utrzymuj serwer OTP przy życiu po uruchomieniu</translation>
+        </message>
+        <message>
+            <source>No Java path saved in QSettings. Run 'Download Java Runtime Environment' first, or uncheck 'Use saved Java path' and supply the path manually.</source>
+            <translation>Brak ścieżki Java zapisanej w QSettings. Uruchom najpierw 'Pobierz środowisko uruchomieniowe Java', lub odznacz 'Użyj zapisanej ścieżki Java' i podaj ścieżkę ręcznie.</translation>
+        </message>
+        <message>
+            <source>Java OK: version {0}</source>
+            <translation>Java OK: wersja {0}</translation>
+        </message>
+        <message>
+            <source>Download otp-1.5.0-shaded.jar from Maven Central and set the OTP jar parameter.</source>
+            <translation>Pobierz otp-1.5.0-shaded.jar z Maven Central i ustaw parametr jar OTP.</translation>
+        </message>
+        <message>
+            <source>Working directory is required.</source>
+            <translation>Wymagany jest katalog roboczy.</translation>
+        </message>
+        <message>
+            <source>GTFS folder is required for transit modes.</source>
+            <translation>Dla trybów transportu wymagany jest folder GTFS.</translation>
+        </message>
+        <message>
+            <source>Discovered {0} GTFS feed(s): {1}</source>
+            <translation>Odkryto {0} feed(y) GTFS: {1}</translation>
+        </message>
+        <message>
+            <source>SNAP_ORIGINS_TO_NETWORK is enabled but no ROADS_LAYER was supplied. Please provide an OSM lines layer (or similar road network) to snap to.</source>
+            <translation>SNAP_ORIGINS_TO_NETWORK jest włączone, ale nie podano ROADS_LAYER. Proszę podać warstwę linii OSM (lub podobną sieć drogową) do przycinania.</translation>
+        </message>
+        <message>
+            <source>Destination (lat, lon): ({0:.6f}, {1:.6f})</source>
+            <translation>Cel (lat, lon): ({0:.6f}, {1:.6f})</translation>
+        </message>
+        <message>
+            <source>Invalid ORIGINS layer.</source>
+            <translation>Nieprawidłowa warstwa ORIGINS.</translation>
+        </message>
+        <message>
+            <source>EXISTING_GRAPH_DIR does not contain Graph.obj: {0}</source>
+            <translation>Katalogu EXISTING_GRAPH_DIR brakuje pliku Graph.obj: {0}</translation>
+        </message>
+        <message>
+            <source>Using existing graph: {0} (router_id={1}); skipping build.</source>
+            <translation>Używany istniejący graf: {0} (router_id={1}); pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Router ID: {0}</source>
+            <translation>ID routera: {0}</translation>
+        </message>
+        <message>
+            <source>Graph cache hit - skipping build.</source>
+            <translation>Cache grafu odnaleziony - pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Building OTP graph (this can take minutes)...</source>
+            <translation>Budowanie grafu OTP (może to trwać kilka minut)...</translation>
+        </message>
+        <message>
+            <source>Reusing OTP already running on port {0} (version {1}).</source>
+            <translation>Ponowne użycie już działającego OTP na porcie {0} (wersja {1}).</translation>
+        </message>
+        <message>
+            <source>Port {0} is held by a non-OTP process. Pick a different OTP_PORT or stop the conflicting service.</source>
+            <translation>Port {0} jest zajęty przez proces niebędący OTP. Wybierz inny OTP_PORT lub zatrzymaj konfliktujący serwis.</translation>
+        </message>
+        <message>
+            <source>Starting OTP server on port {0}...</source>
+            <translation>Uruchamianie serwera OTP na porcie {0}...</translation>
+        </message>
+        <message>
+            <source>Extracting centroids from origins layer...</source>
+            <translation>Ekstrakcja centroidów z warstwy źródeł...</translation>
+        </message>
+        <message>
+            <source>{0} origins loaded.</source>
+            <translation>{0} źródła załadowane.</translation>
+        </message>
+        <message>
+            <source>Snapping centroids to road network...</source>
+            <translation>Przycinanie centroidów do sieci drogowej...</translation>
+        </message>
+        <message>
+            <source>Running {0} /plan queries (mode={1}, date={2}, time={3}, maxWalkDistance={4}, workers={5})...</source>
+            <translation>Uruchamianie zapytań /plan dla {0} (tryb={1}, data={2}, czas={3}, maxWalkDistance={4}, pracownicy={5})...</translation>
+        </message>
+        <message>
+            <source>OTP error for feature {0}: {1}</source>
+            <translation>Błąd OTP dla cechy {0}: {1}</translation>
+        </message>
+        <message>
+            <source>Run cancelled by user.</source>
+            <translation>Przerwano przez użytkownika.</translation>
+        </message>
+        <message>
+            <source>Diagnosing unreachable cells (walk fallback)...</source>
+            <translation>Diagnostyka niedostępnych komórek (fallback pieszy)...</translation>
+        </message>
+        <message>
+            <source>Table saved to: {0}</source>
+            <translation>Tabela zapisana do: {0}</translation>
+        </message>
+        <message>
+            <source>Run complete.</source>
+            <translation>Uruchomienie zakończone.</translation>
+        </message>
+        <message>
+            <source>{0} is required (parameter {1}).</source>
+            <translation>{0} jest wymagany (parametr {1}).</translation>
+        </message>
+        <message>
+            <source>{0} not found at: {1} (parameter {2}).</source>
+            <translation>{0} nie znaleziony pod adresem: {1} (parametr {2}).</translation>
+        </message>
+        <message>
+            <source>SNAP_ORIGINS_TO_NETWORK: origins layer CRS is geographic ({0}). Snap tolerance of 500 units means 500 degrees — consider using a projected CRS for the origins layer.</source>
+            <translation>SNAP_ORIGINS_TO_NETWORK: CRS warstwy źródeł jest geograficzny ({0}). Tolerancja przycinania 500 jednostek oznacza 500 stopni — rozważ użycie CRS projektowego dla warstwy źródeł.</translation>
+        </message>
+        <message>
+            <source>Snapped {0} of {1} centroids.</source>
+            <translation>Połączono {0} z {1} centroidów.</translation>
+        </message>
+        <message>
+            <source>Summary: {0}/{1} OK ({2}%), {3} unreachable.</source>
+            <translation>Podsumowanie: {0}/{1} OK ({2}%), {3} niedostępne.</translation>
+        </message>
+        <message>
+            <source>  status={0}: {1} cell(s)</source>
+            <translation>  status={0}: {1} komórka(s)</translation>
+        </message>
+        <message>
+            <source>ANALYSIS_DATE is a {0} ({1}). Weekend transit schedules may differ significantly from weekday analyses.</source>
+            <translation>DATA_ANALIZY to {0} ({1}). Rozkłady jazdy weekendowe mogą znacznie różnić się od analiz dni roboczych.</translation>
+        </message>
+        <message>
+            <source>No calendar.txt in {0} - cannot validate analysis date.</source>
+            <translation>Brak pliku calendar.txt w {0} - niemożliwa walidacja daty analizy.</translation>
+        </message>
+        <message>
+            <source>{0}: no services active on {1}. OTP may return all-unreachable results.</source>
+            <translation>{0}: żadne usługi nieaktywne w dniu {1}. OTP może zwrócić wyniki całkowicie niedostępne.</translation>
+        </message>
+        <message>
+            <source>{0}: {1} service(s) active on {2}.</source>
+            <translation>{0}: {1} usługa(s) aktywna(ych) w dniu {2}.</translation>
+        </message>
+        <message>
+            <source>Could not read {0} for date validation: {1}</source>
+            <translation>Nie można odczytać {0} do walidacji daty: {1}</translation>
         </message>
     </context>
     <context>
@@ -2086,6 +2975,315 @@ Początkowy błąd: {err_text}</translation>
         </message>
     </context>
     <context>
+        <name>RunServiceCoverage</name>
+        <message>
+            <source>Run service coverage</source>
+            <translation>Uruchomienie pokrycia usługi</translation>
+        </message>
+        <message>
+            <source>3 · Analysis</source>
+            <translation>3 · Analiza</translation>
+        </message>
+        <message>
+            <source>For each grid cell, counts how many service points (shops, hospitals, parcel lockers, etc.) are reachable within the travel-time threshold at one snapshot moment of the day (the 'Żabka' analysis).
+
+For each of N service points one travel-time surface is generated at the chosen time. Surfaces are stacked and counted per raster cell (count = how many points have travel-time ≤ threshold). The count raster is then aggregated to a hex/square grid or a user-supplied layer.
+
+One time only — for multiple times, run the algorithm separately. Analysis time is O(N points); a typical run with 20 points takes minutes.
+
+For non-transit modes (WALK/CAR/BICYCLE) GTFS is optional.
+Requires user-provided Java 8 and otp-1.5.0-shaded.jar.</source>
+            <translation>Dla każdej komórki siatki liczy, ile punktów usługowych (sklepy, szpitale, paczkomaty itp.) jest osiągalnych w ramach progu czasu podróży w jednym momencie dnia (analiza 'Żabka').
+
+Dla każdego z N punktów usługowych generowana jest jedna powierzchnia czasu podróży w wybranym czasie. Powierzchnie są układane i liczone dla każdej komórki rastra (liczba = ile punktów ma czas podróży ≤ próg). Następnie rastr liczby jest agregowany do siatki sześciokątnej/kwadratowej lub warstwy dostarczonej przez użytkownika.
+
+Tylko raz — dla wielu momentów, algorytm uruchamia się osobno. Czas analizy wynosi O(N punktów); typowe uruchomienie z 20 punktami zajmuje kilka minut.
+
+Dla trybów niezwiązanych z transportem (CHODZENIE/SAMOCHÓD/RODZYGŁA) GTFS jest opcjonalny.
+Wymaga dostarczenia przez użytkownika Java 8 i otp-1.5.0-shaded.jar.</translation>
+        </message>
+        <message>
+            <source>Service points (point layer: shops, hospitals, parcel lockers, etc.)</source>
+            <translation>Punkty usługowe (warstwa punktowa: sklepy, szpitale, paczkomaty itp.)</translation>
+        </message>
+        <message>
+            <source>OSM extract (.osm.pbf)</source>
+            <translation>Ekstrakcja OSM (.osm.pbf)</translation>
+        </message>
+        <message>
+            <source>GTFS folder (required for transit modes; optional for WALK/CAR/BICYCLE)</source>
+            <translation>Folder GTFS (wymagany dla trybów transportu; opcjonalny dla CHODZENIE/SAMOCHÓD/RODZYGŁA)</translation>
+        </message>
+        <message>
+            <source>Transport mode</source>
+            <translation>Tryb transportu</translation>
+        </message>
+        <message>
+            <source>Travel-time threshold (min) — 'reachable within T minutes'</source>
+            <translation>Próg czasu podróży (min) — 'osiągalne w ciągu T minut'</translation>
+        </message>
+        <message>
+            <source>Analysis date</source>
+            <translation>Data analizy</translation>
+        </message>
+        <message>
+            <source>Analysis time (single snapshot — one moment only)</source>
+            <translation>Czas analizy (jeden moment — tylko jeden raz)</translation>
+        </message>
+        <message>
+            <source>Aggregation grid</source>
+            <translation>Siatka agregacji</translation>
+        </message>
+        <message>
+            <source>Grid cell size (m) — for GRID_HEX and GRID_SQUARE</source>
+            <translation>Rozmiar komórki siatki (m) — dla GRID_HEX i GRID_SQUARE</translation>
+        </message>
+        <message>
+            <source>Existing polygon layer (used when Aggregation = EXISTING_LAYER)</source>
+            <translation>Istniejąca warstwa wielokątów (używana, gdy Agregacja = EXISTING_LAYER)</translation>
+        </message>
+        <message>
+            <source>Aggregation statistic — max: most points reachable in cell; mean: average reachable count; sum: total</source>
+            <translation>Statystyka agregacji — max: najwięcej osiągalnych punktów w komórce; średnia: średnia liczba osiągalnych; suma: całkowita</translation>
+        </message>
+        <message>
+            <source>Output count raster (reachable_count, 0…N service points)</source>
+            <translation>Rastr liczby wyjściowej (reachable_count, 0…N punktów usługowych)</translation>
+        </message>
+        <message>
+            <source>Output grid with reachable count (produced when Aggregation ≠ NONE)</source>
+            <translation>Siatka wyjściowa z liczbą osiągalnych (generowana, gdy Agregacja ≠ NONE)</translation>
+        </message>
+        <message>
+            <source>Working directory (intermediate surfaces, graph, cache)</source>
+            <translation>Katalog roboczy (powierzchnie pośrednie, graf, pamięć podręczna)</translation>
+        </message>
+        <message>
+            <source>Walk reluctance</source>
+            <translation>Niechęć do chodzenia</translation>
+        </message>
+        <message>
+            <source>Wait reluctance</source>
+            <translation>Niechęć do oczekiwania</translation>
+        </message>
+        <message>
+            <source>Transfer penalty (s)</source>
+            <translation>Kara za przesiadkę (s)</translation>
+        </message>
+        <message>
+            <source>Minimum transfer time (s)</source>
+            <translation>Minimalny czas przesiadki (s)</translation>
+        </message>
+        <message>
+            <source>Maximum walk distance (m) — limited effect in OTP analyst mode</source>
+            <translation>Maksymalna odległość piesza (m) — ograniczony efekt w trybie analityka OTP</translation>
+        </message>
+        <message>
+            <source>Walk speed (m/s)</source>
+            <translation>Prędkość chodu (m/s)</translation>
+        </message>
+        <message>
+            <source>Use Java path saved by 'Download Java Runtime Environment' (QSettings)</source>
+            <translation>Użyj ścieżki Java zapisanej przez 'Pobierz środowisko uruchomieniowe Java' (QSettings)</translation>
+        </message>
+        <message>
+            <source>Java 8 binary</source>
+            <translation>Binarny plik Java 8</translation>
+        </message>
+        <message>
+            <source>OpenTripPlanner 1.5.0 jar (otp-1.5.0-shaded.jar)</source>
+            <translation>Plik jar OpenTripPlanner 1.5.0 (otp-1.5.0-shaded.jar)</translation>
+        </message>
+        <message>
+            <source>OTP heap for graph build (e.g. 2G)</source>
+            <translation>Pamięć heap OTP do budowania grafu (np. 2G)</translation>
+        </message>
+        <message>
+            <source>OTP heap for analyst server (e.g. 4G)</source>
+            <translation>Pamięć heap OTP dla serwera analityka (np. 4G)</translation>
+        </message>
+        <message>
+            <source>OTP server port</source>
+            <translation>Port serwera OTP</translation>
+        </message>
+        <message>
+            <source>Existing graph router directory (skip build)</source>
+            <translation>Istniejący katalog routera grafu (pomijanie budowania)</translation>
+        </message>
+        <message>
+            <source>Keep OTP server alive after run</source>
+            <translation>Utrzymaj serwer OTP aktywny po uruchomieniu</translation>
+        </message>
+        <message>
+            <source>No Java path saved in QSettings. Run 'Download Java Runtime Environment' first, or uncheck 'Use saved Java path (QSettings)' and supply the path manually.</source>
+            <translation>Nie zapisano ścieżki Java w QSettings. Uruchom 'Pobierz środowisko uruchomieniowe Java' najpierw lub odznacz 'Użyj zapisanej ścieżki Java (QSettings)' i podaj ścieżkę ręcznie.</translation>
+        </message>
+        <message>
+            <source>Using Java path from QSettings: {}</source>
+            <translation>Używana ścieżka Java z QSettings: {}</translation>
+        </message>
+        <message>
+            <source>Java OK: version {}</source>
+            <translation>Java OK: wersja {}</translation>
+        </message>
+        <message>
+            <source>Download otp-1.5.0-shaded.jar from Maven Central (groupId=org.opentripplanner, artifactId=otp, version=1.5.0, classifier=shaded) and set the 'OpenTripPlanner 1.5.0 jar' parameter.</source>
+            <translation>Pobierz otp-1.5.0-shaded.jar z Maven Central (groupId=org.opentripplanner, artifactId=otp, version=1.5.0, classifier=shaded) i ustaw parametr 'Plik jar OpenTripPlanner 1.5.0'.</translation>
+        </message>
+        <message>
+            <source>Discovered {} GTFS feed(s): {}</source>
+            <translation>Odkryto {} plik(i) feedu GTFS: {}</translation>
+        </message>
+        <message>
+            <source>GTFS_FILES folder is required for transit mode '{}'. Supply a folder containing one or more GTFS .zip archives, or choose a non-transit mode (WALK/CAR/BICYCLE) for street-only routing.</source>
+            <translation>Katalog GTFS_FILES jest wymagany dla trybu transportowego '{}'. Podaj katalog zawierający jeden lub więcej archiwów .zip GTFS, lub wybierz tryb nie-transportowy (WALK/CAR/BICYCLE) dla routingu tylko po ulicach.</translation>
+        </message>
+        <message>
+            <source>No GTFS supplied — building street-only graph for mode '{}'.</source>
+            <translation>Nie podano GTFS — budowanie grafu tylko po ulicach dla trybu '{}'.</translation>
+        </message>
+        <message>
+            <source>SERVICE_POINTS layer could not be loaded.</source>
+            <translation>Warstwę SERVICE_POINTS nie można załadować.</translation>
+        </message>
+        <message>
+            <source>SERVICE_POINTS layer has no features.</source>
+            <translation>Warstwa SERVICE_POINTS nie posiada żadnych obiektów.</translation>
+        </message>
+        <message>
+            <source>Loaded {} service point(s).</source>
+            <translation>Załadowano {} punkt(y) obsługi.</translation>
+        </message>
+        <message>
+            <source>Invalid TIME value.</source>
+            <translation>Nieprawidłowa wartość czasu.</translation>
+        </message>
+        <message>
+            <source>Analysis snapshot: date={}, time={}, mode={}, threshold={} min</source>
+            <translation>Zrzut analizy: data={}, czas={}, tryb={}, próg={} min</translation>
+        </message>
+        <message>
+            <source>Output count raster path is required.</source>
+            <translation>Wymagana ścieżka rastra wyjściowego.</translation>
+        </message>
+        <message>
+            <source>Working directory is required.</source>
+            <translation>Wymagany katalog roboczy.</translation>
+        </message>
+        <message>
+            <source>EXISTING_GRAPH_DIR does not contain Graph.obj: {}. Point to the router directory (e.g. …/graphs/abc123/).</source>
+            <translation>EXISTING_GRAPH_DIR nie zawiera Graph.obj: {}. Wskaż katalog routera (np. …/graphs/abc123/).</translation>
+        </message>
+        <message>
+            <source>Using existing graph: {} (router_id={}); skipping build.</source>
+            <translation>Używany istniejący graf: {} (router_id={}); pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Router ID: {}</source>
+            <translation>ID routera: {}</translation>
+        </message>
+        <message>
+            <source>Graph cache hit — skipping build.</source>
+            <translation>Odczyt z pamięci podręcznej grafu — pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Graph cache miss: expected {}.
+However, a graph was found at {} — WORK_DIR appears to point to the 'graphs' subfolder rather than its parent.
+Fix option A: set WORK_DIR to '{}'.
+Fix option B: set EXISTING_GRAPH_DIR to '{}'.</source>
+            <translation>Błąd odczytu z pamięci podręcznej grafu: oczekiwano {}.
+Jednak znaleziono graf w {} — WORK_DIR wydaje się wskazywać na podfolder 'graphs' zamiast na jego rodzica.
+Opcja naprawy A: ustaw WORK_DIR na '{}'.
+Opcja naprawy B: ustaw EXISTING_GRAPH_DIR na '{}'.</translation>
+        </message>
+        <message>
+            <source>Building OTP graph (this can take minutes)…</source>
+            <translation>Budowanie grafu OTP (może to trwać kilka minut)…</translation>
+        </message>
+        <message>
+            <source>Reusing OTP already running on port {} (version {}).</source>
+            <translation>Ponowne użycie już działającego OTP na porcie {} (wersja {}).</translation>
+        </message>
+        <message>
+            <source>Port {} is held by a non-OTP process. Pick a different OTP_PORT or stop the conflicting service.</source>
+            <translation>Port {} jest zajęty przez proces niebędący OTP. Wybierz inny OTP_PORT lub zatrzymaj konfliktujący serwis.</translation>
+        </message>
+        <message>
+            <source>Starting OTP server on port {}…</source>
+            <translation>Uruchamianie serwera OTP na porcie {}…</translation>
+        </message>
+        <message>
+            <source>Generating {} surface(s) at {} for date={}…</source>
+            <translation>Generowanie powierzchni {} w {} dla daty={}…</translation>
+        </message>
+        <message>
+            <source>Surface generation failed: {}</source>
+            <translation>Generowanie powierzchni nie powiodło się: {}</translation>
+        </message>
+        <message>
+            <source>Generated {} surface(s) in {}.</source>
+            <translation>Wygenerowano {} powierzchnię(y) w {}.</translation>
+        </message>
+        <message>
+            <source>Counting pixels reachable within {} min across {} surface(s)…</source>
+            <translation>Liczenie pikseli osiągalnych w ciągu {} min na {} powierzchni(ach)…</translation>
+        </message>
+        <message>
+            <source>Count raster written: {}</source>
+            <translation>Zapisano rastra liczby: {}</translation>
+        </message>
+        <message>
+            <source>Building aggregation grid ({})...</source>
+            <translation>Budowanie siatki agregacyjnej ({})...</translation>
+        </message>
+        <message>
+            <source>No pixels were reachable within the threshold. Check SERVICE_POINTS locations, THRESHOLD_MIN, and ANALYSIS_DATE/TIME.</source>
+            <translation>Nie znaleziono żadnych pikseli osiągalnych w ramach progu. Sprawdź lokalizacje SERVICE_POINTS, THRESHOLD_MIN oraz DATĘ/CZAS ANALIZY.</translation>
+        </message>
+        <message>
+            <source>AGG_LAYER is required when AGGREGATION = EXISTING_LAYER.</source>
+            <translation>WARSTWA_AGGREGATY jest wymagana, gdy AGREGACJA = ISTNIEJĄCA_WARSTWA.</translation>
+        </message>
+        <message>
+            <source>Running zonal statistics (stat={}) on count raster…</source>
+            <translation>Uruchamianie statystyk strefowych (stat={}) na rastrze liczby…</translation>
+        </message>
+        <message>
+            <source>Run cancelled by user.</source>
+            <translation>Przerwano przez użytkownika.</translation>
+        </message>
+        <message>
+            <source>Pipeline complete: {n} service points, threshold {t} min.</source>
+            <translation>Potok zakończony: {n} punktów usługowych, próg {t} min.</translation>
+        </message>
+        <message>
+            <source>=== Coverage summary ===
+  max reachable points: {mx}/{n}
+  mean reachable points (non-zero cells): {mn:.2f}
+  cells with coverage: {cv} ({pct:.1f}% of raster extent)</source>
+            <translation>=== Podsumowanie pokrycia ===
+  maksymalna liczba osiągalnych punktów: {mx}/{n}
+  średnia liczba osiągalnych punktów (komórki niezerowe): {mn:.2f}
+  komórki z pokryciem: {cv} ({pct:.1f}% powierzchni rastra)</translation>
+        </message>
+        <message>
+            <source>No cells had any service points reachable within threshold.</source>
+            <translation>Żadna komórka nie miała żadnych osiągalnych punktów usługowych w ramach progu.</translation>
+        </message>
+        <message>
+            <source>Could not compute summary stats: {}</source>
+            <translation>Nie można obliczyć statystyk podsumowujących: {}</translation>
+        </message>
+        <message>
+            <source>{} is required (parameter {}).{}</source>
+            <translation>Wymagany jest {} (parametr {}).{}</translation>
+        </message>
+        <message>
+            <source>{} not found at: {} (parameter {}).{}</source>
+            <translation>{} nie znaleziono w: {} (parametr {}).{}</translation>
+        </message>
+    </context>
+    <context>
         <name>RunTemporalAccessibility</name>
         <message>
             <source>Run temporal accessibility</source>
@@ -2454,6 +3652,309 @@ Początkowy błąd: {err_text}</translation>
         <message>
             <source>{label} not found at: {path} (parameter {key}).</source>
             <translation>{label} nie znaleziono pod adresem: {path} (parametr {key}).</translation>
+        </message>
+        <message>
+            <source>Origin point (analysis metadata)</source>
+            <translation>Punkt początkowy (metadane analizy)</translation>
+        </message>
+    </context>
+    <context>
+        <name>RunTravelTimeMatrix</name>
+        <message>
+            <source>Run travel time matrix</source>
+            <translation>Uruchomienie macierzy czasu podróży</translation>
+        </message>
+        <message>
+            <source>3 · Analysis</source>
+            <translation>3 · Analiza</translation>
+        </message>
+        <message>
+            <source>Generates a full N×M travel-time matrix between an origins layer (N) and a destinations layer (M). For each pair (origin_i, destination_j) one OTP /plan query returns the selected trip metrics.
+
+Output: LONG CSV (one row per pair), WIDE CSV (origins as rows, destinations as columns of duration), or BOTH. BOTH writes two files with _long / _wide suffixes inserted before the file extension.
+
+An optional OD line layer draws straight origin→destination segments attributed with duration_min and status.
+
+Complexity: N×M queries. A warning is shown above {0} pairs; for large matrices consider RunServiceCoverage (surface method) instead.</source>
+            <translation>Generuje pełną macierz czasu podróży N×M między warstwą początków (N) a warstwą docelowych miejsc (M). Dla każdej pary (origin_i, destination_j) zapytanie OTP/plan zwraca wybrane metryki podróży.
+
+Wyjście: DŁUGI CSV (jeden wiersz na parę), SZEROKI CSV (początki jako wiersze, destynacje jako kolumny czasu trwania) lub OBA. OBA zapisuje dwa pliki z sufiksami _long / _wide umieszczonymi przed rozszerzeniem.
+
+Opcjonalna warstwa linii OD rysuje proste odcinki początek→cel przypisane czasem_min i statusem.
+
+Złożoność: N×M zapytań. Powiadomienie jest wyświetlane nad {0} parami; dla dużych macierzy rozważ RunServiceCoverage (metoda powierzchniowa) zamiast tego.</translation>
+        </message>
+        <message>
+            <source>Origins layer (N; centroids used as OTP fromPlace)</source>
+            <translation>Warstwa początków (N; centroidy używane jako OTP fromPlace)</translation>
+        </message>
+        <message>
+            <source>Destinations layer (M; centroids used as OTP toPlace)</source>
+            <translation>Warstwa docelowych miejsc (M; centroidy używane jako OTP toPlace)</translation>
+        </message>
+        <message>
+            <source>Transport mode</source>
+            <translation>Tryb transportu</translation>
+        </message>
+        <message>
+            <source>Analysis date</source>
+            <translation>Data analizy</translation>
+        </message>
+        <message>
+            <source>Departure time</source>
+            <translation>Czas odjazdu</translation>
+        </message>
+        <message>
+            <source>Metrics to include in LONG output</source>
+            <translation>Metryki do uwzględnienia w wyjściu DŁUGIM</translation>
+        </message>
+        <message>
+            <source>Output format</source>
+            <translation>Format wyjścia</translation>
+        </message>
+        <message>
+            <source>Create OD line layer (straight origin→destination segments attributed with duration_min and status)</source>
+            <translation>Utwórz warstwę linii OD (proste odcinki początek→cel przypisane czasem_min i statusem)</translation>
+        </message>
+        <message>
+            <source>OSM extract (.osm.pbf)</source>
+            <translation>Ekstrakcja OSM (.osm.pbf)</translation>
+        </message>
+        <message>
+            <source>GTFS folder (required for transit modes)</source>
+            <translation>Folder GTFS (wymagany dla trybów transportu)</translation>
+        </message>
+        <message>
+            <source>Working directory (graph, cache)</source>
+            <translation>Katalog roboczy (graf, pamięć podręczna)</translation>
+        </message>
+        <message>
+            <source>Output matrix (.csv or .xlsx). For BOTH format two files are written with _long / _wide suffixes before the extension.</source>
+            <translation>Macierz wyjściowa (.csv lub .xlsx). Dla formatu OBA zapisywane są dwa pliki z sufiksami _long / _wide przed rozszerzeniem.</translation>
+        </message>
+        <message>
+            <source>CSV files (*.csv);;Excel files (*.xlsx)</source>
+            <translation>Pliki CSV (*.csv);;Pliki Excel (*.xlsx)</translation>
+        </message>
+        <message>
+            <source>Output OD line layer (only used when MAKE_OD_LINES is enabled)</source>
+            <translation>Warstwa linii OD wyjściowa (używana tylko gdy MAKE_OD_LINES jest włączone)</translation>
+        </message>
+        <message>
+            <source>Maximum walk distance (m) — primary 404 lever: raise to 1500–9999 to reduce PATH_NOT_FOUND errors</source>
+            <translation>Maksymalna odległość piesza (m) — główny dźwignia 404: zwiększ do 1500–9999, aby zmniejszyć błędy PATH_NOT_FOUND</translation>
+        </message>
+        <message>
+            <source>Walk reluctance</source>
+            <translation>Niechęć do chodzenia</translation>
+        </message>
+        <message>
+            <source>Wait reluctance</source>
+            <translation>Niechęć do oczekiwania</translation>
+        </message>
+        <message>
+            <source>Transfer penalty (s)</source>
+            <translation>Kara za przesiadkę (s)</translation>
+        </message>
+        <message>
+            <source>Minimum transfer time (s)</source>
+            <translation>Minimalny czas przesiadki (s)</translation>
+        </message>
+        <message>
+            <source>Concurrent workers (I/O-bound; safe to set above core count). Default 4 is safe for most setups.</source>
+            <translation>Równoległe procesy (ograniczone I/O; bezpieczne ustawienie powyżej liczby rdzeni). Domyślna wartość 4 jest bezpieczna dla większości konfiguracji.</translation>
+        </message>
+        <message>
+            <source>Use Java path saved by 'Download Java Runtime Environment' (QSettings)</source>
+            <translation>Użyj ścieżki Java zapisanej przez 'Pobierz środowisko uruchomieniowe Java' (QSettings)</translation>
+        </message>
+        <message>
+            <source>Java 8 binary</source>
+            <translation>Binarka Java 8</translation>
+        </message>
+        <message>
+            <source>OpenTripPlanner 1.5.0 jar (otp-1.5.0-shaded.jar)</source>
+            <translation>Plik jar OpenTripPlanner 1.5.0 (otp-1.5.0-shaded.jar)</translation>
+        </message>
+        <message>
+            <source>OTP heap for graph build (e.g. 2G)</source>
+            <translation>Heap OTP dla budowania grafu (np. 2G)</translation>
+        </message>
+        <message>
+            <source>OTP heap for server (e.g. 4G)</source>
+            <translation>Heap OTP dla serwera (np. 4G)</translation>
+        </message>
+        <message>
+            <source>OTP server port</source>
+            <translation>Port serwera OTP</translation>
+        </message>
+        <message>
+            <source>Existing graph router directory (skip build)</source>
+            <translation>Istniejący katalog routera grafu (pomijanie budowania)</translation>
+        </message>
+        <message>
+            <source>Keep OTP server alive after run</source>
+            <translation>Utrzymaj serwer OTP aktywny po uruchomieniu</translation>
+        </message>
+        <message>
+            <source>No Java path saved in QSettings. Run 'Download Java Runtime Environment' first, or uncheck 'Use saved Java path'.</source>
+            <translation>Brak ścieżki Java zapisanej w QSettings. Uruchom najpierw 'Pobierz środowisko uruchomieniowe Java', lub odznacz 'Użyj zapisanego ścieżki Java'.</translation>
+        </message>
+        <message>
+            <source>Java OK: version {0}</source>
+            <translation>Java OK: wersja {0}</translation>
+        </message>
+        <message>
+            <source>Download otp-1.5.0-shaded.jar from Maven Central and set the OTP jar parameter.</source>
+            <translation>Pobierz otp-1.5.0-shaded.jar z Maven Central i ustaw parametr jar OTP.</translation>
+        </message>
+        <message>
+            <source>Working directory is required.</source>
+            <translation>Wymagany jest katalog roboczy.</translation>
+        </message>
+        <message>
+            <source>GTFS folder is required for transit modes.</source>
+            <translation>Dla trybów transportu wymagany jest folder GTFS.</translation>
+        </message>
+        <message>
+            <source>Discovered {0} GTFS feed(s): {1}</source>
+            <translation>Odkryto {0} feed(y) GTFS: {1}</translation>
+        </message>
+        <message>
+            <source>Invalid ORIGINS layer.</source>
+            <translation>Nieprawidłowa warstwa ORIGINS.</translation>
+        </message>
+        <message>
+            <source>Invalid DESTINATIONS layer.</source>
+            <translation>Nieprawidłowa warstwa DESTINATIONS.</translation>
+        </message>
+        <message>
+            <source>EXISTING_GRAPH_DIR does not contain Graph.obj: {0}</source>
+            <translation>Katalog EXISTING_GRAPH_DIR nie zawiera Graph.obj: {0}</translation>
+        </message>
+        <message>
+            <source>Using existing graph: {0} (router_id={1}); skipping build.</source>
+            <translation>Używany istniejący graf: {0} (router_id={1}); pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Router ID: {0}</source>
+            <translation>ID routera: {0}</translation>
+        </message>
+        <message>
+            <source>Graph cache hit - skipping build.</source>
+            <translation>Cache grafu trafiony - pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Building OTP graph (this can take minutes)...</source>
+            <translation>Budowanie grafu OTP (może to trwać kilka minut)...</translation>
+        </message>
+        <message>
+            <source>Reusing OTP already running on port {0} (version {1}).</source>
+            <translation>Ponowne użycie OTP działającego już na porcie {0} (wersja {1}).</translation>
+        </message>
+        <message>
+            <source>Port {0} is held by a non-OTP process. Pick a different OTP_PORT or stop the conflicting service.</source>
+            <translation>Port {0} jest zajęty przez proces niebędący OTP. Wybierz inny OTP_PORT lub zatrzymaj konfliktujący serwis.</translation>
+        </message>
+        <message>
+            <source>Starting OTP server on port {0}...</source>
+            <translation>Uruchamianie serwera OTP na porcie {0}...</translation>
+        </message>
+        <message>
+            <source>Extracting origin centroids...</source>
+            <translation>Ekstrakcja centroidów początkowych...</translation>
+        </message>
+        <message>
+            <source>Origin feature {0} has null/empty geometry — skipped.</source>
+            <translation>Obiekt początkowy {0} ma geometrię null/pustą — pominięto.</translation>
+        </message>
+        <message>
+            <source>Extracting destination centroids...</source>
+            <translation>Ekstrakcja centroidów docelowych...</translation>
+        </message>
+        <message>
+            <source>Destination feature {0} has null/empty geometry — skipped.</source>
+            <translation>Obiekt docelowy {0} ma geometrię null/pustą — pominięto.</translation>
+        </message>
+        <message>
+            <source>{0} origins × {1} destinations.</source>
+            <translation>{0} początków × {1} docelów.</translation>
+        </message>
+        <message>
+            <source>Large matrix: {0} pairs (≈{1} min at ~2 req/s per worker). Consider RunServiceCoverage for large M. Continuing.</source>
+            <translation>Duża macierz: {0} par (≈{1} min przy ~2 zapytaniach/s na pracownika). Rozważ RunServiceCoverage dla dużej M. Kontynuowanie.</translation>
+        </message>
+        <message>
+            <source>Running {0} /plan queries (mode={1}, date={2}, time={3}, workers={4})...</source>
+            <translation>Uruchamianie zapytań /plan dla {0} (tryb={1}, data={2}, czas={3}, pracownicy={4})...</translation>
+        </message>
+        <message>
+            <source>OTP error for pair {0}: {1}</source>
+            <translation>Błąd OTP dla pary {0}: {1}</translation>
+        </message>
+        <message>
+            <source>Unexpected error for pair {0}: {1}</source>
+            <translation>Nieoczekiwany błąd dla pary {0}: {1}</translation>
+        </message>
+        <message>
+            <source>Run cancelled by user.</source>
+            <translation>Przerwano przez użytkownika.</translation>
+        </message>
+        <message>
+            <source>MAKE_OD_LINES is enabled but no OUTPUT_LINES destination was provided. No line layer will be created.</source>
+            <translation>MAKE_OD_LINES jest włączone, ale nie podano docelowego miejsca dla linii wyjściowych. Nie zostanie utworzona warstwa linii.</translation>
+        </message>
+        <message>
+            <source>OD line layer: {0} features written.</source>
+            <translation>Warstwa linii OD: zapisano {0} obiektów.</translation>
+        </message>
+        <message>
+            <source>Run complete.</source>
+            <translation>Uruchomienie zakończone.</translation>
+        </message>
+        <message>
+            <source>{0} is required (parameter {1}).</source>
+            <translation>{0} jest wymagany (parametr {1}).</translation>
+        </message>
+        <message>
+            <source>{0} not found at: {1} (parameter {2}).</source>
+            <translation>{0} nie znaleziono pod adresem: {1} (parametr {2}).</translation>
+        </message>
+        <message>
+            <source>Summary: {0}/{1} pairs OK ({2}%), {3} unreachable.</source>
+            <translation>Podsumowanie: {0}/{1} par OK ({2}%), {3} niedostępne.</translation>
+        </message>
+        <message>
+            <source>  status={0}: {1} pair(s)</source>
+            <translation>  status={0}: {1} para(y)</translation>
+        </message>
+        <message>
+            <source>LONG table saved to: {0}</source>
+            <translation>Długa tabela zapisana do: {0}</translation>
+        </message>
+        <message>
+            <source>WIDE table saved to: {0}</source>
+            <translation>Szeroka tabela zapisana do: {0}</translation>
+        </message>
+        <message>
+            <source>ANALYSIS_DATE is a {0} ({1}). Weekend transit schedules may differ significantly from weekday analyses.</source>
+            <translation>DATA_ANALIZY to {0} ({1}). Rozkłady jazdy weekendowe mogą znacznie różnić się od analiz dni roboczych.</translation>
+        </message>
+        <message>
+            <source>No calendar.txt in {0} - cannot validate analysis date.</source>
+            <translation>Brak pliku calendar.txt w {0} - niemożliwa walidacja daty analizy.</translation>
+        </message>
+        <message>
+            <source>{0}: no services active on {1}. OTP may return all-unreachable results.</source>
+            <translation>{0}: brak usług aktywnych w dniu {1}. OTP może zwrócić wyniki wszystkich niedostępnych.</translation>
+        </message>
+        <message>
+            <source>{0}: {1} service(s) active on {2}.</source>
+            <translation>{0}: {1} usługa(y) aktywna(e) w dniu {2}.</translation>
+        </message>
+        <message>
+            <source>Could not read {0} for date validation: {1}</source>
+            <translation>Nie udało się odczytać {0} do walidacji daty: {1}</translation>
         </message>
     </context>
     <context>
