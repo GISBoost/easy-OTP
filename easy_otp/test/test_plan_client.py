@@ -2,6 +2,7 @@
 
 import json
 import urllib.error
+import urllib.parse
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
@@ -214,3 +215,150 @@ class TestUrlConstruction:
         assert "toPlace=51.747%2C19.452" in url or "toPlace=51.747,19.452" in url
         assert "routerId=myrouter" in url
         assert "numItineraries=1" in url
+
+
+# ---------------------------------------------------------------------------
+# get_trip_via — success, error, and URL construction
+# ---------------------------------------------------------------------------
+
+# Canonical Google polyline for [(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)]
+_POLYLINE = "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+
+_VIA_SUCCESS_BODY = {
+    "plan": {
+        "itineraries": [{
+            "duration": 1800,
+            "walkDistance": 3000.0,
+            "legs": [
+                {
+                    "duration": 600,
+                    "distance": 800.0,
+                    "mode": "WALK",
+                    "legGeometry": {"points": _POLYLINE},
+                },
+                {
+                    "duration": 1200,
+                    "distance": 2200.0,
+                    "mode": "WALK",
+                    "legGeometry": {"points": _POLYLINE},
+                },
+            ],
+        }]
+    }
+}
+
+
+def _call_get_trip_via(body: dict, intermediate_places=None) -> dict:
+    client = PlanClient(hostname="localhost", port=8801, router="default")
+    with patch("easy_otp.core.plan_client.urllib.request.urlopen", return_value=_make_resp(body)):
+        return client.get_trip_via(
+            from_lat=51.0, from_lon=17.0,
+            to_lat=51.1, to_lon=17.1,
+            intermediate_places=intermediate_places or [],
+            mode="WALK",
+            date_mmddyyyy="07-02-2026",
+            time_hhmmss="10:00:00",
+        )
+
+
+class TestGetTripViaSuccess:
+    def test_status_ok(self):
+        result = _call_get_trip_via(_VIA_SUCCESS_BODY)
+        assert result["status"] == "OK"
+
+    def test_duration_converted_to_minutes(self):
+        result = _call_get_trip_via(_VIA_SUCCESS_BODY)
+        assert result["duration"] == 30.0
+
+    def test_walk_distance_returned(self):
+        result = _call_get_trip_via(_VIA_SUCCESS_BODY)
+        assert result["walk_distance_m"] == 3000.0
+
+    def test_legs_count(self):
+        result = _call_get_trip_via(_VIA_SUCCESS_BODY)
+        assert len(result["legs"]) == 2
+
+    def test_leg_duration_min(self):
+        result = _call_get_trip_via(_VIA_SUCCESS_BODY)
+        assert result["legs"][0]["duration_min"] == round(600 / 60, 2)
+
+    def test_leg_distance_m(self):
+        result = _call_get_trip_via(_VIA_SUCCESS_BODY)
+        assert result["legs"][0]["distance_m"] == 800.0
+
+    def test_leg_mode(self):
+        result = _call_get_trip_via(_VIA_SUCCESS_BODY)
+        assert result["legs"][0]["mode"] == "WALK"
+
+    def test_leg_geometry_decoded(self):
+        result = _call_get_trip_via(_VIA_SUCCESS_BODY)
+        geom = result["legs"][0]["geometry"]
+        assert len(geom) == 3
+        assert geom[0] == pytest.approx((38.5, -120.2), abs=1e-3)
+
+
+class TestGetTripViaError:
+    def test_otp_error_status_string(self):
+        body = {"error": {"id": 404, "msg": "PATH_NOT_FOUND"}}
+        result = _call_get_trip_via(body)
+        assert result["status"] == "404"
+
+    def test_otp_error_legs_empty(self):
+        body = {"error": {"id": 404, "msg": "PATH_NOT_FOUND"}}
+        result = _call_get_trip_via(body)
+        assert result["legs"] == []
+
+    def test_otp_error_duration_none(self):
+        body = {"error": {"id": 404, "msg": "PATH_NOT_FOUND"}}
+        result = _call_get_trip_via(body)
+        assert result["duration"] is None
+
+    def test_no_itinerary_status(self):
+        body = {"plan": {"itineraries": []}}
+        result = _call_get_trip_via(body)
+        assert result["status"] == "NO_ITINERARY"
+        assert result["legs"] == []
+
+
+class TestGetTripViaUrlConstruction:
+    def _capture_url(self, intermediate_places):
+        captured = {}
+
+        def fake_urlopen(url, timeout=None):
+            captured["url"] = url
+            resp = MagicMock()
+            resp.read.return_value = json.dumps(_VIA_SUCCESS_BODY).encode()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        client = PlanClient(hostname="localhost", port=8801, router="r1")
+        with patch("easy_otp.core.plan_client.urllib.request.urlopen", side_effect=fake_urlopen):
+            client.get_trip_via(
+                from_lat=1.0, from_lon=2.0,
+                to_lat=3.0, to_lon=4.0,
+                intermediate_places=intermediate_places,
+                mode="WALK",
+                date_mmddyyyy="07-02-2026",
+                time_hhmmss="10:00:00",
+            )
+        return captured["url"]
+
+    def test_no_intermediate_places_omits_param(self):
+        url = self._capture_url([])
+        assert "intermediatePlaces" not in url
+
+    def test_two_via_points_produces_repeated_params(self):
+        url = self._capture_url([(51.1, 17.1), (51.2, 17.2)])
+        # doseq=True should produce two separate intermediatePlaces= entries
+        decoded = urllib.parse.unquote(url)
+        assert decoded.count("intermediatePlaces=") == 2
+
+    def test_via_point_format_lat_comma_lon(self):
+        url = self._capture_url([(48.5, 21.3)])
+        decoded = urllib.parse.unquote(url)
+        assert "intermediatePlaces=48.5,21.3" in decoded
+
+    def test_router_id_present(self):
+        url = self._capture_url([])
+        assert "routerId=r1" in url

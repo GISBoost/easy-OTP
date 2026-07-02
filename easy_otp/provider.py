@@ -13,6 +13,7 @@ from .algorithms.population_overlay import PopulationOverlay
 from .algorithms.prepare_student_layer import PrepareStudentLayer
 from .algorithms.build_realized_gtfs import BuildRealizedGtfs
 from .algorithms.record_gtfsrt import RecordGtfsRt
+from .algorithms.route_via_points import RouteViaPoints
 from .algorithms.run_origin_destination_times import RunOriginDestinationTimes
 from .algorithms.run_realtime_accessibility import RunRealtimeAccessibility
 from .algorithms.run_travel_time_matrix import RunTravelTimeMatrix
@@ -41,6 +42,7 @@ class EasyOtpProvider(QgsProcessingProvider):
         self.addAlgorithm(GenerateHexGrid())
         self.addAlgorithm(GenerateIsochrones())
         self.addAlgorithm(GenerateIsochronesOverTime())
+        self.addAlgorithm(RouteViaPoints())
         self.addAlgorithm(RunOriginDestinationTimes())
         self.addAlgorithm(RunTravelTimeMatrix())
         self.addAlgorithm(RunServiceCoverage())

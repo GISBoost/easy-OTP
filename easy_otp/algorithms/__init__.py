@@ -9,6 +9,7 @@ from .population_overlay import PopulationOverlay
 from .prepare_student_layer import PrepareStudentLayer
 from .build_realized_gtfs import BuildRealizedGtfs
 from .record_gtfsrt import RecordGtfsRt
+from .route_via_points import RouteViaPoints
 from .run_origin_destination_times import RunOriginDestinationTimes
 from .run_realtime_accessibility import RunRealtimeAccessibility
 from .run_travel_time_matrix import RunTravelTimeMatrix
@@ -28,6 +29,7 @@ __all__ = [
     "PopulationOverlay",
     "PrepareStudentLayer",
     "RecordGtfsRt",
+    "RouteViaPoints",
     "RunOriginDestinationTimes",
     "RunRealtimeAccessibility",
     "RunTravelTimeMatrix",
