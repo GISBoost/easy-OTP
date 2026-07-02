@@ -486,6 +486,9 @@ class RouteViaPoints(QgsProcessingAlgorithm):
             features_written = 0
             total_dur = 0.0
             total_dist = 0.0
+            # Segments that OTP could not route — collected so the user sees all
+            # problematic points at once instead of stopping at the first failure.
+            failed_segments: list[tuple[str, str, str, int | None]] = []
 
             for i in range(len(chain) - 1):
                 if feedback.isCanceled():
@@ -514,14 +517,14 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                     via_fid: int | None = None
                     if 0 < i + 1 <= n_vias:
                         via_fid = ordered_vias[i][0]
-                    raise QgsProcessingException(
+                    feedback.pushWarning(
                         self.tr(
-                            "OTP cannot route {0}→{1} on foot "
-                            "(status {2}, via-point feature id: {3}). "
-                            "Check that the point is accessible by pedestrian network "
-                            "and not isolated (e.g. inside a building or unreachable field)."
+                            "Skipping segment {0}→{1}: OTP cannot route on foot "
+                            "(status {2}, via-point feature id: {3})."
                         ).format(labels[i], labels[i + 1], seg["status"], via_fid)
                     )
+                    failed_segments.append((labels[i], labels[i + 1], seg["status"], via_fid))
+                    continue
 
                 legs = seg.get("legs") or []
                 if not legs:
@@ -566,12 +569,27 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                 features_written += 1
 
             # --- Summary ---
+            if failed_segments:
+                feedback.pushWarning(
+                    self.tr(
+                        "{0} segment(s) skipped — move or remove the affected "
+                        "via-points and retry: {1}"
+                    ).format(
+                        len(failed_segments),
+                        "; ".join(
+                            f"{a}→{b} (status {s}, fid {f})"
+                            for a, b, s, f in failed_segments
+                        ),
+                    )
+                )
             feedback.pushInfo(
                 self.tr(
-                    "Route complete: {0} segment(s), {1} min total, {2} m total. "
-                    "Via-point count: {3}. Visit order (fids): {4}"
+                    "Route complete: {0} segment(s) routed, {1} skipped, "
+                    "{2} min total, {3} m total. "
+                    "Via-point count: {4}. Visit order (fids): {5}"
                 ).format(
                     features_written,
+                    len(failed_segments),
                     round(total_dur, 2),
                     round(total_dist, 1),
                     n_vias,
