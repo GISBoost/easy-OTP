@@ -2,7 +2,7 @@
 
 User supplies a START point, an END point, and an optional layer of via-points
 in any order. The plugin orders them with nearest-neighbour + 2-opt, then makes
-one OTP /plan query with intermediatePlaces. Output: one LineString feature per
+sequential OTP /plan queries (one per segment). Output: one LineString feature per
 leg, attributed with time/distance/order.
 """
 
@@ -101,7 +101,7 @@ class RouteViaPoints(QgsProcessingAlgorithm):
             "Plan a walking city tour: supply a START point, an END point, and an "
             "optional layer of via-points (landmarks) in any order. The plugin "
             "automatically computes a sensible visit order (nearest-neighbour + 2-opt) "
-            "and makes one OTP /plan query with intermediatePlaces=WALK. Output: one "
+            "and makes one OTP /plan query per segment (N+1 queries). Output: one "
             "line feature per route segment, attributed with duration_min, distance_m, "
             "and visit order.\n\n"
             "A soft warning is shown when more than {0} via-points are supplied."
@@ -462,59 +462,80 @@ class RouteViaPoints(QgsProcessingAlgorithm):
             if feedback.isCanceled():
                 return {}
 
-            # --- One /plan query ---
+            # --- Sequential /plan queries (OTP 1.5 intermediatePlaces has NPE for off-network points) ---
             plan_client = PlanClient(
                 hostname="localhost",
                 port=port,
                 router=router_id,
                 timeout_s=60.0,
             )
-            intermediate_places = [(lat, lon) for _, lat, lon in ordered_vias]
+            chain = [start] + [(lat, lon) for _, lat, lon in ordered_vias] + [end]
+            labels = ["START"] + [f"P{i + 1}" for i in range(len(ordered_vias))] + ["END"]
+            n_vias = len(ordered_vias)
+
             feedback.pushInfo(
                 self.tr(
-                    "Querying OTP: {0} via-point(s), mode=WALK, date={1}, time={2}..."
-                ).format(len(ordered_vias), date_s, time_s)
+                    "Querying OTP: {0} segment(s), mode=WALK, date={1}, time={2}..."
+                ).format(len(chain) - 1, date_s, time_s)
             )
-            try:
-                result = plan_client.get_trip_via(
-                    from_lat=start[0],
-                    from_lon=start[1],
-                    to_lat=end[0],
-                    to_lon=end[1],
-                    intermediate_places=intermediate_places,
-                    mode="WALK",
-                    date_mmddyyyy=date_s,
-                    time_hhmmss=time_s,
-                    max_walk_distance=max_walk_distance,
-                    walk_reluctance=walk_reluctance,
-                )
-            except OtpClientError as e:
-                raise QgsProcessingException(
-                    self.tr("OTP /plan network error: {0}").format(e)
-                ) from e
 
-            # --- Handle failure: diagnostic two-point probe ---
-            if result["status"] != "OK":
-                self._run_diagnostic_probe(
-                    plan_client, start, ordered_vias, end,
-                    date_s, time_s, max_walk_distance, walk_reluctance, feedback,
-                )
-                # _run_diagnostic_probe always raises; fallback in case it doesn't:
-                raise QgsProcessingException(
-                    self.tr(
-                        "OTP could not route the full trip (status {0}). "
-                        "See the diagnostic output above for the offending segment."
-                    ).format(result["status"])
-                )
-
-            # --- Build output features ---
-            legs = result["legs"]
-            n_vias = len(ordered_vias)
             features_written = 0
-            for i, leg in enumerate(legs):
-                from_label = "START" if i == 0 else f"P{i}"
-                to_label = "END" if i == len(legs) - 1 else f"P{i + 1}"
-                via_fid = ordered_vias[i][0] if i < n_vias else None
+            total_dur = 0.0
+            total_dist = 0.0
+
+            for i in range(len(chain) - 1):
+                if feedback.isCanceled():
+                    return {}
+                try:
+                    seg = plan_client.get_trip_via(
+                        from_lat=chain[i][0],
+                        from_lon=chain[i][1],
+                        to_lat=chain[i + 1][0],
+                        to_lon=chain[i + 1][1],
+                        intermediate_places=[],
+                        mode="WALK",
+                        date_mmddyyyy=date_s,
+                        time_hhmmss=time_s,
+                        max_walk_distance=max_walk_distance,
+                        walk_reluctance=walk_reluctance,
+                    )
+                except OtpClientError as e:
+                    raise QgsProcessingException(
+                        self.tr("Network error querying {0}→{1}: {2}").format(
+                            labels[i], labels[i + 1], e
+                        )
+                    ) from e
+
+                if seg["status"] != "OK":
+                    via_fid: int | None = None
+                    if 0 < i + 1 <= n_vias:
+                        via_fid = ordered_vias[i][0]
+                    raise QgsProcessingException(
+                        self.tr(
+                            "OTP cannot route {0}→{1} on foot "
+                            "(status {2}, via-point feature id: {3}). "
+                            "Check that the point is accessible by pedestrian network "
+                            "and not isolated (e.g. inside a building or unreachable field)."
+                        ).format(labels[i], labels[i + 1], seg["status"], via_fid)
+                    )
+
+                legs = seg.get("legs") or []
+                if not legs:
+                    feedback.pushWarning(
+                        self.tr("Segment {0}→{1} returned no legs — skipped.").format(
+                            labels[i], labels[i + 1]
+                        )
+                    )
+                    continue
+
+                total_dur += seg.get("duration") or 0.0
+                total_dist += seg.get("walk_distance_m") or 0.0
+
+                # Each WALK A→B query returns exactly 1 leg; take legs[0] for geometry.
+                leg = legs[0]
+                from_label = labels[i]
+                to_label = labels[i + 1]
+                via_fid_out = ordered_vias[i][0] if i < n_vias else None
 
                 pts = [QgsPointXY(lon, lat) for lat, lon in leg["geometry"]]
                 if len(pts) < 2:
@@ -535,7 +556,7 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                     leg["duration_min"],
                     leg["distance_m"],
                     leg["mode"],
-                    via_fid,
+                    via_fid_out,
                 ])
                 sink.addFeature(feat, QgsFeatureSink.FastInsert)
                 features_written += 1
@@ -547,8 +568,8 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                     "Via-point count: {3}. Visit order (fids): {4}"
                 ).format(
                     features_written,
-                    result["duration"],
-                    result["walk_distance_m"],
+                    round(total_dur, 2),
+                    round(total_dist, 1),
                     n_vias,
                     [fid for fid, _, _ in ordered_vias] if ordered_vias else "(none)",
                 )
@@ -568,76 +589,6 @@ class RouteViaPoints(QgsProcessingAlgorithm):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
-    def _run_diagnostic_probe(
-        self,
-        plan_client: PlanClient,
-        start: tuple[float, float],
-        ordered_vias: list[tuple[int, float, float]],
-        end: tuple[float, float],
-        date_s: str,
-        time_s: str,
-        max_walk_distance: float,
-        walk_reluctance: float,
-        feedback,
-    ) -> None:
-        """Sequential two-point probes to name the offending via-point.
-
-        Always raises QgsProcessingException — never returns normally.
-        """
-        chain = [start] + [(lat, lon) for _, lat, lon in ordered_vias] + [end]
-        labels = ["START"] + [f"P{i + 1}" for i in range(len(ordered_vias))] + ["END"]
-
-        feedback.pushInfo(
-            self.tr(
-                "Main query failed — running diagnostic probes on {0} segment(s)..."
-            ).format(len(chain) - 1)
-        )
-
-        for i in range(len(chain) - 1):
-            frm = chain[i]
-            to = chain[i + 1]
-            try:
-                probe = plan_client.get_trip(
-                    from_lat=frm[0], from_lon=frm[1],
-                    to_lat=to[0], to_lon=to[1],
-                    mode="WALK",
-                    date_mmddyyyy=date_s,
-                    time_hhmmss=time_s,
-                    max_walk_distance=max_walk_distance,
-                    walk_reluctance=walk_reluctance,
-                )
-            except OtpClientError as e:
-                raise QgsProcessingException(
-                    self.tr(
-                        "Network error during diagnostic probe {0}→{1}: {2}"
-                    ).format(labels[i], labels[i + 1], e)
-                ) from e
-
-            if probe["status"] != "OK":
-                # Identify which feature id is the problematic endpoint.
-                via_fid: int | None = None
-                via_idx = i  # segment i ends at chain[i+1] = via i+1
-                if 0 < i + 1 <= len(ordered_vias):
-                    via_fid = ordered_vias[i][0]
-                raise QgsProcessingException(
-                    self.tr(
-                        "OTP cannot route {0}→{1} on foot "
-                        "(status {2}, via-point feature id: {3}). "
-                        "Check that the point is accessible by pedestrian network "
-                        "and not isolated (e.g. inside a building or unreachable field)."
-                    ).format(labels[i], labels[i + 1], probe["status"], via_fid)
-                )
-
-        # All individual segments routed OK — the failure is in the combined query.
-        raise QgsProcessingException(
-            self.tr(
-                "OTP failed on the full multi-point query but all individual segments "
-                "route successfully. This may indicate an OTP 1.5 limitation with "
-                "this particular combination of via-points. Try reducing the number "
-                "of via-points or checking for very close consecutive points."
-            )
-        )
 
     def _add_advanced(self, param) -> None:
         param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
