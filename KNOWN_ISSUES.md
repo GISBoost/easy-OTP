@@ -161,6 +161,18 @@ default; raising `MAX_WALK_DISTANCE` to 9 999 m yielded 100% OK responses.
 
 **Status:** known; mitigations documented in the UI and in the README.
 
+## 16. RouteViaPoints: OTP leg geometry misaligns with OSM; off-network via-points silently snap
+
+**Severity:** medium (visual/positional). · **Tracker:** [#16](../../issues/16) · **Status:** Under investigation.
+
+Two related sub-issues:
+
+1. **Geometry mismatch** — OTP 1.5.0 simplifies street geometry during graph build (edge splitting, coordinate rounding). The decoded polyline from `/plan` legs follows a simplified version of OSM geometry. On curved streets the offset is visually noticeable even though the route is topologically correct. This is an OTP 1.5 graph-build artefact; not fixable in the plugin.
+
+2. **Silent via-point snapping** — OTP snaps each query point to the nearest graph vertex. A via-point placed slightly off a path (park interior, building footprint, mid-block without a nearby vertex) is silently moved to that vertex, which may be tens or hundreds of metres away. The route succeeds but passes through the wrong location without any warning. This is distinct from the hard NPE failure (fixed in v0.6.1 fix); here OTP succeeds but with a shifted position.
+
+**Workaround:** Use QGIS vertex snapping (Snapping Toolbar) when digitizing via-points, placing them exactly on OSM path vertices. If a segment detours unexpectedly, move the nearest via-point to a clearly walkable OSM vertex and re-run.
+
 ---
 
 This list is not exhaustive. If you hit something not listed here, please open a GitHub issue.
