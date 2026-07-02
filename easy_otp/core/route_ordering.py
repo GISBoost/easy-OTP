@@ -26,16 +26,19 @@ def nearest_neighbor_order(
     start: tuple[float, float],
     points: list[tuple[float, float]],
     end: tuple[float, float],
-) -> list[int]:
+    cancel_check=None,
+) -> list[int] | None:
     """Greedy nearest-neighbour order for via-points.
 
     Args:
         start: (lat, lon) of the route start.
         points: Via-point coordinates as (lat, lon) tuples.
         end: (lat, lon) of the route end — not part of greedy selection, always last.
+        cancel_check: Optional zero-argument callable; when it returns True the
+            function stops early and returns None.
 
     Returns:
-        Indices into ``points`` in the computed visit order.
+        Indices into ``points`` in the computed visit order, or None if cancelled.
     """
     n = len(points)
     if n == 0:
@@ -47,6 +50,8 @@ def nearest_neighbor_order(
     order: list[int] = []
     current = start
     while unvisited:
+        if cancel_check and cancel_check():
+            return None
         nearest = min(unvisited, key=lambda i: haversine(*current, *points[i]))
         order.append(nearest)
         current = points[nearest]
@@ -101,10 +106,17 @@ def order_via_points(
     start: tuple[float, float],
     points: list[tuple[float, float]],
     end: tuple[float, float],
-) -> list[int]:
+    cancel_check=None,
+) -> list[int] | None:
     """Return an ordered list of indices into ``points`` using NN + 2-opt.
 
     Public entry point used by RouteViaPoints.
+
+    Args:
+        cancel_check: Optional zero-argument callable; when it returns True the
+            function stops early and returns None (caller should treat as cancel).
     """
-    nn = nearest_neighbor_order(start, points, end)
+    nn = nearest_neighbor_order(start, points, end, cancel_check=cancel_check)
+    if nn is None:
+        return None
     return two_opt(nn, points, start, end)

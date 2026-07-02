@@ -138,3 +138,15 @@ def test_order_returns_valid_permutation():
     points = [(random.uniform(-2, 2), random.uniform(-2, 2)) for _ in range(6)]
     result = order_via_points((0.0, 0.0), points, (3.0, 3.0))
     assert sorted(result) == list(range(6))
+
+
+def test_nn_cancel_check_returns_none():
+    points = [(float(i), 0.0) for i in range(10)]
+    result = nearest_neighbor_order((0.0, 0.0), points, (10.0, 0.0), cancel_check=lambda: True)
+    assert result is None
+
+
+def test_order_via_points_cancel_check_returns_none():
+    points = [(float(i), 0.0) for i in range(10)]
+    result = order_via_points((0.0, 0.0), points, (10.0, 0.0), cancel_check=lambda: True)
+    assert result is None

@@ -349,7 +349,11 @@ class RouteViaPoints(QgsProcessingAlgorithm):
 
         # --- Compute visit order (NN + 2-opt, pure Python) ---
         coords_only = [(lat, lon) for _, lat, lon in vias_raw]
-        ordered_indices = order_via_points(start, coords_only, end)
+        ordered_indices = order_via_points(
+            start, coords_only, end, cancel_check=feedback.isCanceled
+        )
+        if ordered_indices is None:
+            return {}
         ordered_vias = [vias_raw[i] for i in ordered_indices]
         feedback.pushInfo(
             self.tr("Visit order (via-point feature ids): {0}").format(
