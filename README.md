@@ -26,7 +26,7 @@ The plugin UI is available in English and **Polish** *(new in v0.5)*.
 | QGIS | 3.22 LTR+ | Install from qgis.org; the plugin uses the bundled Python and GDAL |
 | Java | **8 (1.8)** | Plugin can download it — *Download Java 8 JRE and OpenTripPlanner Jar* (or install manually) |
 | OpenTripPlanner jar | **1.5.0** | Plugin can download it — *Download Java 8 JRE and OpenTripPlanner Jar* (`otp-1.5.0-shaded.jar`) |
-| OSM extract | any | Plugin can download it — *Download transit data* (`.osm.pbf` covering your study area) |
+| OSM extract | any | Plugin can download it — *Download transit data* (`.osm.pbf` covering your study area), or [prepare your own](tools/custom_network.md) |
 | GTFS feed(s) | any valid | Plugin can download it — *Download transit data* (one or more `.zip` archives in a folder) |
 
 You don't have to collect everything by hand — the plugin can download Java 8, the OTP
@@ -223,6 +223,10 @@ Copy those directly into the **OSM extract** and **GTFS folder** parameters of
   than the query area; only city- and sub-regional feeds are downloaded.
 - **Missing operator:** if a local operator is not yet in Transitland, add
   their `.zip` manually to `DEST_DIR/gtfs/` after the algorithm finishes.
+
+Want to model a network change (closed road, new footbridge, different
+speed limit) instead of just downloading an extract? See
+[Preparing a custom OSM network](tools/custom_network.md).
 
 ---
 
