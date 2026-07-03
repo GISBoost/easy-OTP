@@ -361,6 +361,9 @@ class RouteViaPoints(QgsProcessingAlgorithm):
         )
         time_s = time_t.toString("HH:mm:ss")
 
+        if is_transit:
+            self._warn_gtfs_date(gtfs_files, qdt_date.date(), feedback)
+
         # --- Reproject START / END to EPSG:4326 ---
         wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
         start_pt = self.parameterAsPoint(parameters, self.START_POINT, context, wgs84)
@@ -448,7 +451,7 @@ class RouteViaPoints(QgsProcessingAlgorithm):
             server_work_dir = work_dir
             router_id = compute_router_id(pbf, gtfs_files)
             feedback.pushInfo(self.tr("Router ID: {0}").format(router_id))
-            ensure_router_dir(work_dir, router_id, pbf, gtfs_files)
+            router_dir = ensure_router_dir(work_dir, router_id, pbf, gtfs_files)
             if graph_build_complete(work_dir, router_id):
                 feedback.pushInfo(self.tr("Graph cache hit — skipping build."))
             else:
@@ -457,7 +460,6 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                     build_graph(java, jar, xmx_build, work_dir, router_id, feedback)
                 except RuntimeError as e:
                     raise QgsProcessingException(str(e)) from e
-                router_dir = server_work_dir / "graphs" / router_id
                 write_meta(router_dir, jar, [pbf, *gtfs_files])
 
         if feedback.isCanceled():
@@ -583,7 +585,7 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                     continue
 
                 total_dur += seg.get("duration") or 0.0
-                total_dist += seg.get("walk_distance_m") or 0.0
+                total_dist += sum(leg.get("distance_m") or 0.0 for leg in legs)
 
                 # Iterate all legs: WALK/BICYCLE/CAR returns 1; TRANSIT,WALK may return N.
                 from_label = labels[i]
@@ -662,6 +664,68 @@ class RouteViaPoints(QgsProcessingAlgorithm):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _warn_gtfs_date(self, gtfs_files: list, analysis_date, feedback) -> None:
+        """Warn if analysis_date is outside GTFS service range or is a weekend."""
+        import csv as _csv
+        import io
+        import zipfile as _zf
+
+        date_str = analysis_date.toString("yyyyMMdd")
+        date_int = int(date_str)
+        day_of_week = analysis_date.dayOfWeek()
+
+        if day_of_week >= 6:
+            day_name = "Saturday" if day_of_week == 6 else "Sunday"
+            feedback.pushWarning(
+                self.tr(
+                    "ANALYSIS_DATE is a {0} ({1}). Weekend transit schedules may differ "
+                    "significantly from weekday analyses."
+                ).format(day_name, date_str)
+            )
+
+        for gtfs_path in gtfs_files:
+            try:
+                with _zf.ZipFile(str(gtfs_path)) as z:
+                    cal_name = next(
+                        (n for n in z.namelist() if n.split("/")[-1] == "calendar.txt"),
+                        None,
+                    )
+                    if cal_name is None:
+                        feedback.pushWarning(
+                            self.tr(
+                                "No calendar.txt in {0} - cannot validate analysis date."
+                            ).format(gtfs_path.name)
+                        )
+                        continue
+                    with z.open(cal_name) as raw:
+                        reader = _csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8-sig"))
+                        active = 0
+                        for row in reader:
+                            try:
+                                if int(row["start_date"]) <= date_int <= int(row["end_date"]):
+                                    active += 1
+                            except (KeyError, ValueError, TypeError):
+                                pass
+                if active == 0:
+                    feedback.pushWarning(
+                        self.tr(
+                            "{0}: no services active on {1}. OTP may return all-unreachable "
+                            "results."
+                        ).format(gtfs_path.name, date_str)
+                    )
+                else:
+                    feedback.pushInfo(
+                        self.tr("{0}: {1} service(s) active on {2}.").format(
+                            gtfs_path.name, active, date_str
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001
+                feedback.pushWarning(
+                    self.tr("Could not read {0} for date validation: {1}").format(
+                        gtfs_path.name, exc
+                    )
+                )
 
     def _add_advanced(self, param) -> None:
         param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
