@@ -2,8 +2,8 @@
 name=Easy-OTP
 qgisMinimumVersion=3.22
 description=Automated temporal accessibility analysis using OpenTripPlanner.
-about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Analysis algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces, CompareTemporalAccessibility (delta analysis), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay, GenerateIsochrones (isochrone polygons from/to 1..N points, one time, multiple cutoffs), GenerateIsochronesOverTime (one point, isochrones across the day for the Temporal Controller), RunServiceCoverage (count of service points reachable per cell within a threshold at one time; raster + optional grid), RunOriginDestinationTimes (per-origin trip stats to one destination: duration, in-vehicle, walk, wait, transfers; parallelised), RunTravelTimeMatrix (N×M origin–destination travel-time matrix). Realtime algorithms: RunRealtimeAccessibility (RT-1, live GTFS-RT feed integrated into OTP), RecordGtfsRt (RT-2, GTFS-RT TripUpdates archiver for offline analysis), BuildRealizedGtfs (RT-3, reconstructs a realized static GTFS — P50 median and P85 85th-percentile feeds — from a RecordGtfsRt snapshot archive; output feeds can be passed directly to RunTemporalAccessibility; requires google.protobuf bootstrapped on first use). Setup: DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
-version=0.6.0
+about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Analysis algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces, CompareTemporalAccessibility (delta analysis), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay, GenerateIsochrones (isochrone polygons from/to 1..N points, one time, multiple cutoffs), GenerateIsochronesOverTime (one point, isochrones across the day for the Temporal Controller), RunServiceCoverage (count of service points reachable per cell within a threshold at one time; raster + optional grid), RunOriginDestinationTimes (per-origin trip stats to one destination: duration, in-vehicle, walk, wait, transfers; parallelised), RunTravelTimeMatrix (N×M origin–destination travel-time matrix), RouteViaPoints (city tour planner: ordered route through optional via-points using nearest-neighbour + 2-opt; modes: WALK, BICYCLE, CAR, TRANSIT,WALK). Realtime algorithms: RunRealtimeAccessibility (RT-1, live GTFS-RT feed integrated into OTP), RecordGtfsRt (RT-2, GTFS-RT TripUpdates archiver for offline analysis), BuildRealizedGtfs (RT-3, reconstructs a realized static GTFS — P50 median and P85 85th-percentile feeds — from a RecordGtfsRt snapshot archive; output feeds can be passed directly to RunTemporalAccessibility; requires google.protobuf bootstrapped on first use). Setup: DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
+version=0.6.1
 author=Michal Kaczorowski
 email=michal.kaczorowsx@gmail.com
 license=GPL-2.0-or-later
@@ -17,7 +17,24 @@ tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,t
 homepage=https://github.com/GISBoost/easy-OTP
 repository=https://github.com/GISBoost/easy-OTP
 tracker=https://github.com/GISBoost/easy-OTP/issues
-changelog=0.6.0
+changelog=0.6.1
+    * Analysis — RouteViaPoints (N-6):
+      - feat(analysis): RouteViaPoints — city tour planner: supply a START point,
+        an END point, and an optional layer of via-points (landmarks) in any order;
+        the plugin automatically computes a sensible visit order using
+        nearest-neighbour + 2-opt heuristic (pure Python, haversine distance),
+        then makes one OTP /plan query per segment (N+1 sequential queries).
+      - Transport mode selectable: WALK (default), BICYCLE, CAR, TRANSIT,WALK.
+        TRANSIT,WALK requires a GTFS folder; other modes use a street-only graph.
+        GTFS date validation warns when the analysis date falls outside the service
+        calendar or on a weekend.
+      - Output: one LineString feature per leg, attributed with segment_order,
+        from_label, to_label, duration_min, distance_m, mode, via_point_id.
+        TRANSIT,WALK routes produce multiple features per segment (one per leg).
+      - Soft-fail: all unroutable segments collected and reported together so the
+        user sees every problematic via-point at once.
+      - Soft warning when more than 20 via-points are supplied.
+    0.6.0
     * Analysis — Network & Accessibility (new algorithms):
       - feat(analysis): GenerateIsochrones (N-1) — /isochrone polygons for 1..N
         origins, FROM/TO direction, multiple cutoffs; optional street-only graph
