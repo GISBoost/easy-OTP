@@ -1,9 +1,10 @@
-"""N-6 Analysis algorithm: walking route through ordered via-points (0.6.1).
+"""N-6 Analysis algorithm: route through ordered via-points (0.6.2).
 
 User supplies a START point, an END point, and an optional layer of via-points
 in any order. The plugin orders them with nearest-neighbour + 2-opt, then makes
-sequential OTP /plan queries (one per segment). Output: one LineString feature per
-leg, attributed with time/distance/order.
+sequential OTP /plan queries (one per segment), mode selectable
+(WALK/BICYCLE/CAR/TRANSIT,WALK). Output: one LineString feature per leg,
+attributed with time/distance/order.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from qgis.core import (
     QgsProcessingParameterBoolean,
     QgsProcessingParameterDateTime,
     QgsProcessingParameterDefinition,
+    QgsProcessingParameterEnum,
     QgsProcessingParameterFeatureSink,
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterFile,
@@ -42,6 +44,7 @@ from ..core.otp_server import (
     build_graph,
     check_java_version,
     compute_router_id,
+    discover_gtfs_files,
     ensure_pointsets_dir,
     ensure_router_dir,
     graph_build_complete,
@@ -54,15 +57,18 @@ from ..core.plan_client import PlanClient
 from ..core.route_ordering import order_via_points
 
 _VIA_POINTS_WARN = 20
+_MODE_OPTIONS = ["WALK", "BICYCLE", "CAR", "TRANSIT,WALK"]
 
 
 class RouteViaPoints(QgsProcessingAlgorithm):
     START_POINT = "START_POINT"
     END_POINT = "END_POINT"
     VIA_POINTS = "VIA_POINTS"
+    MODE = "MODE"
     ANALYSIS_DATE = "ANALYSIS_DATE"
     TIME = "TIME"
     OSM_PBF = "OSM_PBF"
+    GTFS_FILES = "GTFS_FILES"
     WORK_DIR = "WORK_DIR"
     OUTPUT_ROUTE = "OUTPUT_ROUTE"
 
@@ -98,12 +104,14 @@ class RouteViaPoints(QgsProcessingAlgorithm):
 
     def shortHelpString(self) -> str:  # noqa: N802
         return self.tr(
-            "Plan a walking city tour: supply a START point, an END point, and an "
-            "optional layer of via-points (landmarks) in any order. The plugin "
-            "automatically computes a sensible visit order (nearest-neighbour + 2-opt) "
-            "and makes one OTP /plan query per segment (N+1 queries). Output: one "
-            "line feature per route segment, attributed with duration_min, distance_m, "
-            "and visit order.\n\n"
+            "Plan a city tour: supply a START point, an END point, and an optional "
+            "layer of via-points (landmarks) in any order. The plugin automatically "
+            "computes a sensible visit order (nearest-neighbour + 2-opt) and makes one "
+            "OTP /plan query per segment (N+1 queries). Output: one line feature per "
+            "leg, attributed with duration_min, distance_m, mode, and visit order.\n\n"
+            "Transport mode: WALK (default), BICYCLE, CAR, or TRANSIT,WALK. "
+            "TRANSIT,WALK requires a GTFS folder and uses the Analysis date / "
+            "Departure time for routing; other modes ignore date and time.\n\n"
             "A soft warning is shown when more than {0} via-points are supplied."
         ).format(_VIA_POINTS_WARN)
 
@@ -122,7 +130,7 @@ class RouteViaPoints(QgsProcessingAlgorithm):
         )
         _via_param = QgsProcessingParameterFeatureSource(
             self.VIA_POINTS,
-            self.tr("Via-points layer (optional; 0 features = direct A→B walk)"),
+            self.tr("Via-points layer (optional; 0 features = direct A→B route)"),
             types=[QgsProcessing.TypeVectorPoint],
             optional=True,
         )
@@ -131,9 +139,17 @@ class RouteViaPoints(QgsProcessingAlgorithm):
         )
         self.addParameter(_via_param)
         self.addParameter(
+            QgsProcessingParameterEnum(
+                self.MODE,
+                self.tr("Transport mode"),
+                options=_MODE_OPTIONS,
+                defaultValue=0,  # WALK
+            )
+        )
+        self.addParameter(
             QgsProcessingParameterDateTime(
                 self.ANALYSIS_DATE,
-                self.tr("Analysis date (routing-irrelevant for WALK; required by OTP endpoint)"),
+                self.tr("Analysis date (used for TRANSIT routing; ignored by WALK/BICYCLE/CAR)"),
                 type=QgsProcessingParameterDateTime.Date,
                 defaultValue=QDateTime(QDate.currentDate(), QTime(0, 0)),
             )
@@ -141,7 +157,7 @@ class RouteViaPoints(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterDateTime(
                 self.TIME,
-                self.tr("Departure time (routing-irrelevant for WALK; required by OTP endpoint)"),
+                self.tr("Departure time (used for TRANSIT routing; ignored by WALK/BICYCLE/CAR)"),
                 type=QgsProcessingParameterDateTime.Time,
                 defaultValue=QTime(8, 30),
             )
@@ -149,11 +165,21 @@ class RouteViaPoints(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterFile(
                 self.OSM_PBF,
-                self.tr("OSM extract (.osm.pbf) — street network for WALK routing"),
+                self.tr("OSM extract (.osm.pbf) — street network"),
                 behavior=QgsProcessingParameterFile.File,
                 extension="pbf",
             )
         )
+        _gtfs_param = QgsProcessingParameterFile(
+            self.GTFS_FILES,
+            self.tr("GTFS folder — required for TRANSIT,WALK mode"),
+            behavior=QgsProcessingParameterFile.Folder,
+            optional=True,
+        )
+        _gtfs_param.setFlags(
+            _gtfs_param.flags() | QgsProcessingParameterDefinition.FlagOptional
+        )
+        self.addParameter(_gtfs_param)
         self.addParameter(
             QgsProcessingParameterFile(
                 self.WORK_DIR,
@@ -303,6 +329,28 @@ class RouteViaPoints(QgsProcessingAlgorithm):
         max_walk_distance = self.parameterAsDouble(parameters, self.MAX_WALK_DISTANCE, context)
         walk_reluctance = self.parameterAsDouble(parameters, self.WALK_RELUCTANCE, context)
 
+        # --- Mode + GTFS ---
+        mode_idx = self.parameterAsEnum(parameters, self.MODE, context)
+        mode_str = _MODE_OPTIONS[mode_idx]
+        is_transit = "TRANSIT" in mode_str
+
+        gtfs_files: list = []
+        if is_transit:
+            gtfs_dir_str = self.parameterAsFile(parameters, self.GTFS_FILES, context)
+            if not gtfs_dir_str:
+                raise QgsProcessingException(self.tr(
+                    "GTFS folder is required for TRANSIT,WALK mode."
+                ))
+            try:
+                gtfs_files = discover_gtfs_files(Path(gtfs_dir_str))
+            except FileNotFoundError as e:
+                raise QgsProcessingException(str(e)) from e
+            feedback.pushInfo(
+                self.tr("Discovered {0} GTFS feed(s): {1}").format(
+                    len(gtfs_files), ", ".join(p.name for p in gtfs_files)
+                )
+            )
+
         # --- Date / time ---
         qdt_date = self.parameterAsDateTime(parameters, self.ANALYSIS_DATE, context)
         date_s = qdt_date.date().toString("MM-dd-yyyy")
@@ -398,21 +446,19 @@ class RouteViaPoints(QgsProcessingAlgorithm):
             )
         else:
             server_work_dir = work_dir
-            router_id = compute_router_id(pbf, [])
+            router_id = compute_router_id(pbf, gtfs_files)
             feedback.pushInfo(self.tr("Router ID: {0}").format(router_id))
-            ensure_router_dir(work_dir, router_id, pbf, [])
+            ensure_router_dir(work_dir, router_id, pbf, gtfs_files)
             if graph_build_complete(work_dir, router_id):
                 feedback.pushInfo(self.tr("Graph cache hit — skipping build."))
             else:
-                feedback.pushInfo(
-                    self.tr("Building street-only OTP graph (no GTFS required for WALK)...")
-                )
+                feedback.pushInfo(self.tr("Building OTP graph (this can take minutes)..."))
                 try:
                     build_graph(java, jar, xmx_build, work_dir, router_id, feedback)
                 except RuntimeError as e:
                     raise QgsProcessingException(str(e)) from e
                 router_dir = server_work_dir / "graphs" / router_id
-                write_meta(router_dir, jar, [pbf])
+                write_meta(router_dir, jar, [pbf, *gtfs_files])
 
         if feedback.isCanceled():
             return {}
@@ -479,11 +525,12 @@ class RouteViaPoints(QgsProcessingAlgorithm):
 
             feedback.pushInfo(
                 self.tr(
-                    "Querying OTP: {0} segment(s), mode=WALK, date={1}, time={2}..."
-                ).format(len(chain) - 1, date_s, time_s)
+                    "Querying OTP: {0} segment(s), mode={1}, date={2}, time={3}..."
+                ).format(len(chain) - 1, mode_str, date_s, time_s)
             )
 
             features_written = 0
+            segments_routed = 0
             total_dur = 0.0
             total_dist = 0.0
             # Segments that OTP could not route — collected so the user sees all
@@ -500,7 +547,7 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                         to_lat=chain[i + 1][0],
                         to_lon=chain[i + 1][1],
                         intermediate_places=[],
-                        mode="WALK",
+                        mode=mode_str,
                         date_mmddyyyy=date_s,
                         time_hhmmss=time_s,
                         max_walk_distance=max_walk_distance,
@@ -519,9 +566,9 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                         via_fid = ordered_vias[i][0]
                     feedback.pushWarning(
                         self.tr(
-                            "Skipping segment {0}→{1}: OTP cannot route on foot "
-                            "(status {2}, via-point feature id: {3})."
-                        ).format(labels[i], labels[i + 1], seg["status"], via_fid)
+                            "Skipping segment {0}→{1}: OTP cannot route "
+                            "(mode={2}, status {3}, via-point feature id: {4})."
+                        ).format(labels[i], labels[i + 1], mode_str, seg["status"], via_fid)
                     )
                     failed_segments.append((labels[i], labels[i + 1], seg["status"], via_fid))
                     continue
@@ -538,35 +585,38 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                 total_dur += seg.get("duration") or 0.0
                 total_dist += seg.get("walk_distance_m") or 0.0
 
-                # Each WALK A→B query returns exactly 1 leg; take legs[0] for geometry.
-                leg = legs[0]
+                # Iterate all legs: WALK/BICYCLE/CAR returns 1; TRANSIT,WALK may return N.
                 from_label = labels[i]
                 to_label = labels[i + 1]
                 via_fid_out = ordered_vias[i][0] if i < n_vias else None
 
-                pts = [QgsPointXY(lon, lat) for lat, lon in leg["geometry"]]
-                if len(pts) < 2:
-                    feedback.pushWarning(
-                        self.tr(
-                            "Segment {0} ({1}→{2}) has fewer than 2 geometry points "
-                            "— skipped."
-                        ).format(i + 1, from_label, to_label)
-                    )
-                    continue
-
-                feat = QgsFeature(fields)
-                feat.setGeometry(QgsGeometry.fromPolylineXY(pts))
-                feat.setAttributes([
-                    i + 1,
-                    from_label,
-                    to_label,
-                    leg["duration_min"],
-                    leg["distance_m"],
-                    leg["mode"],
-                    via_fid_out,
-                ])
-                sink.addFeature(feat, QgsFeatureSink.FastInsert)
-                features_written += 1
+                legs_written = 0
+                for leg in legs:
+                    pts = [QgsPointXY(lon, lat) for lat, lon in leg["geometry"]]
+                    if len(pts) < 2:
+                        feedback.pushWarning(
+                            self.tr(
+                                "Segment {0} ({1}→{2}) leg '{3}' has fewer than 2 "
+                                "geometry points — skipped."
+                            ).format(i + 1, from_label, to_label, leg.get("mode", "?"))
+                        )
+                        continue
+                    feat = QgsFeature(fields)
+                    feat.setGeometry(QgsGeometry.fromPolylineXY(pts))
+                    feat.setAttributes([
+                        i + 1,
+                        from_label,
+                        to_label,
+                        leg["duration_min"],
+                        leg["distance_m"],
+                        leg["mode"],
+                        via_fid_out,
+                    ])
+                    sink.addFeature(feat, QgsFeatureSink.FastInsert)
+                    features_written += 1
+                    legs_written += 1
+                if legs_written > 0:
+                    segments_routed += 1
 
             # --- Summary ---
             if failed_segments:
@@ -584,10 +634,11 @@ class RouteViaPoints(QgsProcessingAlgorithm):
                 )
             feedback.pushInfo(
                 self.tr(
-                    "Route complete: {0} segment(s) routed, {1} skipped, "
-                    "{2} min total, {3} m total. "
-                    "Via-point count: {4}. Visit order (fids): {5}"
+                    "Route complete: {0} segment(s) routed ({1} feature(s) written), "
+                    "{2} skipped, {3} min total, {4} m total. "
+                    "Via-point count: {5}. Visit order (fids): {6}"
                 ).format(
+                    segments_routed,
                     features_written,
                     len(failed_segments),
                     round(total_dur, 2),

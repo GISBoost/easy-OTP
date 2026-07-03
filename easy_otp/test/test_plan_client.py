@@ -362,3 +362,79 @@ class TestGetTripViaUrlConstruction:
     def test_router_id_present(self):
         url = self._capture_url([])
         assert "routerId=r1" in url
+
+
+# ---------------------------------------------------------------------------
+# get_trip_via — multi-leg TRANSIT response
+# ---------------------------------------------------------------------------
+
+_TRANSIT_VIA_BODY = {
+    "plan": {
+        "itineraries": [{
+            "duration": 2700,
+            "walkDistance": 600.0,
+            "legs": [
+                {
+                    "duration": 300,
+                    "distance": 250.0,
+                    "mode": "WALK",
+                    "legGeometry": {"points": _POLYLINE},
+                },
+                {
+                    "duration": 1800,
+                    "distance": 8000.0,
+                    "mode": "BUS",
+                    "legGeometry": {"points": _POLYLINE},
+                },
+                {
+                    "duration": 600,
+                    "distance": 350.0,
+                    "mode": "WALK",
+                    "legGeometry": {"points": _POLYLINE},
+                },
+            ],
+        }]
+    }
+}
+
+
+class TestGetTripViaTransitLegs:
+    """Multi-leg TRANSIT,WALK response: 3 legs (WALK + BUS + WALK)."""
+
+    def _result(self):
+        client = PlanClient(hostname="localhost", port=8801, router="default")
+        with patch(
+            "easy_otp.core.plan_client.urllib.request.urlopen",
+            return_value=_make_resp(_TRANSIT_VIA_BODY),
+        ):
+            return client.get_trip_via(
+                from_lat=51.0, from_lon=17.0,
+                to_lat=51.1, to_lon=17.1,
+                intermediate_places=[],
+                mode="TRANSIT,WALK",
+                date_mmddyyyy="07-03-2026",
+                time_hhmmss="08:30:00",
+            )
+
+    def test_status_ok(self):
+        assert self._result()["status"] == "OK"
+
+    def test_three_legs_returned(self):
+        assert len(self._result()["legs"]) == 3
+
+    def test_middle_leg_mode_bus(self):
+        assert self._result()["legs"][1]["mode"] == "BUS"
+
+    def test_first_leg_mode_walk(self):
+        assert self._result()["legs"][0]["mode"] == "WALK"
+
+    def test_bus_leg_duration_min(self):
+        assert self._result()["legs"][1]["duration_min"] == round(1800 / 60, 2)
+
+    def test_bus_leg_distance_m(self):
+        assert self._result()["legs"][1]["distance_m"] == 8000.0
+
+    def test_all_legs_have_geometry(self):
+        result = self._result()
+        for leg in result["legs"]:
+            assert len(leg["geometry"]) == 3
