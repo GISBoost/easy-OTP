@@ -24,14 +24,13 @@ The plugin UI is available in English and **Polish** *(new in v0.5)*.
 | Requirement | Version | How to get it |
 |---|---|---|
 | QGIS | 3.22 LTR+ | Install from qgis.org; the plugin uses the bundled Python and GDAL |
-| Java | **8 (1.8)** | Plugin can download it — *Download Java 8 JRE and OpenTripPlanner Jar* (or install manually) |
-| OpenTripPlanner jar | **1.5.0** | Plugin can download it — *Download Java 8 JRE and OpenTripPlanner Jar* (`otp-1.5.0-shaded.jar`) |
-| OSM extract | any | Plugin can download it — *Download transit data* (`.osm.pbf` covering your study area), or [prepare your own](tools/custom_network.md) |
-| GTFS feed(s) | any valid | Plugin can download it — *Download transit data* (one or more `.zip` archives in a folder) |
+| Java | **8 (1.8)** | Plugin can download it — [*Download Java 8 JRE and OpenTripPlanner Jar*](#getting-java-8-and-the-otp-jar) (or install manually) |
+| OpenTripPlanner jar | **1.5.0** | Plugin can download it — [*Download Java 8 JRE and OpenTripPlanner Jar*](#getting-java-8-and-the-otp-jar) (`otp-1.5.0-shaded.jar`) |
+| OSM extract | any | Plugin can download it — [*Download transit data*](#getting-osm-and-gtfs-data-new-in-v02) (`.osm.pbf` covering your study area) [or learn how to prepare your own OSM data](tools/custom_network.md) |
+| GTFS feed(s) | any valid | Plugin can download it — [*Download transit data*](#getting-osm-and-gtfs-data-new-in-v02) (one or more `.zip` archives in a folder) |
 
 You don't have to collect everything by hand — the plugin can download Java 8, the OTP
-jar, the OSM extract and GTFS feeds for you after installation (see
-[Getting the prerequisites](#getting-the-prerequisites)).
+jar, the OSM extract and GTFS feeds for you after installation (see [Getting the prerequisites](#getting-the-prerequisites)).
 
 ---
 
