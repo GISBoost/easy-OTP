@@ -173,6 +173,26 @@ Two related sub-issues:
 
 **Workaround:** Use QGIS vertex snapping (Snapping Toolbar) when digitizing via-points, placing them exactly on OSM path vertices. If a segment detours unexpectedly, move the nearest via-point to a clearly walkable OSM vertex and re-run.
 
+## 18. `BuildRealizedGtfs`: single-stop RT feeds yield zero segments (Poznań)
+
+**Severity:** high (RT-3 produces no correction at all for affected cities). · **Tracker:** [#18](../../issues/18) · **Status:** Under investigation.
+
+`BuildRealizedGtfs` reports `Segments observed: 0` on a real Poznań archive in both
+`RECONCILE_LAST_SNAPSHOT` modes, despite 98% trip_id overlap against the static feed.
+Root cause (confirmed by decoding raw snapshots): every `TripUpdate` in the Poznań feed
+carries exactly **one** `StopTimeUpdate` (next-stop-only predictions), so
+`collect_segment_times`'s adjacent-pair loop never has two stops to compute a segment
+time from — independent of trip_id matching. This is a different root cause from
+[#10](../../issues/10) (trip_id do match here). Gdańsk's feed carries 1–28
+`StopTimeUpdate`s per trip, which is why it is unaffected.
+
+**Workaround:** none. `RunTemporalAccessibility` on the resulting feed falls back to
+scheduled times everywhere (output is still valid, just not RT-corrected).
+
+**Status:** confirmed **not** fixable by RT3-5's planned route/stop fallback matching —
+the problem is the feed shape (no adjacent stop pair per snapshot), not id matching. A
+fix needs cross-snapshot stitching per trip_id, a separate and larger piece of work.
+
 ---
 
 This list is not exhaustive. If you hit something not listed here, please open a GitHub issue.
