@@ -4,6 +4,7 @@ No QGIS / GDAL imports — unit-testable without a QGIS environment.
 Run tests: py -m pytest easy_otp/test/test_record_gtfs_rt.py -v
 """
 
+import hashlib
 import json
 import urllib.error
 import urllib.request
@@ -61,6 +62,17 @@ def snapshot_filename(dt: datetime) -> str:
     return dt.strftime("snapshot_%Y%m%d-%H%M%S.pb")
 
 
+def snapshot_hash(data: bytes) -> str:
+    """Return the SHA-256 hex digest of *data*.
+
+    Used to detect byte-identical consecutive GTFS-RT payloads: on the
+    recording side (RT-2) to warn about a possibly frozen upstream feed, and
+    on the realize side (RT-3) to deduplicate consecutive identical snapshots
+    before aggregation.
+    """
+    return hashlib.sha256(data).hexdigest()
+
+
 def write_snapshot(directory: Path, data: bytes, dt: datetime) -> Path:
     """Write *data* to *directory* under :func:`snapshot_filename(dt) <snapshot_filename>`.
 
@@ -82,11 +94,16 @@ def write_manifest(
     snapshot_count: int,
     failed_count: int,
     total_bytes: int,
+    unchanged_streak_max: int,
 ) -> None:
     """Write (or overwrite) ``recording.json`` in *directory*.
 
     Informational metadata for the archive.  RT-3 does not read this file
     currently; all required parameters are entered directly in BuildRealizedGtfs.
+
+    ``unchanged_streak_max`` is the longest run of consecutive identical
+    snapshots observed during the session (frozen-feed detection, RT3-3) —
+    always recorded, regardless of whether a warning threshold was crossed.
     """
     manifest = {
         "url": url,
@@ -97,6 +114,7 @@ def write_manifest(
         "snapshot_count": snapshot_count,
         "failed_count": failed_count,
         "total_bytes": total_bytes,
+        "unchanged_streak_max": unchanged_streak_max,
     }
     path = directory / "recording.json"
     with open(path, "w", encoding="utf-8") as fh:

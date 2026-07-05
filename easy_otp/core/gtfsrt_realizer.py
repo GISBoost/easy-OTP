@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+from .gtfsrt_recorder import snapshot_hash
+
 # segment_key = (route_id, direction_id, from_stop_id, to_stop_id)
 SegmentKey = tuple[str, str, str, str]
 
@@ -480,3 +482,44 @@ def check_snapshot_time_span(snapshot_paths: list[Path]) -> float:
     if len(timestamps) < 2:
         return 0.0
     return (max(timestamps) - min(timestamps)).total_seconds()
+
+
+def deduplicate_snapshots(snapshot_paths: list[Path]) -> tuple[list[Path], int]:
+    """Drop snapshots whose bytes are identical to the immediately preceding kept snapshot.
+
+    Collapses a run of byte-identical consecutive snapshots (e.g. a frozen
+    upstream feed — the mkuran.pl Polish national rail aggregate feed is
+    documented to stop updating for over an hour, once or twice a day) down
+    to a single kept snapshot, so a frozen period contributes at most one
+    observation to the P50/P85 aggregation pool instead of N.
+
+    Compares each snapshot against the last successfully *kept* snapshot,
+    not merely the previous file in the list — this is what correctly
+    collapses a long frozen run into one kept snapshot instead of keeping
+    every other one. A snapshot that fails to read is kept as-is (never
+    silently dropped on error) and does not reset the comparison, so an
+    isolated read glitch in the middle of a genuine frozen run does not
+    re-admit a duplicate into the pool.
+
+    Returns (kept_paths, dropped_count).
+    """
+    kept: list[Path] = []
+    last_hash: Optional[str] = None
+    dropped = 0
+
+    for path in snapshot_paths:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            kept.append(path)
+            continue
+
+        h = snapshot_hash(data)
+        if h == last_hash:
+            dropped += 1
+            continue
+
+        kept.append(path)
+        last_hash = h
+
+    return kept, dropped

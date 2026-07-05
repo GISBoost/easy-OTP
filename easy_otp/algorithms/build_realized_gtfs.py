@@ -41,6 +41,7 @@ from ..core.gtfsrt_realizer import (
     check_snapshot_time_span,
     check_trip_overlap,
     collect_segment_times,
+    deduplicate_snapshots,
     load_static_indices,
     rebuild_stop_times,
     repackage_gtfs,
@@ -84,6 +85,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
     STATIC_GTFS_EXTRA = "STATIC_GTFS_EXTRA"
     OUTPUT_PREFIX = "OUTPUT_PREFIX"
     WRITE_P85 = "WRITE_P85"
+    DEDUPLICATE_FROZEN_SNAPSHOTS = "DEDUPLICATE_FROZEN_SNAPSHOTS"
     OUTPUT_P50 = "OUTPUT_P50"
     OUTPUT_P85 = "OUTPUT_P85"
 
@@ -132,6 +134,19 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "This algorithm assumes the archive covers a single service day. If the "
             "snapshot archive spans more than ~25 hours, a warning is logged (not "
             "blocking) noting that results may mix unrelated days.\n\n"
+            "Frozen-feed deduplication (DEDUPLICATE_FROZEN_SNAPSHOTS):\n"
+            "When an upstream feed freezes mid-recording — e.g. Poland's national rail "
+            "aggregate feed (mkuran.pl) is documented to stop updating for over an "
+            "hour, once or twice a day — RecordGtfsRt (RT-2) still writes one "
+            "identical snapshot file per poll throughout the freeze. Left uncorrected, "
+            "that period would be counted once per snapshot in the P50/P85 pool, "
+            "skewing the aggregate toward whatever travel time happened to be "
+            "observed the instant the feed froze. When enabled (default: on), "
+            "consecutive snapshots whose raw bytes exactly match the immediately "
+            "preceding kept snapshot are dropped before aggregation, so a frozen "
+            "period contributes at most once. This does not affect the archive "
+            "time-span warning above, which is always computed from the full, "
+            "undeduplicated snapshot list.\n\n"
             "Dependency:\n"
             "This algorithm requires google.protobuf and gtfs-realtime-bindings. "
             "If missing, the error message includes install instructions. "
@@ -194,6 +209,16 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 defaultValue=True,
             )
         )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.DEDUPLICATE_FROZEN_SNAPSHOTS,
+                self.tr(
+                    "Deduplicate consecutive identical snapshots before aggregation "
+                    "(collapses frozen-feed periods so they don't bias P50/P85)"
+                ),
+                defaultValue=True,
+            )
+        )
         self.addOutput(
             QgsProcessingOutputString(
                 self.OUTPUT_P50,
@@ -252,6 +277,9 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             parameters, self.OUTPUT_PREFIX, context
         ).strip()
         write_p85 = self.parameterAsBool(parameters, self.WRITE_P85, context)
+        deduplicate_frozen = self.parameterAsBool(
+            parameters, self.DEDUPLICATE_FROZEN_SNAPSHOTS, context
+        )
         canceled_policy = "skip"
 
         if not output_prefix:
@@ -274,6 +302,16 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             f"Found {len(snapshot_paths)} snapshot(s) in {snapshot_dir.name}"
         ))
         feedback.setProgress(2)
+
+        # --- Step 3b: deduplicate frozen-feed runs (before static load / pre-flight) ---
+        raw_snapshot_paths = snapshot_paths  # undeduplicated, for the time-span check below
+        if deduplicate_frozen:
+            snapshot_paths, dropped_count = deduplicate_snapshots(snapshot_paths)
+            feedback.pushInfo(self.tr(
+                f"Deduplication: dropped {dropped_count} snapshot(s) identical to the "
+                f"immediately preceding kept snapshot ({len(snapshot_paths)} of "
+                f"{len(raw_snapshot_paths)} retained)."
+            ))
 
         # --- Step 4: load static index (primary + optional extra files) ---
         static_paths = [static_gtfs]
@@ -311,6 +349,9 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         feedback.setProgress(5)
 
         # --- Step 5: pre-flight overlap check ---
+        # Uses the (deduplicated) snapshot_paths, not raw_snapshot_paths: sampling the
+        # first 5 kept snapshots is more representative than sampling 5 copies of the
+        # same instant if the archive happens to open on a frozen period.
         feedback.pushInfo(self.tr("Checking trip_id overlap (archive vs static)…"))
         try:
             overlap = check_trip_overlap(snapshot_paths, static_index)
@@ -333,7 +374,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 "(gaps falling back to scheduled times)."
             ))
 
-        span_sec = check_snapshot_time_span(snapshot_paths)
+        span_sec = check_snapshot_time_span(raw_snapshot_paths)
         if span_sec > 25 * 3600:
             feedback.pushWarning(self.tr(
                 f"Archive spans more than one service day ({span_sec / 3600:.1f}h) — "

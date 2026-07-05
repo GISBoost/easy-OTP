@@ -20,6 +20,7 @@ from easy_otp.core.gtfsrt_realizer import (
     check_trip_overlap,
     collect_segment_times,
     decode_snapshot,
+    deduplicate_snapshots,
     format_gtfs_time,
     load_static_index,
     load_static_indices,
@@ -804,3 +805,74 @@ def test_decode_snapshot_roundtrip():
     decoded = decode_snapshot(data)
     assert decoded.header.gtfs_realtime_version == "2.0"
     assert decoded.header.timestamp == 1_750_000_000
+
+
+# ---------------------------------------------------------------------------
+# deduplicate_snapshots
+# ---------------------------------------------------------------------------
+
+def _write_snapshots(tmp_path: Path, contents: list[bytes]) -> list[Path]:
+    paths = []
+    for i, content in enumerate(contents):
+        p = tmp_path / f"snapshot_20260621-{i:06d}.pb"
+        p.write_bytes(content)
+        paths.append(p)
+    return paths
+
+
+def test_deduplicate_empty_list():
+    kept, dropped = deduplicate_snapshots([])
+    assert kept == []
+    assert dropped == 0
+
+
+def test_deduplicate_single_snapshot(tmp_path):
+    paths = _write_snapshots(tmp_path, [b"A"])
+    kept, dropped = deduplicate_snapshots(paths)
+    assert kept == paths
+    assert dropped == 0
+
+
+def test_deduplicate_keeps_all_unique(tmp_path):
+    paths = _write_snapshots(tmp_path, [b"AAAA", b"BBBB", b"CCCC"])
+    kept, dropped = deduplicate_snapshots(paths)
+    assert kept == paths
+    assert dropped == 0
+
+
+def test_deduplicate_collapses_run(tmp_path):
+    paths = _write_snapshots(tmp_path, [b"A", b"A", b"A", b"B", b"B"])
+    kept, dropped = deduplicate_snapshots(paths)
+    assert kept == [paths[0], paths[3]]
+    assert dropped == 3
+
+
+def test_deduplicate_only_compares_to_last_kept(tmp_path):
+    """Non-adjacent repeats are never collapsed — only consecutive runs are."""
+    paths = _write_snapshots(tmp_path, [b"A", b"B", b"A"])
+    kept, dropped = deduplicate_snapshots(paths)
+    assert kept == paths
+    assert dropped == 0
+
+
+def test_deduplicate_unreadable_snapshot_kept(tmp_path):
+    paths = _write_snapshots(tmp_path, [b"A", b"B"])
+    missing = tmp_path / "snapshot_20260621-999999.pb"  # never written — unreadable
+    all_paths = [paths[0], missing, paths[1]]
+
+    kept, dropped = deduplicate_snapshots(all_paths)
+
+    assert missing in kept
+    assert dropped == 0
+
+
+def test_deduplicate_across_unreadable_gap(tmp_path):
+    """An unreadable snapshot must not reset the comparison against the last kept hash."""
+    paths = _write_snapshots(tmp_path, [b"A", b"A"])
+    missing = tmp_path / "snapshot_20260621-999999.pb"  # never written — unreadable
+    all_paths = [paths[0], missing, paths[1]]
+
+    kept, dropped = deduplicate_snapshots(all_paths)
+
+    assert kept == [paths[0], missing]
+    assert dropped == 1

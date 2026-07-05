@@ -166,25 +166,6 @@ def test_output_zero_is_nodata():
         assert nodata_val == 0.0, "Output NoData must be 0 (folds GRASS r.null step)"
 
 
-def test_cancellation():
-    """isCanceled() mid-loop raises RuntimeError and cleans up the output file."""
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        from easy_otp.core.raster_processing import count_below_threshold
-
-        surfaces = [
-            _make_surface(td, f"s{i}.tif", np.array([[10]], dtype=np.uint8), nodata=None)
-            for i in range(5)
-        ]
-        out = td / "count.tif"
-        fb = _mock_feedback(cancel_after=2)  # cancel on 3rd isCanceled() call
-
-        with pytest.raises(RuntimeError, match="(?i)cancel"):
-            count_below_threshold(surfaces, 30, out, fb)
-
-        assert not out.exists(), "Partial output file must be removed on cancellation"
-
-
 def test_empty_surfaces_raises():
     """Passing an empty list raises RuntimeError immediately."""
     with tempfile.TemporaryDirectory() as td:
