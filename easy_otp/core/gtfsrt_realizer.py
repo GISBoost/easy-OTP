@@ -201,14 +201,26 @@ def collect_segment_times(
     canceled_policy: str = "skip",
     progress_cb: Optional[Callable[[float], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    reconcile_last_snapshot: bool = True,
 ) -> tuple[dict[SegmentKey, list[float]], set[str]]:
     """Parse each .pb snapshot; return (segment_times, canceled_trip_ids).
 
     segment_times: SegmentKey -> list of observed travel times (seconds)
     canceled_trip_ids: trip_ids seen with CANCELED status (for drop logic)
+
+    reconcile_last_snapshot: when True (default), keep only the chronologically
+    last snapshot's observation per (trip_id, from_seq, to_seq) — predictions
+    made closer to the actual event are more accurate, so repeated observations
+    of the same trip-segment across snapshots are collapsed to one. When False,
+    every snapshot's observation is appended (pre-0.7 behavior). Assumes
+    snapshot_paths is already in chronological order.
     """
     segment_times: dict[SegmentKey, list[float]] = defaultdict(list)
     canceled_trip_ids: set[str] = set()
+    # (trip_id, from_seq, to_seq) -> (seg_time, SegmentKey) of the chronologically
+    # last snapshot with a complete, passing observation for that key.
+    # Only populated/consumed when reconcile_last_snapshot=True.
+    latest_per_trip_segment: dict[tuple[str, int, int], tuple[float, SegmentKey]] = {}
     total = len(snapshot_paths)
 
     for i, path in enumerate(snapshot_paths):
@@ -276,10 +288,17 @@ def collect_segment_times(
                     continue
 
                 key: SegmentKey = (route_id, direction_id, from_stop_id, to_stop_id)
-                segment_times[key].append(seg_time)
+                if reconcile_last_snapshot:
+                    latest_per_trip_segment[(trip_id, from_seq, to_seq)] = (seg_time, key)
+                else:
+                    segment_times[key].append(seg_time)
 
         if progress_cb:
             progress_cb((i + 1) / total)
+
+    if reconcile_last_snapshot:
+        for seg_time, key in latest_per_trip_segment.values():
+            segment_times[key].append(seg_time)
 
     return dict(segment_times), canceled_trip_ids
 

@@ -86,6 +86,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
     OUTPUT_PREFIX = "OUTPUT_PREFIX"
     WRITE_P85 = "WRITE_P85"
     DEDUPLICATE_FROZEN_SNAPSHOTS = "DEDUPLICATE_FROZEN_SNAPSHOTS"
+    RECONCILE_LAST_SNAPSHOT = "RECONCILE_LAST_SNAPSHOT"
     OUTPUT_P50 = "OUTPUT_P50"
     OUTPUT_P85 = "OUTPUT_P85"
 
@@ -147,6 +148,20 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "period contributes at most once. This does not affect the archive "
             "time-span warning above, which is always computed from the full, "
             "undeduplicated snapshot list.\n\n"
+            "Prediction reconciliation (RECONCILE_LAST_SNAPSHOT):\n"
+            "Each TripUpdate snapshot re-predicts a trip's future stop times as the trip "
+            "progresses, so the same trip-segment is observed repeatedly across "
+            "snapshots — predictions made closer to the actual event (shorter lead time) "
+            "are more accurate. When enabled (default: on), only the observation from "
+            "the chronologically last snapshot with a complete pair of stop-time events "
+            "is kept per (trip_id, from_stop_sequence, to_stop_sequence); earlier, less "
+            "mature predictions for the same trip-segment are discarded before P50/P85 "
+            "aggregation. This is an intentional behavior change: P50/P85 values may "
+            "shift slightly compared to archives processed before this feature — this is "
+            "not a regression. Disable it to restore pre-0.7 behavior (every snapshot's "
+            "observation counted), which is useful for very short test recordings where "
+            "reducing each trip-segment to a single observation would leave too few data "
+            "points for a meaningful P85.\n\n"
             "Dependency:\n"
             "This algorithm requires google.protobuf and gtfs-realtime-bindings. "
             "If missing, the error message includes install instructions. "
@@ -157,6 +172,10 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "operations.\n"
             "- P50 ≈ typical conditions; P85 ≈ reliability bound (travel-time variability).\n"
             "- Aggregation is by stop-pair segment across all trips/days, not per trip_id.\n"
+            "- With RECONCILE_LAST_SNAPSHOT enabled, each trip-segment contributes "
+            "exactly one observation regardless of how many snapshots covered it; "
+            "disabling it weights repeated/evolving predictions of the same "
+            "trip-segment equally.\n"
             "- Gaps (unobserved segments) fall back to scheduled travel time.\n"
             "- Output is a reproducible static GTFS feed; it is not a record of any "
             "single actual day.\n\n"
@@ -215,6 +234,17 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 self.tr(
                     "Deduplicate consecutive identical snapshots before aggregation "
                     "(collapses frozen-feed periods so they don't bias P50/P85)"
+                ),
+                defaultValue=True,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.RECONCILE_LAST_SNAPSHOT,
+                self.tr(
+                    "Keep only the latest-snapshot observation per trip-segment "
+                    "(reduces repeated/evolving RT predictions to one "
+                    "lead-time-accurate value)"
                 ),
                 defaultValue=True,
             )
@@ -279,6 +309,9 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         write_p85 = self.parameterAsBool(parameters, self.WRITE_P85, context)
         deduplicate_frozen = self.parameterAsBool(
             parameters, self.DEDUPLICATE_FROZEN_SNAPSHOTS, context
+        )
+        reconcile_last_snapshot = self.parameterAsBool(
+            parameters, self.RECONCILE_LAST_SNAPSHOT, context
         )
         canceled_policy = "skip"
 
@@ -404,6 +437,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 canceled_policy=canceled_policy,
                 progress_cb=_progress,
                 cancel_check=_cancel,
+                reconcile_last_snapshot=reconcile_last_snapshot,
             )
 
             if feedback.isCanceled():

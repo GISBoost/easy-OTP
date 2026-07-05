@@ -790,6 +790,166 @@ def test_collect_rejects_nonpositive_segment_time(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# collect_segment_times — reconcile_last_snapshot (RT3-4)
+# ---------------------------------------------------------------------------
+
+def _make_trip_entity(trip_id, dep_delay, arr_delay, from_seq=1, to_seq=2):
+    """Build a mock entity for one trip with a single from/to StopTimeUpdate pair."""
+    stu_from = MagicMock()
+    stu_from.stop_sequence = from_seq
+    stu_from.schedule_relationship = 0
+    stu_from.HasField.side_effect = lambda f: f == "departure"
+    stu_from.departure = MagicMock(time=0, delay=dep_delay)
+    stu_from.arrival = MagicMock(time=0, delay=0)
+
+    stu_to = MagicMock()
+    stu_to.stop_sequence = to_seq
+    stu_to.schedule_relationship = 0
+    stu_to.HasField.side_effect = lambda f: f == "arrival"
+    stu_to.arrival = MagicMock(time=0, delay=arr_delay)
+    stu_to.departure = MagicMock(time=0, delay=0)
+
+    tu = MagicMock()
+    tu.trip.trip_id = trip_id
+    tu.trip.schedule_relationship = 0
+    tu.stop_time_update = [stu_from, stu_to]
+
+    entity = MagicMock()
+    entity.HasField.side_effect = lambda f: f == "trip_update"
+    entity.trip_update = tu
+    return entity
+
+
+def _make_feed(entities):
+    feed = MagicMock()
+    feed.entity = entities
+    return feed
+
+
+def test_collect_reconcile_keeps_last_snapshot_value(tmp_path):
+    # Scheduled travel A->B is 600s (dep at 3600, arr at 4200); three snapshots
+    # of the same trip/segment carry different arrival delays -> distinct seg_times.
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 3600), (2, "B", 4200, 4200)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260621-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260621-080500.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260621-081000.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_trip_entity("t1", dep_delay=0, arr_delay=60)]),   # 660s
+        _make_feed([_make_trip_entity("t1", dep_delay=0, arr_delay=120)]),  # 720s
+        _make_feed([_make_trip_entity("t1", dep_delay=0, arr_delay=300)]),  # 900s
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        seg_times, _ = collect_segment_times(snaps, idx, reconcile_last_snapshot=True)
+
+    key = ("R1", "0", "A", "B")
+    assert seg_times[key] == pytest.approx([900.0])
+
+
+def test_collect_reconcile_false_keeps_all_snapshots(tmp_path):
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 3600), (2, "B", 4200, 4200)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260621-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260621-080500.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260621-081000.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_trip_entity("t1", dep_delay=0, arr_delay=60)]),
+        _make_feed([_make_trip_entity("t1", dep_delay=0, arr_delay=120)]),
+        _make_feed([_make_trip_entity("t1", dep_delay=0, arr_delay=300)]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        seg_times, _ = collect_segment_times(snaps, idx, reconcile_last_snapshot=False)
+
+    key = ("R1", "0", "A", "B")
+    # Pins today's (pre-0.7) behavior explicitly so it can't silently drift.
+    assert seg_times[key] == pytest.approx([660.0, 720.0, 900.0])
+
+
+def test_collect_reconcile_scoped_per_trip_id(tmp_path):
+    # Two distinct trips sharing the same route/direction/stops (-> same SegmentKey).
+    snap = _fake_snapshot(tmp_path)
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0"), "t2": ("R1", "0")},
+        stops={
+            "t1": [(1, "A", 0, 3600), (2, "B", 4200, 4200)],
+            "t2": [(1, "A", 0, 3600), (2, "B", 4200, 4200)],
+        },
+    )
+    feed = _make_feed([
+        _make_trip_entity("t1", dep_delay=0, arr_delay=60),
+        _make_trip_entity("t2", dep_delay=0, arr_delay=120),
+    ])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        seg_times, _ = collect_segment_times([snap], idx, reconcile_last_snapshot=True)
+
+    key = ("R1", "0", "A", "B")
+    # One reconciled observation per trip_id, not collapsed across trips.
+    assert seg_times[key] == pytest.approx([660.0, 720.0])
+
+
+def test_collect_reconcile_invalid_latest_does_not_evict_prior(tmp_path):
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 3600), (2, "B", 4200, 4200)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260621-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260621-080500.pb"),
+    ]
+    feeds = [
+        # Snapshot 1 (earlier): valid observation, seg_time = 660s.
+        _make_feed([_make_trip_entity("t1", dep_delay=0, arr_delay=60)]),
+        # Snapshot 2 (later, chronologically last): implausible negative seg_time
+        # (4200+0) - (3600+1000) = -400s -> rejected by the existing filter, so it
+        # must never reach latest_per_trip_segment and cannot evict snapshot 1's value.
+        _make_feed([_make_trip_entity("t1", dep_delay=1000, arr_delay=0)]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        seg_times, _ = collect_segment_times(snaps, idx, reconcile_last_snapshot=True)
+
+    key = ("R1", "0", "A", "B")
+    assert seg_times[key] == pytest.approx([660.0])
+
+
+def test_collect_reconcile_aggregate_integration(tmp_path):
+    # Reconciled output (one observation per trip_id) still satisfies p85 >= p50
+    # once piped into the untouched aggregate_segments.
+    snap = _fake_snapshot(tmp_path)
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0"), "t2": ("R1", "0"), "t3": ("R1", "0")},
+        stops={
+            "t1": [(1, "A", 0, 3600), (2, "B", 4200, 4200)],
+            "t2": [(1, "A", 0, 3600), (2, "B", 4200, 4200)],
+            "t3": [(1, "A", 0, 3600), (2, "B", 4200, 4200)],
+        },
+    )
+    feed = _make_feed([
+        _make_trip_entity("t1", dep_delay=0, arr_delay=60),
+        _make_trip_entity("t2", dep_delay=0, arr_delay=120),
+        _make_trip_entity("t3", dep_delay=0, arr_delay=300),
+    ])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        seg_times, _ = collect_segment_times([snap], idx, reconcile_last_snapshot=True)
+
+    p50, p85 = aggregate_segments(seg_times)
+    key = ("R1", "0", "A", "B")
+    assert p85[key] >= p50[key]
+
+
+# ---------------------------------------------------------------------------
 # decode_snapshot (requires google.transit — skipped if absent)
 # ---------------------------------------------------------------------------
 
