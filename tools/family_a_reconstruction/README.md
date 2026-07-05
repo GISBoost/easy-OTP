@@ -14,7 +14,7 @@ venv — same precedent as `tools/rt_diagnose` — and is never run inside QGIS.
 ## Status
 
 - `record` — implemented (FA-1).
-- `match` — not implemented yet (FA-2).
+- `match` — implemented (FA-2).
 - `build` — not implemented yet (FA-3).
 - Full end-to-end worked example — FA-4.
 
@@ -54,13 +54,56 @@ There is no per-session subfolder: running `record` twice into the same `--out-d
 overwrites the previous `recording.json` (snapshot files themselves are timestamped and never
 collide unless run twice in the same second). Use a fresh `--out-dir` per recording session.
 
-## match / build
+## Usage — match
 
-Not implemented yet. Running either prints a clear message and exits with a non-zero status:
+Map-matches the `VehiclePosition` observations in an FA-1 archive onto the static GTFS's
+shapes, producing a `(trip_id, timestamp, distance_along_shape_m)` series — the input FA-3
+will later use to interpolate stop-crossing times.
 
 ```bat
-python -m family_a.cli match
-python -m family_a.cli build
+py -m family_a.cli match --positions-dir .\out --static warsaw.zip --out matched.csv
+```
+
+- `--positions-dir` (required) — an FA-1 archive directory (`snapshot_*.pb` files).
+- `--static` (required) — static GTFS `.zip` path.
+- `--out` (required) — output table path. Written as CSV by default; if the path ends in
+  `.parquet`, written as Parquet instead (requires `pyarrow` or `fastparquet` — not in
+  `requirements.txt` by default, to avoid an extra dependency for the common case; install one
+  yourself if you want Parquet output).
+- `--max-perpendicular-dist-m` (default `100`) — observations projected farther than this from
+  the matched shape are rejected (likely off-route, GPS error, or a `trip_id` that resolves to
+  the wrong shape).
+
+Output columns: `trip_id`, `timestamp` (UTC; pandas' default tz-aware format in CSV, e.g.
+`2026-07-05 20:37:26+00:00` — space-separated, not literal ISO-8601 `T`-separated),
+`distance_along_shape_m`, `perpendicular_dist_m`.
+
+**Known limitation:** `distance_along_shape_m` is not guaranteed to be strictly increasing
+over time for a given trip. When a route passes close to itself (a loop, a nearby parallel
+carriageway, a layover), GPS noise can flip the nearest-match point between two locations that
+are geometrically close but far apart along the route, producing a small backward jump even
+though the position stayed genuinely close to the route the whole time (low
+`perpendicular_dist_m`). Observed on ~9% of trips in a manual test against a real Warszawa
+archive. This is an inherent limitation of simple nearest-segment matching without
+trajectory-continuity awareness, not a bug — see `family_a/matcher.py`'s module docstring.
+FA-3's interpolation step must not assume this series is strictly monotonic.
+
+The command prints a summary of snapshots processed, observations matched, and observations
+rejected broken down by reason (`unknown_shape`, `too_far_from_route`, `no_trip_id`,
+`corrupt_snapshot`).
+
+**Fallback when `shapes.txt` is missing:** some GTFS feeds omit `shapes.txt` entirely. In that
+case `match` falls back to a straight-line shape built from each trip's own stop sequence
+(`stops.txt`/`stop_times.txt`) — a documented accuracy degradation, not an error. A warning is
+printed when this happens, and the summary's "Fallback shapes used" line reflects it.
+
+## build
+
+Not implemented yet (FA-3). Running it prints a clear message and exits with a non-zero
+status:
+
+```bat
+py -m family_a.cli build
 ```
 
 ## Tests

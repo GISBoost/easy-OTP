@@ -1,0 +1,382 @@
+"""Unit tests for family_a.matcher (FA-2).
+
+No QGIS, no network — pure stdlib + pandas + pytest.
+Run: pytest tests/test_matcher.py -v
+"""
+
+import math
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from google.transit import gtfs_realtime_pb2
+
+from family_a.matcher import (
+    load_fallback_shapes_from_stops,
+    load_shapes,
+    load_trip_shape_index,
+    match_snapshots,
+    project_point_to_polyline,
+)
+
+# A straight north-south line, ~0.01 deg lat apart (~1.1km per segment) at the equator.
+_STRAIGHT_LINE = [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0)]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_gtfs_zip(tmp_path: Path, *, with_shapes: bool = True) -> Path:
+    """Write a minimal synthetic GTFS zip: 2 trips on 1 shape, 3 stops.
+
+    When with_shapes=False, trips.txt also leaves shape_id empty for every
+    trip — this mirrors the realistic feed shape that motivates the
+    stops-fallback (a feed missing shapes.txt typically never populates
+    shape_id either), not just the absence of the shapes.txt file alone.
+    """
+    path = tmp_path / "gtfs.zip"
+    shape_col = "shape1" if with_shapes else ""
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "trips.txt",
+            "trip_id,route_id,shape_id\n"
+            f"trip1,routeA,{shape_col}\n"
+            f"trip2,routeA,{shape_col}\n",
+        )
+        zf.writestr(
+            "stops.txt",
+            "stop_id,stop_lat,stop_lon\n"
+            "s1,0.0,0.0\n"
+            "s2,0.01,0.0\n"
+            "s3,0.02,0.0\n",
+        )
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,stop_id,stop_sequence\n"
+            "trip1,s1,0\n"
+            "trip1,s2,1\n"
+            "trip1,s3,2\n"
+            "trip2,s1,0\n"
+            "trip2,s2,1\n",
+        )
+        if with_shapes:
+            # Deliberately out-of-order shape_pt_sequence to verify re-sort.
+            zf.writestr(
+                "shapes.txt",
+                "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+                "shape1,0.02,0.0,2\n"
+                "shape1,0.0,0.0,0\n"
+                "shape1,0.01,0.0,1\n",
+            )
+    return path
+
+
+def _make_feed_message(entities: list[gtfs_realtime_pb2.FeedEntity]) -> bytes:
+    feed = gtfs_realtime_pb2.FeedMessage(
+        header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
+        entity=entities,
+    )
+    return feed.SerializeToString()
+
+
+def _vehicle_entity(
+    entity_id: str, trip_id: str, lat: float, lon: float, timestamp: int
+) -> gtfs_realtime_pb2.FeedEntity:
+    return gtfs_realtime_pb2.FeedEntity(
+        id=entity_id,
+        vehicle=gtfs_realtime_pb2.VehiclePosition(
+            trip=gtfs_realtime_pb2.TripDescriptor(trip_id=trip_id),
+            position=gtfs_realtime_pb2.Position(latitude=lat, longitude=lon),
+            timestamp=timestamp,
+        ),
+    )
+
+
+def _write_pb(path: Path, data: bytes) -> Path:
+    path.write_bytes(data)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# project_point_to_polyline
+# ---------------------------------------------------------------------------
+
+
+def test_project_point_on_line_exact():
+    dist_along, perp = project_point_to_polyline(0.005, 0.0, _STRAIGHT_LINE)
+    assert perp < 1.0  # essentially zero
+    # Halfway along the first ~1.11km segment.
+    assert 500 < dist_along < 620
+
+
+def test_project_point_near_vertex():
+    dist_along, perp = project_point_to_polyline(0.01, 0.0001, _STRAIGHT_LINE)
+    # Close to the middle vertex -> distance-along ~= cumulative to that vertex.
+    full_segment_m = project_point_to_polyline(0.01, 0.0, _STRAIGHT_LINE)[0]
+    assert abs(dist_along - full_segment_m) < 50
+    assert perp < 50
+
+
+def test_project_point_off_to_the_side():
+    # Offset perpendicular to the (north-south) line by 0.01 deg longitude.
+    dist_along, perp = project_point_to_polyline(0.005, 0.01, _STRAIGHT_LINE)
+    assert perp > 500  # clearly off the line, roughly ~1.1km at this latitude
+    assert dist_along > 0
+
+
+def test_project_point_single_vertex_polyline():
+    dist_along, perp = project_point_to_polyline(0.001, 0.001, [(0.0, 0.0)])
+    assert dist_along == 0.0
+    assert perp > 0
+
+
+def test_project_point_clamped_before_first_vertex():
+    dist_along, perp = project_point_to_polyline(-0.01, 0.0, _STRAIGHT_LINE)
+    assert dist_along == 0.0
+
+
+def test_project_point_clamped_after_last_vertex():
+    dist_along, perp = project_point_to_polyline(0.03, 0.0, _STRAIGHT_LINE)
+    total_length = project_point_to_polyline(0.02, 0.0, _STRAIGHT_LINE)[0]
+    assert math.isclose(dist_along, total_length, rel_tol=1e-6)
+
+
+def test_project_point_degenerate_zero_length_segment():
+    # Duplicate consecutive shape points (a real-world GTFS quirk) must not
+    # raise a ZeroDivisionError; the degenerate segment collapses to its
+    # (single) point.
+    polyline_with_duplicate = [(0.0, 0.0), (0.01, 0.0), (0.01, 0.0), (0.02, 0.0)]
+    dist_along, perp = project_point_to_polyline(0.01, 0.0001, polyline_with_duplicate)
+    expected_dist_to_dup_vertex = project_point_to_polyline(0.01, 0.0, _STRAIGHT_LINE)[0]
+    assert math.isclose(dist_along, expected_dist_to_dup_vertex, rel_tol=1e-6)
+    assert perp < 50
+
+
+# ---------------------------------------------------------------------------
+# load_shapes / load_trip_shape_index
+# ---------------------------------------------------------------------------
+
+
+def test_load_shapes_happy_path(tmp_path):
+    gtfs = _make_gtfs_zip(tmp_path, with_shapes=True)
+    shapes = load_shapes(str(gtfs))
+    assert list(shapes.keys()) == ["shape1"]
+    assert shapes["shape1"] == [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0)]
+
+
+def test_load_shapes_missing_file_returns_empty_dict(tmp_path):
+    gtfs = _make_gtfs_zip(tmp_path, with_shapes=False)
+    assert load_shapes(str(gtfs)) == {}
+
+
+def test_load_trip_shape_index_happy_path(tmp_path):
+    gtfs = _make_gtfs_zip(tmp_path, with_shapes=True)
+    index = load_trip_shape_index(str(gtfs))
+    assert index == {"trip1": "shape1", "trip2": "shape1"}
+
+
+def test_load_trip_shape_index_skips_trips_without_shape_id(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "trips.txt",
+            "trip_id,route_id,shape_id\ntrip1,routeA,shape1\ntrip2,routeA,\n",
+        )
+    index = load_trip_shape_index(str(path))
+    assert index == {"trip1": "shape1"}
+
+
+# ---------------------------------------------------------------------------
+# load_fallback_shapes_from_stops
+# ---------------------------------------------------------------------------
+
+
+def test_load_fallback_shapes_from_stops(tmp_path):
+    gtfs = _make_gtfs_zip(tmp_path, with_shapes=False)
+    fallback = load_fallback_shapes_from_stops(str(gtfs))
+    assert fallback["trip1"] == [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0)]
+    assert fallback["trip2"] == [(0.0, 0.0), (0.01, 0.0)]
+
+
+def test_load_fallback_shapes_from_stops_when_shape_id_also_empty(tmp_path):
+    """Regression test: the realistic case a feed with no shapes.txt also
+    leaves shape_id empty in trips.txt, so load_trip_shape_index returns {}.
+    The fallback must still build shapes for every trip found in
+    stop_times.txt — it must not be gated on trip_shape_index membership.
+    """
+    gtfs = _make_gtfs_zip(tmp_path, with_shapes=False)
+    trip_shapes = load_trip_shape_index(str(gtfs))
+    assert trip_shapes == {}  # confirms the realistic precondition
+
+    fallback = load_fallback_shapes_from_stops(str(gtfs))
+    assert fallback["trip1"] == [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0)]
+    assert fallback["trip2"] == [(0.0, 0.0), (0.01, 0.0)]
+
+
+def test_load_fallback_shapes_skips_missing_stop(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,shape_id\ntrip1,routeA,shape1\n")
+        zf.writestr("stops.txt", "stop_id,stop_lat,stop_lon\ns1,0.0,0.0\n")
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,stop_id,stop_sequence\ntrip1,s1,0\ntrip1,sMISSING,1\n",
+        )
+    fallback = load_fallback_shapes_from_stops(str(path))
+    assert fallback["trip1"] == [(0.0, 0.0)]
+
+
+def test_load_fallback_logs_warning(tmp_path, caplog):
+    gtfs = _make_gtfs_zip(tmp_path, with_shapes=False)
+    with caplog.at_level("WARNING"):
+        load_fallback_shapes_from_stops(str(gtfs))
+    assert any("shapes.txt" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# match_snapshots
+# ---------------------------------------------------------------------------
+
+
+def _shapes_and_trips():
+    return {"trip1": "shape1"}, {"shape1": _STRAIGHT_LINE}
+
+
+def test_match_snapshots_accepts_close_position(tmp_path):
+    trip_shapes, shapes = _shapes_and_trips()
+    feed = _make_feed_message([_vehicle_entity("e1", "trip1", 0.005, 0.0, 1_700_000_000)])
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df = match_snapshots([path], trip_shapes, shapes)
+
+    assert len(df) == 1
+    assert df.iloc[0]["trip_id"] == "trip1"
+    assert df.attrs["reject_counts"] == {
+        "no_trip_id": 0,
+        "unknown_shape": 0,
+        "corrupt_snapshot": 0,
+        "too_far_from_route": 0,
+    }
+    assert df.attrs["snapshots_processed"] == 1
+
+
+def test_match_snapshots_rejects_too_far(tmp_path):
+    trip_shapes, shapes = _shapes_and_trips()
+    feed = _make_feed_message([_vehicle_entity("e1", "trip1", 0.005, 0.01, 1_700_000_000)])
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df = match_snapshots([path], trip_shapes, shapes, max_perpendicular_dist_m=100.0)
+
+    assert len(df) == 0
+    assert df.attrs["reject_counts"]["too_far_from_route"] == 1
+
+
+def test_match_snapshots_rejects_missing_trip_id(tmp_path):
+    trip_shapes, shapes = _shapes_and_trips()
+    feed = _make_feed_message([_vehicle_entity("e1", "", 0.005, 0.0, 1_700_000_000)])
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df = match_snapshots([path], trip_shapes, shapes)
+
+    assert len(df) == 0
+    assert df.attrs["reject_counts"]["no_trip_id"] == 1
+
+
+def test_match_snapshots_rejects_unknown_shape(tmp_path):
+    trip_shapes, shapes = _shapes_and_trips()
+    feed = _make_feed_message([_vehicle_entity("e1", "trip_unknown", 0.005, 0.0, 1_700_000_000)])
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df = match_snapshots([path], trip_shapes, shapes)
+
+    assert len(df) == 0
+    assert df.attrs["reject_counts"]["unknown_shape"] == 1
+
+
+def test_match_snapshots_skips_corrupt_snapshot(tmp_path):
+    trip_shapes, shapes = _shapes_and_trips()
+    good_feed = _make_feed_message([_vehicle_entity("e1", "trip1", 0.005, 0.0, 1_700_000_000)])
+    good_path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", good_feed)
+    bad_path = _write_pb(tmp_path / "snapshot_20260101-000001.pb", b"\xff\xfenot-a-feed")
+
+    df = match_snapshots([good_path, bad_path], trip_shapes, shapes)
+
+    assert len(df) == 1
+    assert df.attrs["reject_counts"]["corrupt_snapshot"] == 1
+
+
+def test_match_snapshots_ignores_trip_update_entities(tmp_path):
+    trip_shapes, shapes = _shapes_and_trips()
+    feed = gtfs_realtime_pb2.FeedMessage(
+        header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
+        entity=[
+            gtfs_realtime_pb2.FeedEntity(
+                id="e1",
+                trip_update=gtfs_realtime_pb2.TripUpdate(
+                    trip=gtfs_realtime_pb2.TripDescriptor(trip_id="trip1")
+                ),
+            )
+        ],
+    )
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed.SerializeToString())
+
+    df = match_snapshots([path], trip_shapes, shapes)
+
+    assert len(df) == 0
+    assert sum(df.attrs["reject_counts"].values()) == 0
+
+
+def test_match_snapshots_sorted_by_trip_then_timestamp(tmp_path):
+    trip_shapes = {"trip1": "shape1", "trip2": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+
+    # Interleave trip1/trip2 observations out of chronological order across snapshots.
+    feed_a = _make_feed_message(
+        [
+            _vehicle_entity("e1", "trip2", 0.0, 0.0, 1_700_000_010),
+            _vehicle_entity("e2", "trip1", 0.01, 0.0, 1_700_000_020),
+        ]
+    )
+    feed_b = _make_feed_message(
+        [
+            _vehicle_entity("e3", "trip1", 0.0, 0.0, 1_700_000_000),
+            _vehicle_entity("e4", "trip2", 0.01, 0.0, 1_700_000_030),
+        ]
+    )
+    path_a = _write_pb(tmp_path / "snapshot_20260101-000010.pb", feed_a)
+    path_b = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed_b)
+
+    df = match_snapshots([path_a, path_b], trip_shapes, shapes)
+
+    assert list(df["trip_id"]) == ["trip1", "trip1", "trip2", "trip2"]
+    trip1_rows = df[df["trip_id"] == "trip1"]
+    trip2_rows = df[df["trip_id"] == "trip2"]
+    assert list(trip1_rows["timestamp"]) == sorted(trip1_rows["timestamp"])
+    assert list(trip2_rows["timestamp"]) == sorted(trip2_rows["timestamp"])
+
+
+def test_match_snapshots_glob_order_independent_of_input_order(tmp_path):
+    trip_shapes, shapes = _shapes_and_trips()
+    feed_a = _make_feed_message([_vehicle_entity("e1", "trip1", 0.0, 0.0, 1_700_000_000)])
+    feed_b = _make_feed_message([_vehicle_entity("e2", "trip1", 0.01, 0.0, 1_700_000_010)])
+    path_a = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed_a)
+    path_b = _write_pb(tmp_path / "snapshot_20260101-000010.pb", feed_b)
+
+    df_forward = match_snapshots([path_a, path_b], trip_shapes, shapes)
+    df_reversed = match_snapshots([path_b, path_a], trip_shapes, shapes)
+
+    assert df_forward.equals(df_reversed)
+
+
+def test_match_snapshots_empty_input_returns_empty_dataframe_with_columns():
+    trip_shapes, shapes = _shapes_and_trips()
+    df = match_snapshots([], trip_shapes, shapes)
+    assert df.empty
+    assert list(df.columns) == [
+        "trip_id",
+        "timestamp",
+        "distance_along_shape_m",
+        "perpendicular_dist_m",
+    ]

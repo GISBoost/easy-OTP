@@ -1,11 +1,12 @@
-"""Command-line interface for family_a_reconstruction (FA-1).
+"""Command-line interface for family_a_reconstruction (FA-1, FA-2).
 
 Standalone CLI — never imported by, and never imports, easy_otp/. Run:
 
-    python -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> \\
+    py -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> \\
         [--duration-min N] [--interval-sec N]
-    python -m family_a.cli match   (not implemented yet — see FA-2)
-    python -m family_a.cli build   (not implemented yet — see FA-3)
+    py -m family_a.cli match --positions-dir <dir> --static <gtfs.zip> --out <table> \\
+        [--max-perpendicular-dist-m N]
+    py -m family_a.cli build   (not implemented yet — see FA-3)
 """
 
 import argparse
@@ -14,6 +15,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from family_a.matcher import (
+    load_fallback_shapes_from_stops,
+    load_shapes,
+    load_trip_shape_index,
+    match_snapshots,
+)
 from family_a.recorder import (
     SnapshotFetchError,
     fetch_snapshot,
@@ -100,10 +107,60 @@ def _positive_int(value: str) -> int:
 
 
 def _cmd_match(args: argparse.Namespace) -> int:
-    # PRD prose says "NotImplementedError"; a print + non-zero exit is friendlier
-    # CLI UX (no traceback) while still failing loudly, not silently no-op-ing.
-    print("'match' is not implemented yet - see FA-2.", file=sys.stderr)
-    return 1
+    positions_dir = Path(args.positions_dir)
+    snapshot_paths = sorted(positions_dir.glob("snapshot_*.pb"))
+    if not snapshot_paths:
+        print(f"No snapshot_*.pb files found in {positions_dir}", file=sys.stderr)
+        return 1
+
+    trip_shapes = load_trip_shape_index(args.static)
+    shapes = load_shapes(args.static)
+
+    fallback_used = False
+    if not shapes:
+        fallback_used = True
+        print(
+            "Warning: shapes.txt not found in static GTFS - falling back to "
+            "straight-line stop-to-stop shapes (reduced accuracy).",
+            file=sys.stderr,
+        )
+        fallback_shapes = load_fallback_shapes_from_stops(args.static)
+        # match_snapshots expects shape_id-keyed `shapes` + trip_id->shape_id
+        # `trip_shapes`; the fallback is naturally trip_id-keyed, so remap it
+        # onto a pseudo-shape_id (the trip_id itself) to keep the lookup in
+        # match_snapshots uniform regardless of which loader produced it.
+        for trip_id, polyline in fallback_shapes.items():
+            shapes[trip_id] = polyline
+            trip_shapes[trip_id] = trip_id
+
+    df = match_snapshots(
+        snapshot_paths, trip_shapes, shapes, max_perpendicular_dist_m=args.max_perpendicular_dist_m
+    )
+
+    out_path = Path(args.out)
+    try:
+        if out_path.suffix.lower() == ".parquet":
+            df.to_parquet(out_path)
+        else:
+            df.to_csv(out_path, index=False)
+    except ImportError as exc:
+        print(
+            f"Could not write Parquet output ({exc}). Install pyarrow "
+            "(pip install pyarrow) or use a .csv output path instead.",
+            file=sys.stderr,
+        )
+        return 1
+
+    rejects = df.attrs.get("reject_counts", {})
+    total_rejected = sum(rejects.values())
+    print(f"Snapshots processed: {df.attrs.get('snapshots_processed', len(snapshot_paths))}")
+    print(f"Observations matched: {len(df)}")
+    print(f"Observations rejected: {total_rejected}")
+    for reason in ("unknown_shape", "too_far_from_route", "no_trip_id", "corrupt_snapshot"):
+        print(f"  - {reason}: {rejects.get(reason, 0)}")
+    print(f"Fallback shapes used (shapes.txt missing): {'yes' if fallback_used else 'no'}")
+    print(f"Output written to: {out_path}")
+    return 0
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
@@ -127,7 +184,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_record.add_argument("--interval-sec", type=_positive_int, default=60, help="Polling interval in seconds")
     p_record.set_defaults(func=_cmd_record)
 
-    p_match = sub.add_parser("match", help="Not implemented yet - see FA-2")
+    p_match = sub.add_parser(
+        "match", help="Map-match VehiclePosition snapshots onto GTFS shapes"
+    )
+    p_match.add_argument(
+        "--positions-dir", required=True, help="FA-1 archive dir containing snapshot_*.pb"
+    )
+    p_match.add_argument("--static", required=True, help="Static GTFS zip path")
+    p_match.add_argument(
+        "--out",
+        required=True,
+        help="Output table path (.csv, or .parquet if pyarrow/fastparquet is installed)",
+    )
+    p_match.add_argument(
+        "--max-perpendicular-dist-m",
+        type=float,
+        default=100.0,
+        help="Reject matches farther than this from the route, in metres (default: 100)",
+    )
     p_match.set_defaults(func=_cmd_match)
 
     p_build = sub.add_parser("build", help="Not implemented yet - see FA-3")
