@@ -19,6 +19,28 @@ The plugin UI is available in English and **Polish** *(new in v0.5)*.
 
 ---
 
+## What analysis you can do
+
+| Algorithm | Description |
+| --- | --- |
+| [**Run temporal accessibility**](#run-temporal-accessibility-the-main-algorithm) | Generates travel-time surfaces for each minute of an analysis window, counts minutes each grid cell is reachable, and classifies cells into four service-time categories |
+| [**Count from existing surfaces**](#count-from-existing-surfaces-countfromexistingsurfaces) | Recomputes the count raster and hex classification from a folder of already-generated surface rasters, without re-running OTP |
+| [**Generate isochrones**](#generate-isochrones-generateisochrones-new-in-v06) | Creates isochrone polygons for 1 to N origin/destination points with multiple travel-time cutoffs; supports FROM (reachable from) and TO (can reach) directions |
+| [**Generate isochrones over time**](#generate-isochrones-over-time-generateisochronesovertime-new-in-v06) | Generates isochrone polygons iterated across a time window with temporal fields for day-long animation of service reach |
+| [**Run service coverage**](#run-service-coverage-runservicecoverage-new-in-v06) | Multi-point service coverage analysis: "how many service points are reachable from each cell within threshold T?" |
+| [**Run origin-destination times**](#run-origin-destination-times-runorigindestinationtimes-new-in-v05) | Batch point-to-point routing from many origins to one destination with trip statistics (duration, walk, wait, transfers) |
+| [**Route via points**](#route-via-points-routeviapoints-new-in-v062) | City trip planner: orders a layer of via-points automatically and routes START → via-points → END as a per-segment line layer |
+| [**Prepare student layer**](#prepare-student-layer-preparestudentlayer-new-in-v02) | Reads GUS NSP 2021 Excel files and joins census-tract population data to polygon geometry |
+| [**Population overlay**](#population-overlay-populationoverlay-new-in-v02) | Overlays a demographic polygon layer on hexagonal grid using areal interpolation |
+| [**Run realtime accessibility**](#realtime-algorithms-new-in-v04) | Temporal accessibility with live GTFS-RT delays applied instead of planned timetable |
+| [**Record GTFS-RT feed**](#realtime-algorithms-new-in-v04) | Archives a GTFS-RT TripUpdates feed for offline analysis |
+| [**Build realized GTFS**](#realtime-algorithms-new-in-v04) | Reconstructs a "realized" static GTFS from a RecordGtfsRt archive with P50/P85 segment times |
+| [**Compare temporal accessibility**](#compare-temporal-accessibility-comparetemporalaccessibility-new-in-v035) | Computes differences between two accessibility scenarios (e.g. baseline vs. proposed, weekday vs. weekend) and produces delta rasters and classified hex grids |
+| [**Run travel-time matrix**](#run-travel-time-matrix-runtraveltimematrix-new-in-v06) | Full N × M origin–destination travel-time matrix as CSV/XLSX or OD line layer for gravity models and accessibility reports |
+| [**Generate hex grid**](#generate-hex-grid-generatehexgrid) | Builds the hexagonal grid used by accessibility analysis |
+
+---
+
 ## What you need to run an analysis
 
 | Requirement | Version | How to get it |
@@ -162,18 +184,20 @@ You will enter this path in the **Java 8 binary** parameter of the plugin.
 3. Save it in your OTP folder alongside Java and your analysis data, e.g.
    `C:\otp\otp-1.5.0-shaded.jar`.
 
+You will enter this path in the **OpenTripPlanner 1.5.0 jar** parameter.
+
 > **Tip — keep everything in one folder.** The recommended layout is:
 > ```
 > C:\otp\
 > ├── java\                   ← unpacked portable Java 8 JRE
 > ├── otp-1.5.0-shaded.jar    ← OTP executable
-> ├── city.osm.pbf            ← OSM extract
-> ├── gtfs\                   ← GTFS feeds
+> ├── graphs\
+> │   └── city\
+> │       ├── city.osm.pbf    ← OSM extract
+> │       └── city_gtfs.zip   ← GTFS feeds
 > └── work\                   ← working directory for the plugin
 > ```
 > This way all OTP-related files are in one place and easy to back up or move.
-
-You will enter this path in the **OpenTripPlanner 1.5.0 jar** parameter.
 
 ### Getting OSM and GTFS data *(new in v0.2)*
 
@@ -187,7 +211,7 @@ area, and finding and downloading the relevant GTFS feeds.
 
 A **free Transitland API key** is required to download GTFS data.
 Register at **https://www.transit.land** (no credit card, takes about a minute).
-OSM data from Geofabrik does not require any account.
+[OSM data from Geofabrik](https://download.geofabrik.de/) does not require any account.
 
 #### Running the algorithm
 
@@ -223,6 +247,8 @@ Copy those directly into the **OSM extract** and **GTFS folder** parameters of
 - **Missing operator:** if a local operator is not yet in Transitland, add
   their `.zip` manually to `DEST_DIR/gtfs/` after the algorithm finishes.
 
+#### Own network
+
 Want to model a network change (closed road, new footbridge, different
 speed limit) instead of just downloading an extract? See
 [Preparing a custom OSM network](tools/custom_network.md).
@@ -250,20 +276,21 @@ correctly before attempting a full run.
 
 ## Run temporal accessibility (the main algorithm)
 
-```
-Input data
-├── wroclaw.osm.pbf        ← OSM extract of the study area
-└── gtfs/
-    └── wroclaw_gtfs.zip   ← GTFS feed
-
-Working directory
-└── work/                  ← empty folder; plugin writes everything here
-```
+>**How example folder structure would look like**
+>```
+>otp/
+>├── graphs/
+>│   └── wroclaw/
+>│       ├── wroclaw.osm.pbf        ← OSM extract of the study area
+>│       └── wroclaw_gtfs.zip       ← GTFS feed
+>└── work/                          ← empty folder; plugin writes everything here
+>```
+>Note that algorithm will create new folder with hashed name inside *graphs* directory
 
 1. Open **Processing Toolbox → easy-OTP → Analysis → Run temporal accessibility**.
 2. Fill in the required parameters:
    - **OSM extract**: `wroclaw.osm.pbf`
-   - **GTFS folder**: `gtfs/`
+   - **GTFS folder**: `wroclaw/`
    - **Origin point**: click the map to pick a central location (e.g. the main
      railway station)
    - **Analysis date**: a weekday date covered by your GTFS feed
@@ -295,78 +322,183 @@ A full 1-minute window run (961 surfaces) on Wrocław-sized data takes roughly
 
 ---
 
-## Other algorithms
+## Count from existing surfaces (CountFromExistingSurfaces)
 
-Besides the main analysis, easy-OTP ships several supporting algorithms. The most
-commonly used are documented below. Two helper algorithms are not yet documented in
-detail: **Count reachable minutes from existing surfaces** (`CountFromExistingSurfaces`)
-— recomputes a count raster from a folder of `surface_*.tiff` files without re-running
-OTP — and **Generate hex grid** (`GenerateHexGrid`) — builds the hexagonal grid used by
-the analysis.
+**Processing Toolbox → easy-OTP → Analysis → Count from existing surfaces**
 
-### Compare temporal accessibility (CompareTemporalAccessibility) *(new in v0.3.5)*
+Re-runs the counting → zonal-stats → classification part of the pipeline
+directly from a folder of already-generated `surface_*.tiff` files, without
+starting OTP or regenerating any surfaces. Useful when you want to re-classify
+with a different threshold, hex grid, or zonal statistic after a full run has
+already produced the surfaces — saving the ~20+ minutes OTP would otherwise take.
 
-**Processing Toolbox → easy-OTP → Analysis → Compare temporal accessibility**
+*(screenshot/example coming soon)*
 
-Computes the difference between two accessibility scenarios — for example a
-baseline timetable versus a proposed one, or a weekday versus a weekend.
+### How it works
+
+Reuses the same counting, zonal-statistics, and classification code as
+`RunTemporalAccessibility` (`core/zonal.py`) — only the surface-generation step
+is skipped. Pixels below the chosen threshold are counted across all surface
+files found in the input folder, then aggregated onto the hex grid and
+classified into the same four service-time categories.
+
+### Key parameters
 
 | Parameter | Notes |
-| --- | --- |
-| **Scenario A / Scenario B** | Either two classified hex-grid layers or two count rasters produced by `RunTemporalAccessibility` / `CountFromExistingSurfaces`. Both inputs must be the same type. |
-| **OSM extract** | The shared study-area extent common to both scenarios. |
+|---|---|
+| **Surfaces folder** | Folder containing `surface_*.tiff` files from a single previous run. |
+| **Travel-time threshold** | Same meaning as in `RunTemporalAccessibility`. |
+| **Hex grid** | Polygon layer to aggregate the count raster onto. |
 
-Outputs:
+### Outputs
 
-- A **delta raster** (Scenario B − Scenario A) of the service-time count.
-- A **hex-grid layer** with a `delta_mean` field (mean change per cell) and a
-  `delta_class` field classifying the change.
+- A single-band **count raster** (0..N minutes reachable).
+- A **hex-grid layer** classified into the four service-time categories.
 
-Cells present in only one scenario are written as **NoData** in the delta, so a
-cell that gained or lost coverage entirely is not silently treated as zero
-change. The output hex layer is styled automatically with the bundled
-`easy_otp/styles/delta_class.qml`.
+### Limitations
 
-### Network & Accessibility Analysis *(new in v0.6)*
-
-Five new algorithms bring isochrone-based and OD-routing analyses to easy-OTP,
-completing the v0.6 release.
-
-**GenerateIsochrones (N-1)** *(new in v0.6)* — Isochrone polygons for 1..N origin or
-destination points at one time, with multiple travel-time cutoffs (e.g. 15/30/45 min).
-Supports `FROM` (reachable from a point) and `TO` (areas that can reach a point)
-directions. Transport modes: `TRANSIT`, `WALK`, `BUS`, `RAIL`, `TRAM`, `SUBWAY`, `CAR`,
-`BICYCLE`. WALK and TRANSIT modes are well tested; `CAR`/`BICYCLE` isochrones are exposed
-but quality depends on graph coverage — verify on your data before use.
-
-**GenerateIsochronesOverTime (N-2)** *(new in v0.6)* — One origin point, one or more
-cutoffs, iterated across a configurable time window (e.g. every 15 min from 06:00 to
-22:00). Each output polygon carries a `time` field compatible with the QGIS Temporal
-Controller, enabling day-long animations of service reach.
-
-**RunServiceCoverage (N-3)** *(new in v0.6)* — Multi-point service coverage: "how many
-service points are reachable from each cell within threshold T at a given moment?" One
-travel-time surface is generated per service point; pixels below the threshold are counted
-into a `reachable_count` raster (0..N). Optional aggregation to a hexagonal grid, square
-grid, or a user-supplied polygon layer.
-
-**RunOriginDestinationTimes (N-4)** *(new in v0.6)* — Batch point-to-point routing from
-many origins to one destination, with full trip statistics (duration, in-vehicle time,
-walk, wait, transfers) per origin. Parallelised via `ThreadPoolExecutor`.
-Note: OTP `PATH_NOT_FOUND` (404) errors increase when origins are far from the transit
-network. Raise `MAX_WALK_DISTANCE` (default 800 m; setting 9 999 m typically eliminates
-most 404s) or enable the optional snap-to-network option. See detailed documentation below
-and Known Issues.
-
-**RunTravelTimeMatrix (N-5)** *(new in v0.6)* — Full N × M origin–destination travel-time
-matrix. Produces a long-format CSV (one row per OD pair) and optionally a wide matrix
-(origins as rows, destinations as columns) and an OD line layer for quick visualisation.
-XLSX output when openpyxl is installed; falls back to CSV. Use for gravity models and
-comparative accessibility reports.
+- Trusts the folder contents — mixing surfaces from different runs (different
+  intervals or dates) in one folder produces wrong results. Point it at a
+  clean single-run subfolder (see [Known issues](#known-issues)).
 
 ---
 
-### Run origin-destination times (RunOriginDestinationTimes) *(new in v0.5)*
+## Generate isochrones (GenerateIsochrones) *(new in v0.6)*
+
+**Processing Toolbox → easy-OTP → Analysis → Generate isochrones**
+
+Creates isochrone polygons — the area reachable within a given travel time —
+for 1 to N origin or destination points, at one moment in time, with multiple
+cutoff thresholds (e.g. 15/30/45 min) in a single run.
+
+![Generate isochrones example](assets/generate-isochrones.jpg)
+
+### How it works
+
+For each input point, the algorithm sends one request per cutoff set to OTP's
+`/isochrone` endpoint and merges the returned polygons into one output layer.
+Supports both directions: `FROM` (area reachable *from* the point) and `TO`
+(area from which the point can be *reached*, using OTP's `fromPlace==toPlace`
+workaround). Isochrone geometry is validated and repaired (`makeValid()`)
+since OTP 1.5 occasionally returns self-intersecting polygons. Per-point
+failures are logged as warnings and skipped rather than aborting the whole run.
+
+### Key parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| **Origin/destination points** | — | Point layer, 1..N features. |
+| **Direction** | FROM | `FROM` (reachable from) or `TO` (can reach). |
+| **Transport mode** | TRANSIT | `TRANSIT`, `WALK`, `BUS`, `RAIL`, `TRAM`, `SUBWAY`, `CAR`, `BICYCLE`. WALK and TRANSIT are well tested; CAR/BICYCLE quality depends on graph coverage. |
+| **Cutoffs (minutes)** | `15,30,45` | Comma-separated list of travel-time thresholds. |
+| **Analysis date / Time** | — | Single moment in time. |
+
+### Output layer fields
+
+| Field | Type | Description |
+|---|---|---|
+| `point_id` | Integer | Id of the origin/destination point this polygon belongs to. |
+| `name` | String | Label of the origin/destination point, if available. |
+| `cutoff_min` | Integer | Travel-time cutoff for this polygon. |
+| `mode` | String | Transport mode used. |
+| `date` / `time` | String | Analysis date/time. |
+| `direction` | String | `FROM` or `TO`. |
+
+---
+
+## Generate isochrones over time (GenerateIsochronesOverTime) *(new in v0.6)*
+
+**Processing Toolbox → easy-OTP → Analysis → Generate isochrones over time**
+
+Shows how a single point's isochrone shape changes across the day — e.g. the
+30-minute reach at 6:00, 7:00, … 22:00 — without generating a full 961-surface
+run. A middle ground between a single static isochrone and the full temporal
+method.
+
+[Example animation (mp4)](assets/isochornes-over-time-Transport-Anim.mp4) — a
+day-long animation of service reach for one point. *(will be replaced with an
+inline embed once re-uploaded through the GitHub web editor)*
+
+### How it works
+
+Reuses the same timestamp-building logic as `RunTemporalAccessibility`
+(`core/time_utils.py`) and loops over each timestamp calling the isochrone
+client. Each output polygon carries a `time` field compatible with the QGIS
+**Temporal Controller**, so the result can be played back as a day-long
+animation directly in QGIS.
+
+### Key parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| **Origin point** | — | Single point. |
+| **Direction** | FROM | Same as `GenerateIsochrones`. |
+| **Transport mode** | TRANSIT | Same options as `GenerateIsochrones`. |
+| **Cutoffs (minutes)** | — | 1–2 cutoffs recommended — cost multiplies by number of timestamps. |
+| **Window start / end / interval** | 06:00 / 22:00 / 15 min | 15 min default (not 1 min) to avoid generating too many polygons per cutoff. |
+
+### Output layer fields
+
+| Field | Type | Description |
+|---|---|---|
+| `time` | String | Timestamp of this polygon — drives the Temporal Controller. |
+| `cutoff_min` | Integer | Travel-time cutoff. |
+| `mode` | String | Transport mode used. |
+| `date` | String | Analysis date. |
+
+### Performance notes
+
+- 15-min interval, 16h window → 65 requests (~1 minute).
+- 1-min interval → 961 requests, comparable in cost to the main algorithm's surface loop.
+- Many points *and* many times at once is out of scope — this algorithm covers
+  one point across many times; use `GenerateIsochrones` for many points at one time.
+
+---
+
+## Run service coverage (RunServiceCoverage) *(new in v0.6)*
+
+**Processing Toolbox → easy-OTP → Analysis → Run service coverage**
+
+Answers "how many service points are reachable from each cell within threshold
+T, at a given moment?" — e.g. how many convenience stores, pharmacies, or
+parcel lockers are within a 10-minute reach of each location. Generalises to
+any point network you want to measure coverage against.
+
+*(screenshot/example coming soon)*
+
+### How it works
+
+Generates one travel-time surface per service point (same surface-generation
+code as `RunTemporalAccessibility`, but channels = service points instead of
+minutes of the day). Per pixel, counts how many of the N surfaces are within
+the threshold, producing a `reachable_count` raster (0..N). Optionally
+aggregates that raster onto a hex grid, a square grid, or your own polygon
+layer.
+
+### Key parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| **Service points** | — | Point layer, N features (e.g. stores, pharmacies). |
+| **Transport mode** | TRANSIT | Same mode options as the main algorithm. |
+| **Threshold (minutes)** | 10 | Reachability cutoff. |
+| **Analysis date / Time** | — | Single moment — multiple times is not supported (cost scales with N × times). |
+| **Aggregation** | None | `None`, hex grid, square grid, or an existing polygon layer. |
+| **Aggregation statistic** | max | `mean`, `max`, or `sum` — `max` matches "reachable at best" coverage questions. |
+
+### Outputs
+
+- A single-band **`reachable_count` raster** (0..N service points reachable per pixel).
+- Optionally, a **grid layer** with a `reachable_<stat>` field.
+
+### Performance notes
+
+Cost scales with the number of service points, not with time-of-day sampling —
+tens of points typically take minutes, not hours, once OTP has warmed up.
+
+---
+
+## Run origin-destination times (RunOriginDestinationTimes) *(new in v0.5)*
 
 **Processing Toolbox → easy-OTP → Analysis → Run origin-destination times**
 
@@ -377,14 +509,16 @@ output attribute table. Designed for studies where you know the destination
 (e.g. a hospital, a university campus, a railway station) and want to see the
 travel time from every grid cell across the study area.
 
-#### Direction
+*(screenshot/example coming soon)*
+
+### Direction
 
 | Direction | OTP query | Typical use |
 |---|---|---|
 | **TO_DESTINATION** *(default)* | Depart from each origin, arrive at destination | "How long does it take to reach the hospital?" |
 | **FROM_DESTINATION** | Depart from destination, arrive at each origin | Arrive-by equivalent — "Can you reach home from the station in time?" |
 
-#### Key parameters
+### Key parameters
 
 | Parameter | Default | Notes |
 |---|---|---|
@@ -399,7 +533,7 @@ travel time from every grid cell across the study area.
 | **Snap origins to road network** | off | Snaps origin centroids to the nearest road segment before routing (requires a roads/OSM lines layer). Useful when origins fall slightly off the drivable network. |
 | **Output table (.csv or .xlsx)** | *(optional)* | If provided, results are also exported to a flat file. Columns match the output layer. |
 
-#### Output layer fields
+### Output layer fields
 
 | Field | Type | Description |
 |---|---|---|
@@ -416,7 +550,7 @@ travel time from every grid cell across the study area.
 | `transfers` | Integer | Number of transfers *(detail mode only)*. |
 | `diag` | String | Raw OTP error message *(Diagnose unreachable origins mode only)*. |
 
-#### Performance notes
+### Performance notes
 
 - 1 worker: ~3 min 15 s for ~1 900 origins (serial).
 - 8 workers: ~30 s for the same grid (parallel HTTP requests).
@@ -427,89 +561,97 @@ travel time from every grid cell across the study area.
 
 ---
 
-### Realtime algorithms *(new in v0.4)*
+## Route via points (RouteViaPoints) *(new in v0.6.2)*
 
-Three algorithms under **easy-OTP → Realtime** measure or record what actually
-happened on a given day, instead of what the planned timetable predicted.
+**Processing Toolbox → easy-OTP → Analysis → Route via points (city trip planner)**
 
-**Important:** results from all three algorithms are **non-reproducible** — they
-depend on live network conditions and snapshot data captured at a specific moment.
-Output layers carry `analysis_type = "realtime"` to distinguish them from
-static-analysis results.
+Plans a tour through a START point, an END point, and an optional layer of
+via-points (landmarks) — without you having to decide the visiting order. The
+plugin orders the via-points automatically and routes through all of them,
+producing one line feature per segment.
 
-#### RunRealtimeAccessibility (RT-1)
+![Route via points example](assets/route-via-points.jpg)
 
-**Processing Toolbox → easy-OTP → Realtime → Run realtime accessibility**
+### How ordering works
 
-Runs the standard temporal-accessibility pipeline but with a live GTFS-RT
-TripUpdates feed wired into OTP's `stop-time-updater`. OTP applies the real-time
-delays before generating each travel-time surface.
+Visit order is computed with a **nearest-neighbour + 2-opt** heuristic on
+straight-line (haversine) distance between START, the via-points, and END —
+pure Python, no OTP queries involved. This is fast but not always optimal on
+the real pedestrian network (rivers, missing crossings, one-way streets can
+make the straight-line-optimal order longer in practice). There is no manual
+ordering option in v0.6.2.
 
-Key parameters:
+### How routing works
 
-| Parameter | Notes |
-|---|---|
-| **GTFS-RT feed URL** | HTTP(S) endpoint returning a binary `FeedMessage` (.pb) |
-| **Feed ID** | Must match exactly the `feed_id` OTP assigned to the loaded static GTFS (check the build log if unsure) |
-| **All standard RunTemporalAccessibility parameters** | Same as the static analysis |
+The plugin sends one `/plan` query per segment (START→P1, P1→P2, …, Pn→END —
+N+1 queries total), rather than a single query with `intermediatePlaces`,
+because OTP 1.5.0 raises an NPE for `intermediatePlaces` that fall off the
+street network. Each query returns one or more legs (a leg per mode switch);
+each leg becomes one line feature in the output.
 
-After the run, the Processing log reports the tri-state RT effectiveness:
-`RT-EFFECTIVE` (delays applied), `RT-NOT-APPLIED` (OTP received updates but
-matched zero trips — e.g. Poznań/Kraków namespace mismatch, see Known Issues),
-or `RT-INCONCLUSIVE` (no update cycles completed).
+If OTP cannot route a segment (e.g. a via-point has no pedestrian access), that
+segment is **skipped, not fatal** — the run continues, the Processing log names
+the affected via-point's feature id, and all skipped segments are listed
+together in the final summary so you can move or remove the offending points
+and re-run.
 
-#### RecordGtfsRt (RT-2)
+### Key parameters
 
-**Processing Toolbox → easy-OTP → Realtime → Record GTFS-RT feed**
+| Parameter | Default | Notes |
+|---|---|---|
+| **Start point** | — | Click on map. |
+| **End point** | — | Click on map. |
+| **Via-points layer** | *(optional)* | Point layer, 0..N features. 0 via-points = a direct START→END route. |
+| **Transport mode** | WALK | `WALK`, `BICYCLE`, `CAR`, or `TRANSIT,WALK`. |
+| **Analysis date / Departure time** | today / `08:30` | Used only by `TRANSIT,WALK`; ignored by WALK/BICYCLE/CAR. |
+| **OSM extract** | — | `.osm.pbf` street network. |
+| **GTFS folder** | *(optional)* | Required only for `TRANSIT,WALK`. |
+| **Working directory** | — | Graph cache, as in the other Analysis algorithms. |
+| **Maximum walk distance** | 50 000 m | City-tour default — a full walking tour, not a walk-to-stop leg. |
+| **Walk reluctance** | 3 | Consistent with the rest of the plugin. |
 
-Archives a GTFS-RT TripUpdates feed for offline analysis. Polls the feed at a
-configurable interval and writes raw `.pb` snapshots plus a `recording.json`
-manifest. Intended as input for RT-3.
+A soft warning is shown when the via-points layer has **more than 20** features
+— the route may be slow to compute and visually cluttered; consider splitting
+the tour into smaller runs.
 
-Key parameters:
+### Output layer fields
 
-| Parameter | Notes |
-|---|---|
-| **GTFS-RT feed URL** | HTTP(S) endpoint |
-| **Output directory** | Folder that will receive `*.pb` files and `recording.json` |
-| **Poll interval** | 15–600 seconds (default 60 s) |
-| **Recording duration** | Minutes to record (Cancel also stops safely) |
+One feature per segment (leg):
 
-Cancel-safe: the manifest is written incrementally so a partial archive is always
-valid input for RT-3.
+| Field | Type | Description |
+|---|---|---|
+| `segment_order` | Integer | Position in the route, 1..k. |
+| `from_label` / `to_label` | String | `START`, `P1`, `P2`, …, `END`. |
+| `duration_min` | Double | Leg duration in decimal minutes. |
+| `distance_m` | Double | Leg distance in metres. |
+| `mode` | String | Mode of this leg (matches the selected transport mode; `TRANSIT,WALK` legs are split by mode). |
+| `via_point_id` | LongLong | Feature id of the via-point ending this segment; empty for the last segment into END. |
 
-#### BuildRealizedGtfs (RT-3)
+The Processing log also reports total duration, total distance, the number of
+via-points, and the computed visit order (as a list of feature ids) for
+debugging.
 
-**Processing Toolbox → easy-OTP → Realtime → Build realized GTFS**
+### Limitations
 
-Reconstructs a "realized" static GTFS from a RecordGtfsRt archive. Aggregates
-per-stop-pair segment times (keyed by `route_id`, `direction_id`, `from_stop_id`,
-`to_stop_id`) and produces two output GTFS feeds:
-
-- **P50 feed** — median segment times (representative typical day)
-- **P85 feed** — 85th-percentile segment times (pessimistic scenario)
-
-Both output feeds can be passed directly to `RunTemporalAccessibility` to produce
-a realized accessibility surface.
-
-> **Note — google.protobuf required.** On first use, the plugin prompts to
-> bootstrap `google.protobuf` via `dependencies.py` (same mechanism as openpyxl).
-> The install takes 5–30 seconds and does not require admin rights or a QGIS restart.
-> The library is needed only for RT-3; all other algorithms work without it.
->
-> The output is an **approximation** — only trips with matched stop pairs in both
-> the archive and the static GTFS are reconstructed. Trips with zero RT coverage
-> retain planned times from the static feed.
+- Visit order is optimised for straight-line distance, not the actual
+  pedestrian network — occasionally suboptimal on real streets.
+- `TRANSIT,WALK` mode splits legs by mode but does not otherwise change the
+  ordering heuristic, which stays distance-based.
+- No dwell time (time spent visiting each landmark) is modelled.
+- Built on OTP 1.5's REST `/plan` endpoint, like the rest of the plugin; not
+  portable to OTP 2.x.
 
 ---
 
-### Preparing the population layer (R1a) *(new in v0.2)*
+## Prepare student layer (PrepareStudentLayer) *(new in v0.2)*
 
 **Processing Toolbox → easy-OTP → Analysis → Prepare student layer**
 
 Reads a GUS NSP 2021 Excel file and joins census-tract population data to a polygon
 geometry layer. The output polygon layer is ready to pass directly as the
-`POPULATION_LAYER` input to the Population overlay (R1b) algorithm.
+`POPULATION_LAYER` input to the Population overlay algorithm.
+
+*(screenshot/example coming soon)*
 
 The algorithm handles three observed states of GUS NSP 2021 files:
 
@@ -521,7 +663,7 @@ The algorithm handles three observed states of GUS NSP 2021 files:
 
 All three states produce identical output when joined with the same geometry layer.
 
-#### Parameters
+### Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -533,7 +675,35 @@ All three states produce identical output when joined with the same geometry lay
 | **Output field name** | `pop20_29` | Name of the added Double field in the output layer |
 | **Output layer** | — | Polygon layer with `pop20_29` (Double) added |
 
-#### End-to-end example (R1a → R1b)
+---
+
+## Population overlay (PopulationOverlay) *(new in v0.2)*
+
+**Processing Toolbox → easy-OTP → Analysis → Population overlay**
+
+Overlays a demographic polygon layer on a hexagonal grid using areal interpolation
+weighted by surface area. Each hexagon receives a `num_students` field (Float)
+with the estimated number of persons from the chosen population group.
+
+*(screenshot/example coming soon)*
+
+The algorithm implements step 11 of the Kaczorowski & Wróblewski pipeline and
+corresponds to the `ludnosc_studentow.model3` QGIS model, with one fix: the
+reference model rounds sub-0.5 person fragments to zero (Integer field);
+this implementation uses a Float field and preserves fractional counts.
+
+| Parameter | Description |
+|---|---|
+| **Hex grid** | Polygon layer (output of *Run temporal accessibility* or *Generate hex grid*) |
+| **Population layer** | Polygon layer with a numeric population field |
+| **Population field** | Field containing person counts per polygon (default `pop20_29`) |
+| **Output** | Hex grid with `num_students` field added (Float) |
+
+The hex grid must be in a projected CRS with metric units (e.g. EPSG:2180,
+EPSG:3857). If the population layer uses a different CRS it is reprojected
+automatically before processing.
+
+### End-to-end example (Prepare student layer + Population overlay)
 
 ```
 Input files
@@ -541,7 +711,7 @@ Input files
 └── wroclaw-su-brec-nsp-2021-obw.geojson                ← census tract geometry
 ```
 
-**Step 1 — Run Prepare student layer (R1a):**
+**Step 1 — Run Prepare student layer:**
 
 | Parameter | Value |
 |---|---|
@@ -564,14 +734,14 @@ The output layer will have all original geometry attributes plus a new `pop20_29
 (Float) field. The Processing log reports the number of matched tracts, unmatched
 tracts, and how many `'-'` values were converted to 0.
 
-**Step 2 — Run Population overlay (R1b):**
+**Step 2 — Run Population overlay:**
 
 | Parameter | Value |
 |---|---|
-| Hex grid | *(output of Generate hex grid, or your own polygon grid)* |
-| Population layer | *(R1a output from Step 1)* |
+| Hex grid | *(output of Run temporal accessibility, or your own polygon grid)* |
+| Population layer | *(output from Step 1)* |
 | Population field | `pop20_29` |
-| Output | `[Save to file or temporary layer]* |
+| Output | `[Save to file or temporary layer]` |
 
 The result is your hex grid with a `num_students` field (Float) containing the
 area-interpolated number of students aged 20–29 per hexagon.
@@ -581,29 +751,186 @@ area-interpolated number of students aged 20–29 per hexagon.
 > in key values may be lost. Convert the field to text (`$str(OBWOD)` in the
 > Field Calculator) before running R1a, or use the original GeoJSON directly.
 
-### Population overlay (R1b) *(new in v0.2)*
+---
 
-**Processing Toolbox → easy-OTP → Analysis → Population overlay**
+## Realtime algorithms *(new in v0.4)*
 
-Overlays a demographic polygon layer on a hexagonal grid using areal interpolation
-weighted by surface area. Each hexagon receives a `num_students` field (Float)
-with the estimated number of persons from the chosen population group.
+Three algorithms under **easy-OTP → Realtime** measure or record what actually
+happened on a given day, instead of what the planned timetable predicted.
 
-The algorithm implements step 11 of the Kaczorowski & Wróblewski pipeline and
-corresponds to the `ludnosc_studentow.model3` QGIS model, with one fix: the
-reference model rounds sub-0.5 person fragments to zero (Integer field);
-this implementation uses a Float field and preserves fractional counts.
+**Important:** results from all three algorithms are **non-reproducible** — they
+depend on live network conditions and snapshot data captured at a specific moment.
+Output layers carry `analysis_type = "realtime"` to distinguish them from
+static-analysis results.
 
-| Parameter | Description |
+### RunRealtimeAccessibility (RT-1)
+
+**Processing Toolbox → easy-OTP → Realtime → Run realtime accessibility**
+
+Runs the standard temporal-accessibility pipeline but with a live GTFS-RT
+TripUpdates feed wired into OTP's `stop-time-updater`. OTP applies the real-time
+delays before generating each travel-time surface.
+
+*(screenshot/example coming soon)*
+
+#### Key parameters
+
+| Parameter | Notes |
 |---|---|
-| **Hex grid** | Polygon layer (output of *Run temporal accessibility* or *Generate hex grid*) |
-| **Population layer** | Polygon layer with a numeric population field |
-| **Population field** | Field containing person counts per polygon (default `pop20_29`) |
-| **Output** | Hex grid with `num_students` field added (Float) |
+| **GTFS-RT feed URL** | HTTP(S) endpoint returning a binary `FeedMessage` (.pb) |
+| **Feed ID** | Must match exactly the `feed_id` OTP assigned to the loaded static GTFS (check the build log if unsure) |
+| **All standard RunTemporalAccessibility parameters** | Same as the static analysis |
 
-The hex grid must be in a projected CRS with metric units (e.g. EPSG:2180,
-EPSG:3857). If the population layer uses a different CRS it is reprojected
-automatically before processing.
+After the run, the Processing log reports the tri-state RT effectiveness:
+`RT-EFFECTIVE` (delays applied), `RT-NOT-APPLIED` (OTP received updates but
+matched zero trips — e.g. Poznań/Kraków namespace mismatch, see Known Issues),
+or `RT-INCONCLUSIVE` (no update cycles completed).
+
+### RecordGtfsRt (RT-2)
+
+**Processing Toolbox → easy-OTP → Realtime → Record GTFS-RT feed**
+
+Archives a GTFS-RT TripUpdates feed for offline analysis. Polls the feed at a
+configurable interval and writes raw `.pb` snapshots plus a `recording.json`
+manifest. Intended as input for RT-3.
+
+*(screenshot/example coming soon)*
+
+#### Key parameters
+
+| Parameter | Notes |
+|---|---|
+| **GTFS-RT feed URL** | HTTP(S) endpoint |
+| **Output directory** | Folder that will receive `*.pb` files and `recording.json` |
+| **Poll interval** | 15–600 seconds (default 60 s) |
+| **Recording duration** | Minutes to record (Cancel also stops safely) |
+
+Cancel-safe: the manifest is written incrementally so a partial archive is always
+valid input for RT-3.
+
+### BuildRealizedGtfs (RT-3)
+
+**Processing Toolbox → easy-OTP → Realtime → Build realized GTFS**
+
+Reconstructs a "realized" static GTFS from a RecordGtfsRt archive. Aggregates
+per-stop-pair segment times (keyed by `route_id`, `direction_id`, `from_stop_id`,
+`to_stop_id`) and produces two output GTFS feeds:
+
+*(screenshot/example coming soon)*
+
+- **P50 feed** — median segment times (representative typical day)
+- **P85 feed** — 85th-percentile segment times (pessimistic scenario)
+
+Both output feeds can be passed directly to `RunTemporalAccessibility` to produce
+a realized accessibility surface.
+
+> **Note — google.protobuf required.** On first use, the plugin prompts to
+> bootstrap `google.protobuf` via `dependencies.py` (same mechanism as openpyxl).
+> The install takes 5–30 seconds and does not require admin rights or a QGIS restart.
+> The library is needed only for RT-3; all other algorithms work without it.
+>
+> The output is an **approximation** — only trips with matched stop pairs in both
+> the archive and the static GTFS are reconstructed. Trips with zero RT coverage
+> retain planned times from the static feed.
+
+---
+
+## Other algorithms
+
+A few supporting algorithms that complete the toolset but are used less often
+than the ones above.
+
+### Compare temporal accessibility (CompareTemporalAccessibility) *(new in v0.3.5)*
+
+**Processing Toolbox → easy-OTP → Analysis → Compare temporal accessibility**
+
+Computes the difference between two accessibility scenarios — for example a
+baseline timetable versus a proposed one, or a weekday versus a weekend.
+
+*(screenshot/example coming soon)*
+
+#### How it works
+
+Runs zonal statistics and classification on both scenarios independently, then
+computes a delta raster (Scenario B − Scenario A) and aggregates it onto the
+hex grid. Cells present in only one scenario are written as **NoData** in the
+delta, so a cell that gained or lost coverage entirely is not silently treated
+as zero change.
+
+#### Key parameters
+
+| Parameter | Notes |
+| --- | --- |
+| **Scenario A / Scenario B** | Either two classified hex-grid layers or two count rasters produced by `RunTemporalAccessibility` / `CountFromExistingSurfaces`. Both inputs must be the same type. |
+| **OSM extract** | The shared study-area extent common to both scenarios. |
+
+#### Output layer fields
+
+- A **delta raster** (Scenario B − Scenario A) of the service-time count.
+- A **hex-grid layer** with a `delta_mean` field (mean change per cell) and a
+  `delta_class` field classifying the change.
+
+The output hex layer is styled automatically with the bundled
+`easy_otp/styles/delta_class.qml`.
+
+### Run travel-time matrix (RunTravelTimeMatrix) *(new in v0.6)*
+
+**Processing Toolbox → easy-OTP → Analysis → Run travel-time matrix**
+
+Generates a full N × M origin–destination travel-time matrix — the natural
+generalisation of *Run origin-destination times* to multiple destinations. Use
+it for gravity models and comparative accessibility reports rather than a
+single named destination.
+
+*(screenshot/example coming soon)*
+
+#### How it works
+
+Builds the Cartesian product of origins × destinations and routes each pair
+through the same `/plan` client used by `RunOriginDestinationTimes`, in
+parallel via `ThreadPoolExecutor`. Because the query count is N×M, the
+algorithm warns before running large combinations (e.g. 100×100 = 10,000
+queries) — prefer `RunServiceCoverage` instead when destinations represent
+"opportunities" rather than specific named places.
+
+#### Key parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| **Origins** | — | Point layer, N features. |
+| **Destinations** | — | Point layer, M features. |
+| **Transport mode / Analysis date / Time** | TRANSIT | Same as `RunOriginDestinationTimes`. |
+| **Output format** | Long CSV | `Long CSV` (one row per OD pair), `Wide CSV` (origins × destinations matrix), or both. |
+| **Metrics** | duration | Optional: transfers, walk time, wait time. |
+| **Concurrent workers** | 4 | Same meaning as `RunOriginDestinationTimes`. |
+
+#### Outputs
+
+- A **long-format CSV/XLSX** (one row per OD pair; XLSX when `openpyxl` is available).
+- Optionally a **wide-format matrix** (origins as rows, destinations as columns).
+- Optionally an **OD line layer** for quick visualisation.
+
+### Generate hex grid (GenerateHexGrid)
+
+**Processing Toolbox → easy-OTP → Analysis → Generate hex grid**
+
+Builds the hexagonal grid used across the plugin's Analysis algorithms —
+either standalone or automatically when `RunTemporalAccessibility` /
+`RunServiceCoverage` are run without an existing grid layer supplied.
+
+*(screenshot/example coming soon)*
+
+#### Key parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| **Extent** | — | Area to cover with the grid. |
+| **Cell size** | 500 m | Hexagon size; smaller cells give finer detail at a higher processing cost. |
+
+#### Outputs
+
+A polygon layer of hexagonal cells, ready to use as the `HEX_GRID` input to
+`RunTemporalAccessibility`, `RunServiceCoverage`, or `PopulationOverlay`.
 
 ---
 

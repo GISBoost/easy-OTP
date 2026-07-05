@@ -2,6 +2,7 @@
 *.osm.pbf
 *.zip
 *.gtfs
+*.gpkg
 
 # --- OTP runtime artifacts ---
 *.jar
@@ -44,8 +45,8 @@ __pycache__/
 easy_otp/_vendor/
 
 # --- QGIS artifacts ---
-*.qgz~
-*.qgs~
+*.qgz
+*.qgs
 .qgis2/
 *.qmd
 
