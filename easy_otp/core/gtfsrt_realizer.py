@@ -16,6 +16,7 @@ import statistics
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -409,3 +410,22 @@ def check_trip_overlap(
     if all_seen == 0:
         return 0.0
     return in_static / all_seen
+
+
+def check_snapshot_time_span(snapshot_paths: list[Path]) -> float:
+    """Return the time span (seconds) between the earliest and latest snapshot filename.
+
+    Parses ``snapshot_YYYYmmdd-HHMMSS.pb`` filenames (the format written by
+    ``gtfsrt_recorder.snapshot_filename``). Returns 0.0 if fewer than 2 paths are given or
+    if filenames don't match the expected pattern (best-effort — never raises).
+    """
+    timestamps: list[datetime] = []
+    for path in snapshot_paths:
+        try:
+            timestamps.append(datetime.strptime(path.stem, "snapshot_%Y%m%d-%H%M%S"))
+        except ValueError:
+            continue
+
+    if len(timestamps) < 2:
+        return 0.0
+    return (max(timestamps) - min(timestamps)).total_seconds()

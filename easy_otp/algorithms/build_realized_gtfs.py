@@ -38,6 +38,7 @@ from qgis.core import (
 from ..core.dependencies import ensure_gtfsrt_bindings, install_gtfsrt_bindings
 from ..core.gtfsrt_realizer import (
     aggregate_segments,
+    check_snapshot_time_span,
     check_trip_overlap,
     collect_segment_times,
     load_static_index,
@@ -116,6 +117,9 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "If the archive's trip_ids embed the service date (e.g. Gdańsk), the static "
             "GTFS must be downloaded the same day as the archive. A wrong-day static will "
             "yield near-zero overlap and the output will be uncorrected.\n\n"
+            "This algorithm assumes the archive covers a single service day. If the "
+            "snapshot archive spans more than ~25 hours, a warning is logged (not "
+            "blocking) noting that results may mix unrelated days.\n\n"
             "Dependency:\n"
             "This algorithm requires google.protobuf and gtfs-realtime-bindings. "
             "If missing, the error message includes install instructions. "
@@ -280,6 +284,13 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 "  • The static GTFS is from a different city or agency.\n"
                 "The output will be produced but most segments will be uncorrected "
                 "(gaps falling back to scheduled times)."
+            ))
+
+        span_sec = check_snapshot_time_span(snapshot_paths)
+        if span_sec > 25 * 3600:
+            feedback.pushWarning(self.tr(
+                f"Archive spans more than one service day ({span_sec / 3600:.1f}h) — "
+                "results may mix unrelated days."
             ))
 
         if feedback.isCanceled():

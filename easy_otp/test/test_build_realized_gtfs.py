@@ -16,6 +16,7 @@ import pytest
 from easy_otp.core.gtfsrt_realizer import (
     StaticIndex,
     aggregate_segments,
+    check_snapshot_time_span,
     check_trip_overlap,
     collect_segment_times,
     decode_snapshot,
@@ -451,6 +452,38 @@ def test_check_overlap_unreadable_snapshot(tmp_path):
         overlap = check_trip_overlap([snap], idx)
 
     assert overlap == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# check_snapshot_time_span
+# ---------------------------------------------------------------------------
+
+def test_snapshot_time_span_known_duration():
+    paths = [
+        Path("snapshot_20260621-060000.pb"),
+        Path("snapshot_20260621-080000.pb"),
+        Path("snapshot_20260621-220000.pb"),
+    ]
+    assert check_snapshot_time_span(paths) == pytest.approx(16 * 3600)
+
+
+def test_snapshot_time_span_single_path():
+    paths = [Path("snapshot_20260621-060000.pb")]
+    assert check_snapshot_time_span(paths) == pytest.approx(0.0)
+
+
+def test_snapshot_time_span_empty_list():
+    assert check_snapshot_time_span([]) == pytest.approx(0.0)
+
+
+def test_snapshot_time_span_skips_malformed_filename():
+    paths = [
+        Path("snapshot_20260621-060000.pb"),
+        Path("not_a_snapshot.pb"),
+        Path("snapshot_20260622-070000.pb"),
+    ]
+    expected = 24 * 3600 + 3600  # 25h between the two well-formed timestamps
+    assert check_snapshot_time_span(paths) == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------

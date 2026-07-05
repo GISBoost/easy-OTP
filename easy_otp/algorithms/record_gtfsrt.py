@@ -69,6 +69,10 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
             "static GTFS.\n\n"
             "A full service day (06:00–22:00) at 60 s interval yields ~960 "
             "snapshots (~28 MB for a typical TripUpdates feed).\n\n"
+            "Recording duration is capped at 1500 minutes (25 h) per session — one "
+            "service day plus margin for overnight trips crossing midnight. This keeps "
+            "each archive tied to a single service day so BuildRealizedGtfs (RT-3) isn't "
+            "fed a multi-day archive that would silently mix unrelated days.\n\n"
             "Only TripUpdates feeds are supported.  Cities with VehiclePositions-only "
             "feeds (e.g. Warsaw, Wrocław) cannot use this tool."
         )
@@ -109,6 +113,7 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=60,
                 minValue=1,
+                maxValue=1500,
             )
         )
         self._add_advanced(
