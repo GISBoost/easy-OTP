@@ -104,6 +104,57 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
     )
 
 
+def load_static_indices(paths: list[str]) -> tuple[StaticIndex, int]:
+    """Load and merge one or more static GTFS zips into a single StaticIndex.
+
+    Merges in the given order with first-file-wins trip_id semantics: if a
+    trip_id already committed from an earlier file reappears in a later file,
+    that later file's trip_route/trip_stops/stop_map entries for it are
+    skipped entirely (never mixed key-by-key across files), so every trip's
+    data always comes from exactly one source file. A single-element list
+    produces output identical to calling load_static_index(paths[0]) directly.
+
+    Returns (merged_index, collision_count) — collision_count is the number
+    of distinct trip_ids seen in more than one input file, counted once per
+    trip_id regardless of how many files (2 or more) it reappears in.
+    """
+    trip_route: dict[str, tuple[str, str]] = {}
+    trip_stops: dict[str, list[tuple]] = {}
+    stop_map: dict[tuple[str, int], tuple[str, int, int]] = {}
+    seen_trip_ids: set[str] = set()
+    collided_trip_ids: set[str] = set()
+
+    for path in paths:
+        try:
+            idx = load_static_index(path)
+        except Exception as exc:
+            raise RuntimeError(f"{path}: {exc}") from exc
+
+        new_trip_ids = idx.all_trip_ids - seen_trip_ids
+        collided_trip_ids |= idx.all_trip_ids & seen_trip_ids
+
+        for trip_id in new_trip_ids:
+            trip_route[trip_id] = idx.trip_route[trip_id]
+            if trip_id in idx.trip_stops:
+                trip_stops[trip_id] = idx.trip_stops[trip_id]
+
+        for (trip_id, seq), value in idx.stop_map.items():
+            if trip_id in new_trip_ids:
+                stop_map[(trip_id, seq)] = value
+
+        seen_trip_ids |= new_trip_ids
+
+    return (
+        StaticIndex(
+            trip_route=trip_route,
+            trip_stops=trip_stops,
+            stop_map=stop_map,
+            all_trip_ids=set(seen_trip_ids),
+        ),
+        len(collided_trip_ids),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Snapshot decoder (lazy protobuf import — only called if bootstrap succeeded)
 # ---------------------------------------------------------------------------

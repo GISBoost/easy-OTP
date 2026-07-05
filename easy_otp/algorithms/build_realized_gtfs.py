@@ -41,7 +41,7 @@ from ..core.gtfsrt_realizer import (
     check_snapshot_time_span,
     check_trip_overlap,
     collect_segment_times,
-    load_static_index,
+    load_static_indices,
     rebuild_stop_times,
     repackage_gtfs,
 )
@@ -81,6 +81,7 @@ def _ask_on_main_thread(title: str, text: str) -> int:
 class BuildRealizedGtfs(QgsProcessingAlgorithm):
     SNAPSHOT_DIR = "SNAPSHOT_DIR"
     STATIC_GTFS = "STATIC_GTFS"
+    STATIC_GTFS_EXTRA = "STATIC_GTFS_EXTRA"
     OUTPUT_PREFIX = "OUTPUT_PREFIX"
     WRITE_P85 = "WRITE_P85"
     OUTPUT_P50 = "OUTPUT_P50"
@@ -116,7 +117,18 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "IMPORTANT — same-day static required:\n"
             "If the archive's trip_ids embed the service date (e.g. Gdańsk), the static "
             "GTFS must be downloaded the same day as the archive. A wrong-day static will "
-            "yield near-zero overlap and the output will be uncorrected.\n\n"
+            "yield near-zero overlap and the output will be uncorrected. This requirement "
+            "also applies to every file in STATIC_GTFS_EXTRA — all extra files must be "
+            "the same service date as STATIC_GTFS and the RT archive.\n\n"
+            "Multi-file static feeds (STATIC_GTFS_EXTRA):\n"
+            "Some cities publish per-mode static feeds against one combined realtime feed "
+            "— e.g. Kraków (ZTP) publishes GTFS_KRK_T.zip (tram) and GTFS_KRK_A.zip (bus) "
+            "separately, but one combined TripUpdates.pb for both modes. Set STATIC_GTFS "
+            "to one of the two (e.g. the tram feed) and STATIC_GTFS_EXTRA to a folder "
+            "containing the other (e.g. the bus feed) so both modes' trip_ids are "
+            "recognized when computing trip-id overlap and segment statistics. If a "
+            "trip_id happens to appear in more than one file, the first file's "
+            "(STATIC_GTFS's) version is kept and a warning is reported.\n\n"
             "This algorithm assumes the archive covers a single service day. If the "
             "snapshot archive spans more than ~25 hours, a warning is logged (not "
             "blocking) noting that results may mix unrelated days.\n\n"
@@ -152,6 +164,18 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 self.STATIC_GTFS,
                 self.tr("Static GTFS feed (.zip, must match archive service date)"),
                 extension="zip",
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterFile(
+                self.STATIC_GTFS_EXTRA,
+                self.tr(
+                    "Additional static GTFS files (optional, folder of .zip files "
+                    "matching the same service date — e.g. Kraków: put the bus feed "
+                    "here if STATIC_GTFS above is the tram feed, or vice versa)"
+                ),
+                behavior=QgsProcessingParameterFile.Folder,
+                optional=True,
             )
         )
         self.addParameter(
@@ -221,6 +245,9 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             self.parameterAsFile(parameters, self.SNAPSHOT_DIR, context)
         )
         static_gtfs = self.parameterAsFile(parameters, self.STATIC_GTFS, context)
+        static_gtfs_extra = self.parameterAsFile(
+            parameters, self.STATIC_GTFS_EXTRA, context
+        )
         output_prefix = self.parameterAsString(
             parameters, self.OUTPUT_PREFIX, context
         ).strip()
@@ -248,14 +275,34 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         ))
         feedback.setProgress(2)
 
-        # --- Step 4: load static index ---
-        feedback.pushInfo(self.tr(f"Loading static GTFS: {static_gtfs}"))
+        # --- Step 4: load static index (primary + optional extra files) ---
+        static_paths = [static_gtfs]
+        if static_gtfs_extra:
+            extra_zips = sorted(Path(static_gtfs_extra).glob("*.zip"))
+            static_paths.extend(str(p) for p in extra_zips)
+
+        if len(static_paths) > 1:
+            feedback.pushInfo(self.tr(
+                f"Loading static GTFS: {static_gtfs} + {len(static_paths) - 1} extra "
+                f"file(s) from {static_gtfs_extra}"
+            ))
+        else:
+            feedback.pushInfo(self.tr(f"Loading static GTFS: {static_gtfs}"))
+
         try:
-            static_index = load_static_index(static_gtfs)
+            static_index, collision_count = load_static_indices(static_paths)
         except Exception as exc:
             raise QgsProcessingException(
                 self.tr(f"Failed to read static GTFS: {exc}")
             ) from exc
+
+        if collision_count:
+            feedback.pushWarning(self.tr(
+                f"{collision_count} trip_id(s) appeared in more than one static "
+                "file; for each, the version from whichever file listed earliest "
+                f"({static_gtfs}, then STATIC_GTFS_EXTRA files in alphabetical "
+                "order) was kept."
+            ))
 
         feedback.pushInfo(self.tr(
             f"Static index loaded: {len(static_index.all_trip_ids):,} trips, "

@@ -22,6 +22,7 @@ from easy_otp.core.gtfsrt_realizer import (
     decode_snapshot,
     format_gtfs_time,
     load_static_index,
+    load_static_indices,
     parse_gtfs_time,
     rebuild_stop_times,
     repackage_gtfs,
@@ -37,8 +38,9 @@ def _make_gtfs_zip(
     trip_rows: list[dict],
     stop_times_rows: list[dict],
     extra_files: dict[str, str] | None = None,
+    name: str = "static.zip",
 ) -> str:
-    zip_path = tmp_path / "static.zip"
+    zip_path = tmp_path / name
     trip_fields = ["trip_id", "route_id", "direction_id"]
     st_fields = ["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"]
 
@@ -172,6 +174,164 @@ def test_load_static_index(tmp_path):
     assert stop_id == "B"
     assert arr == parse_gtfs_time("08:10:00")
     assert dep == parse_gtfs_time("08:11:00")
+
+
+# ---------------------------------------------------------------------------
+# load_static_indices (RT3-2 — multi-file static merge)
+# ---------------------------------------------------------------------------
+
+def test_load_static_indices_single_path_matches_load_static_index(tmp_path):
+    zip_path = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+    )
+    direct = load_static_index(zip_path)
+    merged, collision_count = load_static_indices([zip_path])
+    assert collision_count == 0
+    assert merged == direct
+
+
+def test_load_static_indices_disjoint_trip_ids(tmp_path):
+    zip_a = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "tram1", "route_id": "T1", "direction_id": "0"}],
+        stop_times_rows=[
+            {"trip_id": "tram1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+        name="tram.zip",
+    )
+    zip_b = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "bus1", "route_id": "B1", "direction_id": "0"}],
+        stop_times_rows=[
+            {"trip_id": "bus1", "arrival_time": "09:00:00", "departure_time": "09:00:00",
+             "stop_id": "C", "stop_sequence": "1"},
+        ],
+        name="bus.zip",
+    )
+    merged, collision_count = load_static_indices([zip_a, zip_b])
+    assert collision_count == 0
+    assert merged.all_trip_ids == {"tram1", "bus1"}
+    assert "tram1" in merged.trip_route and "bus1" in merged.trip_route
+    assert ("tram1", 1) in merged.stop_map and ("bus1", 1) in merged.stop_map
+
+
+def test_load_static_indices_collision_first_file_wins(tmp_path):
+    zip_a = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+        name="first.zip",
+    )
+    zip_b = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R2", "direction_id": "1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "10:00:00", "departure_time": "10:00:00",
+             "stop_id": "Z", "stop_sequence": "1"},
+        ],
+        name="second.zip",
+    )
+    merged, collision_count = load_static_indices([zip_a, zip_b])
+    assert collision_count == 1
+    # first file's data wins — route R1, stop A, not R2/Z from the second file
+    assert merged.trip_route["t1"] == ("R1", "0")
+    assert merged.stop_map[("t1", 1)][0] == "A"
+
+
+def test_load_static_indices_multiple_collisions_counted_once_each(tmp_path):
+    zip_a = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[
+            {"trip_id": "t1", "route_id": "R1", "direction_id": "0"},
+            {"trip_id": "t2", "route_id": "R1", "direction_id": "0"},
+        ],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+            {"trip_id": "t2", "arrival_time": "08:05:00", "departure_time": "08:05:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+        name="first.zip",
+    )
+    zip_b = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[
+            {"trip_id": "t1", "route_id": "R9", "direction_id": "1"},
+            {"trip_id": "t2", "route_id": "R9", "direction_id": "1"},
+            {"trip_id": "t3", "route_id": "R9", "direction_id": "1"},
+        ],
+        stop_times_rows=[
+            {"trip_id": "t3", "arrival_time": "09:00:00", "departure_time": "09:00:00",
+             "stop_id": "Z", "stop_sequence": "1"},
+        ],
+        name="second.zip",
+    )
+    merged, collision_count = load_static_indices([zip_a, zip_b])
+    assert collision_count == 2  # t1, t2 collide; t3 is new
+    assert merged.all_trip_ids == {"t1", "t2", "t3"}
+
+
+def test_load_static_indices_same_trip_id_across_three_files_counts_once(tmp_path):
+    # trip_id "t1" reappears in all three files — must be counted as ONE
+    # collision, not once per extra reappearance.
+    zip_a = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+        name="first.zip",
+    )
+    zip_b = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R2", "direction_id": "1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "09:00:00", "departure_time": "09:00:00",
+             "stop_id": "B", "stop_sequence": "1"},
+        ],
+        name="second.zip",
+    )
+    zip_c = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R3", "direction_id": "1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "10:00:00", "departure_time": "10:00:00",
+             "stop_id": "C", "stop_sequence": "1"},
+        ],
+        name="third.zip",
+    )
+    merged, collision_count = load_static_indices([zip_a, zip_b, zip_c])
+    assert collision_count == 1
+    assert merged.trip_route["t1"] == ("R1", "0")
+
+
+def test_load_static_indices_bad_file_error_names_path(tmp_path):
+    good_zip = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+        name="good.zip",
+    )
+    bad_zip = tmp_path / "bad.zip"
+    with zipfile.ZipFile(bad_zip, "w"):
+        pass  # empty zip — missing trips.txt
+
+    with pytest.raises(Exception) as excinfo:
+        load_static_indices([good_zip, str(bad_zip)])
+    assert str(bad_zip) in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
