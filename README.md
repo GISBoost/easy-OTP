@@ -415,9 +415,9 @@ Shows how a single point's isochrone shape changes across the day — e.g. the
 run. A middle ground between a single static isochrone and the full temporal
 method.
 
-[Example animation (mp4)](assets/isochornes-over-time-Transport-Anim.mp4) — a
-day-long animation of service reach for one point. *(will be replaced with an
-inline embed once re-uploaded through the GitHub web editor)*
+https://github.com/user-attachments/assets/6890ba5f-151f-406b-95a1-74fcccf771c4
+
+*Day-long animation of service reach for one point.*
 
 ### How it works
 
