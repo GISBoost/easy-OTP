@@ -1,18 +1,20 @@
-"""Command-line interface for family_a_reconstruction (FA-1, FA-2, FA-3).
+"""Command-line interface for family_a_reconstruction (FA-1, FA-2, FA-3, FA-4).
 
-Standalone CLI — never imported by, and never imports, easy_otp/. Run:
+Standalone CLI — never imported by, and never imports, easy_otp/. Run (all options on one
+line - the "\" bash-style continuation shown in older revisions of this docstring breaks on
+cmd.exe/PowerShell; see each subcommand's own --help for a copy-pasteable example):
 
-    py -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> \\
-        [--duration-min N] [--interval-sec N]
-    py -m family_a.cli match --positions-dir <dir> --static <gtfs.zip> --out <table> \\
-        [--max-perpendicular-dist-m N]
-    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> \\
-        [--min-observations-per-segment N]
+    py -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> [--duration-min N] [--interval-sec N]
+    py -m family_a.cli match --positions-dir <dir> --static <gtfs.zip> --out <table> [--max-perpendicular-dist-m N]
+    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N]
 """
+
+from __future__ import annotations
 
 import argparse
 import sys
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -114,11 +116,64 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
+def _validate_static_gtfs(path: str, required_files: tuple[str, ...]) -> str | None:
+    """Return an error message if *path* is not a usable static GTFS zip, else None.
+
+    Checked once here (rather than in matcher.py/build_gtfs.py, which each open
+    the zip again on their own) so 'match'/'build' fail with a clear message
+    instead of a raw zipfile/OSError traceback. *required_files* differs per
+    caller - see _validate_static_gtfs_for_match for 'match's dynamic case;
+    'build' always needs trips.txt/stop_times.txt/stops.txt regardless of
+    shapes.txt, since it calls load_static_index/load_stop_locations directly.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = set(zf.namelist())
+    except OSError:
+        return f"Static GTFS not found or unreadable: {path}"
+    except zipfile.BadZipFile:
+        return f"Static GTFS is not a valid zip file: {path}"
+
+    missing = [name for name in required_files if name not in names]
+    if missing:
+        return f"Static GTFS {path} is missing required file(s): {', '.join(missing)}"
+    return None
+
+
+def _validate_static_gtfs_for_match(path: str) -> str | None:
+    """Like _validate_static_gtfs, but for 'match's dynamic requirement.
+
+    'match' only ever touches trips.txt directly - but when shapes.txt is
+    absent, resolve_trip_shapes falls back to
+    matcher.load_fallback_shapes_from_stops, which opens stops.txt and
+    stop_times.txt unconditionally. Without checking for those upfront too, a
+    static GTFS missing shapes.txt *and* one of those fallback files would
+    raise a raw zipfile KeyError deep in the fallback path instead of failing
+    here with a clear message - exactly the failure mode this milestone exists
+    to eliminate. Requires a second zipfile open (namelist() only reads the
+    central directory, so this is cheap) to decide which set of required
+    files applies before delegating to _validate_static_gtfs.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            has_shapes = "shapes.txt" in zf.namelist()
+    except (OSError, zipfile.BadZipFile):
+        has_shapes = True  # let _validate_static_gtfs below report the real error
+
+    required = ("trips.txt",) if has_shapes else ("trips.txt", "stops.txt", "stop_times.txt")
+    return _validate_static_gtfs(path, required_files=required)
+
+
 def _cmd_match(args: argparse.Namespace) -> int:
     positions_dir = Path(args.positions_dir)
     snapshot_paths = sorted(positions_dir.glob("snapshot_*.pb"))
     if not snapshot_paths:
         print(f"No snapshot_*.pb files found in {positions_dir}", file=sys.stderr)
+        return 1
+
+    static_error = _validate_static_gtfs_for_match(args.static)
+    if static_error:
+        print(static_error, file=sys.stderr)
         return 1
 
     trip_shapes, shapes, fallback_used = resolve_trip_shapes(args.static)
@@ -166,13 +221,36 @@ def _cmd_build(args: argparse.Namespace) -> int:
             matched = pd.read_parquet(matched_path)
         else:
             matched = pd.read_csv(matched_path)
-            matched["timestamp"] = pd.to_datetime(matched["timestamp"], utc=True)
     except ImportError as exc:
         print(
             f"Could not read Parquet input ({exc}). Install pyarrow "
             "(pip install pyarrow) or use a .csv input path instead.",
             file=sys.stderr,
         )
+        return 1
+    except FileNotFoundError:
+        print(f"--matched file not found: {matched_path}", file=sys.stderr)
+        return 1
+
+    missing_cols = [
+        col for col in ("trip_id", "timestamp", "distance_along_shape_m") if col not in matched.columns
+    ]
+    if missing_cols:
+        print(
+            f"--matched file {matched_path} is missing required column(s): "
+            f"{', '.join(missing_cols)} — expected the 'match' subcommand's output table.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if matched_path.suffix.lower() != ".parquet":
+        matched["timestamp"] = pd.to_datetime(matched["timestamp"], utc=True)
+
+    static_error = _validate_static_gtfs(
+        args.static, required_files=("trips.txt", "stop_times.txt", "stops.txt")
+    )
+    if static_error:
+        print(static_error, file=sys.stderr)
         return 1
 
     trip_shapes, shapes, fallback_used = resolve_trip_shapes(args.static)
@@ -230,7 +308,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_record = sub.add_parser(
-        "record", help="Poll a VehiclePositions feed and archive raw snapshots + manifest"
+        "record",
+        help="Poll a VehiclePositions feed and archive raw snapshots + manifest",
+        epilog=(
+            "Example:\n"
+            "  py -m family_a.cli record --url https://mkuran.pl/gtfs/warsaw/vehicles.pb "
+            "--out-dir recordings/ --duration-min 90 --interval-sec 30"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_record.add_argument("--url", required=True, help="VehiclePositions .pb feed URL")
     p_record.add_argument("--out-dir", required=True, help="Directory to write snapshots into")
@@ -239,7 +324,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_record.set_defaults(func=_cmd_record)
 
     p_match = sub.add_parser(
-        "match", help="Map-match VehiclePosition snapshots onto GTFS shapes"
+        "match",
+        help="Map-match VehiclePosition snapshots onto GTFS shapes",
+        epilog=(
+            "Example:\n"
+            "  py -m family_a.cli match --positions-dir recordings/ --static gtfs.zip "
+            "--out matched.csv"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_match.add_argument(
         "--positions-dir", required=True, help="FA-1 archive dir containing snapshot_*.pb"
@@ -259,7 +351,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_match.set_defaults(func=_cmd_match)
 
     p_build = sub.add_parser(
-        "build", help="Reconstruct a realized GTFS (P50/P85) from matched positions"
+        "build",
+        help="Reconstruct a realized GTFS (P50/P85) from matched positions",
+        epilog=(
+            "Example:\n"
+            "  py -m family_a.cli build --matched matched.csv --static gtfs.zip "
+            "--out-prefix realized"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_build.add_argument(
         "--matched", required=True, help="FA-2 matched positions table (.csv or .parquet)"

@@ -6,6 +6,7 @@ Run: pytest tests/test_recorder.py -v
 
 import json
 import re
+import ssl
 import urllib.error
 from datetime import datetime
 from io import BytesIO
@@ -85,6 +86,19 @@ def test_fetch_snapshot_generic_error():
     with mock.patch("urllib.request.urlopen", side_effect=OSError("socket error")):
         with pytest.raises(SnapshotFetchError, match="Request failed"):
             fetch_snapshot(_SAMPLE_URL)
+
+
+def test_fetch_snapshot_uses_certifi_ssl_context():
+    """Verify HTTPS requests use certifi's CA bundle, not just the OS default -
+    the OS root store can be missing a root a given city host chains to (see
+    recorder.py's _SSL_CONTEXT docstring), even though the root is legitimate.
+    """
+    resp = _FakeResponse(_SAMPLE_BYTES, 200)
+    with mock.patch("urllib.request.urlopen", return_value=resp) as mock_urlopen:
+        fetch_snapshot("https://example.com/vehicle-positions.pb")
+
+    _, kwargs = mock_urlopen.call_args
+    assert isinstance(kwargs.get("context"), ssl.SSLContext)
 
 
 # ---------------------------------------------------------------------------

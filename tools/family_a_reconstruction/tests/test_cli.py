@@ -215,6 +215,68 @@ def test_cmd_match_no_snapshots_found_returns_1(tmp_path, capsys):
     assert "No snapshot_*.pb files found" in captured.err
 
 
+def test_cmd_match_static_not_found_returns_1(tmp_path, capsys):
+    _write_snapshot(tmp_path)
+    args = _make_match_args(tmp_path, static=str(tmp_path / "missing.zip"), out=str(tmp_path / "out.csv"))
+
+    result = _cmd_match(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "Static GTFS not found" in captured.err
+
+
+def test_cmd_match_static_not_a_zip_returns_1(tmp_path, capsys):
+    _write_snapshot(tmp_path)
+    not_a_zip = tmp_path / "not_a_zip.zip"
+    not_a_zip.write_text("this is not a zip file", encoding="utf-8")
+    args = _make_match_args(tmp_path, static=str(not_a_zip), out=str(tmp_path / "out.csv"))
+
+    result = _cmd_match(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "not a valid zip file" in captured.err
+
+
+def test_cmd_match_static_missing_required_files_returns_1(tmp_path, capsys):
+    _write_snapshot(tmp_path)
+    incomplete_gtfs = tmp_path / "incomplete.zip"
+    with zipfile.ZipFile(incomplete_gtfs, "w") as zf:
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\nshape1,0.0,0.0,0\n",
+        )
+    args = _make_match_args(tmp_path, static=str(incomplete_gtfs), out=str(tmp_path / "out.csv"))
+
+    result = _cmd_match(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "missing required file(s)" in captured.err
+    assert "trips.txt" in captured.err
+
+
+def test_cmd_match_no_shapes_and_no_fallback_files_returns_1(tmp_path, capsys):
+    """shapes.txt absent triggers the stops-fallback (matcher.py), which needs
+    stops.txt/stop_times.txt - if those are ALSO absent, this must fail here
+    with a clear message, not a raw zipfile KeyError from inside the fallback.
+    """
+    _write_snapshot(tmp_path)
+    no_fallback_gtfs = tmp_path / "no_fallback.zip"
+    with zipfile.ZipFile(no_fallback_gtfs, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,shape_id\ntrip1,routeA,\n")
+    args = _make_match_args(tmp_path, static=str(no_fallback_gtfs), out=str(tmp_path / "out.csv"))
+
+    result = _cmd_match(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "missing required file(s)" in captured.err
+    assert "stops.txt" in captured.err
+    assert "stop_times.txt" in captured.err
+
+
 def _make_gtfs_zip_no_shapes(tmp_path):
     """A GTFS zip with no shapes.txt AND no shape_id in trips.txt — the
     realistic combination that motivates the stops-fallback (see FA-2's
@@ -369,3 +431,117 @@ def test_cmd_build_reports_gap_when_no_observations(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "Segments corrected: 0" in captured.out
     assert "Segments as gap across the full static schedule (kept scheduled time): 1" in captured.out
+
+
+def test_cmd_build_matched_file_not_found_returns_1(tmp_path, capsys):
+    gtfs = _make_build_static_zip(tmp_path)
+    out_prefix = str(tmp_path / "out")
+    args = _make_build_args(
+        tmp_path, matched=str(tmp_path / "missing.csv"), static=str(gtfs), out_prefix=out_prefix
+    )
+
+    result = _cmd_build(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "--matched file not found" in captured.err
+
+
+def test_cmd_build_matched_missing_columns_returns_1(tmp_path, capsys):
+    gtfs = _make_build_static_zip(tmp_path)
+
+    matched_path = tmp_path / "matched.csv"
+    matched_path.write_text("foo,bar\n1,2\n", encoding="utf-8")
+
+    out_prefix = str(tmp_path / "out")
+    args = _make_build_args(tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=out_prefix)
+
+    result = _cmd_build(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "missing required column(s)" in captured.err
+    assert "trip_id" in captured.err
+    assert "timestamp" in captured.err
+    assert "distance_along_shape_m" in captured.err
+
+
+def test_cmd_build_static_missing_required_files_returns_1(tmp_path, capsys):
+    incomplete_gtfs = tmp_path / "incomplete.zip"
+    with zipfile.ZipFile(incomplete_gtfs, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,direction_id,shape_id\nt1,R1,0,shape1\n")
+        zf.writestr("stops.txt", "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.01,0.0\n")
+
+    matched_path = tmp_path / "matched.csv"
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m,perpendicular_dist_m\n"
+        "t1,2026-01-01T00:00:00Z,0.0,0.0\n",
+        encoding="utf-8",
+    )
+
+    out_prefix = str(tmp_path / "out")
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(incomplete_gtfs), out_prefix=out_prefix
+    )
+
+    result = _cmd_build(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "missing required file(s)" in captured.err
+    assert "stop_times.txt" in captured.err
+
+
+def _make_valid_matched_csv(tmp_path):
+    matched_path = tmp_path / "matched.csv"
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m,perpendicular_dist_m\n"
+        "t1,2026-01-01T00:00:00Z,0.0,0.0\n",
+        encoding="utf-8",
+    )
+    return matched_path
+
+
+def test_cmd_build_static_not_found_returns_1(tmp_path, capsys):
+    matched_path = _make_valid_matched_csv(tmp_path)
+    out_prefix = str(tmp_path / "out")
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(tmp_path / "missing.zip"), out_prefix=out_prefix
+    )
+
+    result = _cmd_build(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "Static GTFS not found" in captured.err
+
+
+def test_cmd_build_static_not_a_zip_returns_1(tmp_path, capsys):
+    matched_path = _make_valid_matched_csv(tmp_path)
+    not_a_zip = tmp_path / "not_a_zip.zip"
+    not_a_zip.write_text("this is not a zip file", encoding="utf-8")
+    out_prefix = str(tmp_path / "out")
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(not_a_zip), out_prefix=out_prefix
+    )
+
+    result = _cmd_build(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "not a valid zip file" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# --help epilogs (FA-4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["record", "match", "build"])
+def test_help_epilogs_contain_example_command(command, capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([command, "--help"])
+
+    captured = capsys.readouterr()
+    assert "py -m family_a.cli" in captured.out

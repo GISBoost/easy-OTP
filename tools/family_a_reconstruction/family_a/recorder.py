@@ -21,10 +21,13 @@ No QGIS / GDAL imports. Run tests: pytest tests/test_recorder.py -v
 """
 
 import json
+import ssl
 import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+
+import certifi
 
 
 class SnapshotFetchError(Exception):
@@ -32,6 +35,19 @@ class SnapshotFetchError(Exception):
 
 
 _USER_AGENT = "easy-otp-family_a/0.1 (standalone GTFS-RT VehiclePositions recorder)"
+
+# Some city open-data hosts (e.g. Lodz's otwarte.miasto.lodz.pl, which chains
+# up to "Certum Trusted Root CA") serve a chain that a plain
+# ssl.create_default_context() rejects with CERTIFICATE_VERIFY_FAILED /
+# self-signed certificate in certificate chain on Windows: Python's default
+# context falls back to the OS root store, and Windows only fetches a root
+# into that store lazily (via "Automatic Root Certificates Update") the first
+# time a trusted app like a browser needs it - a root can be legitimately
+# trusted yet still be absent from a given machine's cache. certifi ships
+# Mozilla's actively-maintained root bundle directly, sidestepping that gap
+# without weakening verification (verification stays on; this only changes
+# which trusted root list is consulted).
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 def fetch_snapshot(url: str, timeout: int = 15) -> bytes:
@@ -47,7 +63,7 @@ def fetch_snapshot(url: str, timeout: int = 15) -> bytes:
     """
     try:
         request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-        with urllib.request.urlopen(request, timeout=timeout) as resp:  # nosec B310
+        with urllib.request.urlopen(request, timeout=timeout, context=_SSL_CONTEXT) as resp:  # nosec B310
             status = getattr(resp, "status", None) or resp.getcode()
             if status != 200:
                 raise SnapshotFetchError(f"HTTP {status}")

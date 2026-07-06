@@ -833,6 +833,15 @@ a realized accessibility surface.
 > the archive and the static GTFS are reconstructed. Trips with zero RT coverage
 > retain planned times from the static feed.
 
+### Reconstructing GTFS from vehicle positions only (no TripUpdates feed)
+
+Cities that publish only GTFS-RT **VehiclePositions** with no TripUpdates feed (Warszawa,
+Wrocław, Łódź — see Known Issues #13) can't use RT-2/RT-3 above. For these, a separate
+standalone command-line tool, [`tools/family_a_reconstruction/`](tools/family_a_reconstruction/README.md),
+reconstructs a realized GTFS from recorded vehicle positions via map-matching and
+interpolation. **It is not a Processing algorithm** — it does not appear in the QGIS Toolbox
+and requires its own Python environment. See its README for setup and a full worked example.
+
 ---
 
 ## Other algorithms
