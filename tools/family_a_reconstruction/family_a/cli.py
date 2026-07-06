@@ -1,4 +1,4 @@
-"""Command-line interface for family_a_reconstruction (FA-1, FA-2).
+"""Command-line interface for family_a_reconstruction (FA-1, FA-2, FA-3).
 
 Standalone CLI — never imported by, and never imports, easy_otp/. Run:
 
@@ -6,7 +6,8 @@ Standalone CLI — never imported by, and never imports, easy_otp/. Run:
         [--duration-min N] [--interval-sec N]
     py -m family_a.cli match --positions-dir <dir> --static <gtfs.zip> --out <table> \\
         [--max-perpendicular-dist-m N]
-    py -m family_a.cli build   (not implemented yet — see FA-3)
+    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> \\
+        [--min-observations-per-segment N]
 """
 
 import argparse
@@ -15,11 +16,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
+
+from family_a.build_gtfs import load_static_index, rebuild_stop_times, repackage_gtfs
 from family_a.matcher import (
-    load_fallback_shapes_from_stops,
-    load_shapes,
-    load_trip_shape_index,
+    load_stop_locations,
     match_snapshots,
+    resolve_trip_shapes,
 )
 from family_a.recorder import (
     SnapshotFetchError,
@@ -27,6 +30,11 @@ from family_a.recorder import (
     snapshot_filename,
     write_manifest,
     write_snapshot,
+)
+from family_a.segment_stats import (
+    aggregate_segments,
+    collect_segment_observations,
+    filter_min_observations,
 )
 
 
@@ -113,25 +121,13 @@ def _cmd_match(args: argparse.Namespace) -> int:
         print(f"No snapshot_*.pb files found in {positions_dir}", file=sys.stderr)
         return 1
 
-    trip_shapes = load_trip_shape_index(args.static)
-    shapes = load_shapes(args.static)
-
-    fallback_used = False
-    if not shapes:
-        fallback_used = True
+    trip_shapes, shapes, fallback_used = resolve_trip_shapes(args.static)
+    if fallback_used:
         print(
             "Warning: shapes.txt not found in static GTFS - falling back to "
             "straight-line stop-to-stop shapes (reduced accuracy).",
             file=sys.stderr,
         )
-        fallback_shapes = load_fallback_shapes_from_stops(args.static)
-        # match_snapshots expects shape_id-keyed `shapes` + trip_id->shape_id
-        # `trip_shapes`; the fallback is naturally trip_id-keyed, so remap it
-        # onto a pseudo-shape_id (the trip_id itself) to keep the lookup in
-        # match_snapshots uniform regardless of which loader produced it.
-        for trip_id, polyline in fallback_shapes.items():
-            shapes[trip_id] = polyline
-            trip_shapes[trip_id] = trip_id
 
     df = match_snapshots(
         snapshot_paths, trip_shapes, shapes, max_perpendicular_dist_m=args.max_perpendicular_dist_m
@@ -164,8 +160,66 @@ def _cmd_match(args: argparse.Namespace) -> int:
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
-    print("'build' is not implemented yet - see FA-3.", file=sys.stderr)
-    return 1
+    matched_path = Path(args.matched)
+    try:
+        if matched_path.suffix.lower() == ".parquet":
+            matched = pd.read_parquet(matched_path)
+        else:
+            matched = pd.read_csv(matched_path)
+            matched["timestamp"] = pd.to_datetime(matched["timestamp"], utc=True)
+    except ImportError as exc:
+        print(
+            f"Could not read Parquet input ({exc}). Install pyarrow "
+            "(pip install pyarrow) or use a .csv input path instead.",
+            file=sys.stderr,
+        )
+        return 1
+
+    trip_shapes, shapes, fallback_used = resolve_trip_shapes(args.static)
+    if fallback_used:
+        print(
+            "Warning: shapes.txt not found in static GTFS - falling back to "
+            "straight-line stop-to-stop shapes (reduced accuracy).",
+            file=sys.stderr,
+        )
+
+    static_index = load_static_index(args.static)
+    stop_locations = load_stop_locations(args.static)
+
+    segment_times, collect_counts = collect_segment_observations(
+        matched, static_index, trip_shapes, shapes, stop_locations
+    )
+    segment_times, dropped_count = filter_min_observations(
+        segment_times, args.min_observations_per_segment
+    )
+    p50_stats, p85_stats = aggregate_segments(segment_times)
+
+    corrections_p50, corrected_count, gap_count = rebuild_stop_times(static_index, p50_stats)
+    corrections_p85, _corrected_p85, _gap_p85 = rebuild_stop_times(static_index, p85_stats)
+
+    out_p50 = f"{args.out_prefix}_p50.zip"
+    out_p85 = f"{args.out_prefix}_p85.zip"
+    repackage_gtfs(args.static, out_p50, corrections_p50)
+    repackage_gtfs(args.static, out_p85, corrections_p85)
+
+    print(f"Trips processed: {collect_counts['trips_processed']}")
+    print(f"  - skipped (no resolvable shape or fewer than 2 stops): {collect_counts['trips_skipped_unresolvable']}")
+    print(f"Segment observations collected: {collect_counts['segments_observed']}")
+    print(f"  - interpolation gaps (vehicle not observed at that point of the route): {collect_counts['interpolation_gaps']}")
+    print(f"  - missing stop location (stop_id absent from stops.txt): {collect_counts['missing_stop_location']}")
+    print(f"  - rejected (implausible segment time): {collect_counts['rejected_seg_time']}")
+    print(f"Segments dropped (fewer than {args.min_observations_per_segment} observations): {dropped_count}")
+    print(f"Segments corrected: {corrected_count}")
+    # gap_count spans every trip in the static feed (all routes, all service
+    # days) since rebuild_stop_times always rebuilds the whole schedule - it
+    # is dominated by trips the recording never touched at all, so it is not
+    # a useful measure of "how well did this recording go" on its own; use
+    # segments_observed/interpolation_gaps above for that.
+    print(f"Segments as gap across the full static schedule (kept scheduled time): {gap_count}")
+    print(f"Fallback shapes used (shapes.txt missing): {'yes' if fallback_used else 'no'}")
+    print(f"P50 output written to: {out_p50}")
+    print(f"P85 output written to: {out_p85}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -204,7 +258,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_match.set_defaults(func=_cmd_match)
 
-    p_build = sub.add_parser("build", help="Not implemented yet - see FA-3")
+    p_build = sub.add_parser(
+        "build", help="Reconstruct a realized GTFS (P50/P85) from matched positions"
+    )
+    p_build.add_argument(
+        "--matched", required=True, help="FA-2 matched positions table (.csv or .parquet)"
+    )
+    p_build.add_argument(
+        "--static", required=True, help="Static GTFS zip path (same one used in 'match')"
+    )
+    p_build.add_argument(
+        "--out-prefix",
+        required=True,
+        help="Writes <out-prefix>_p50.zip and <out-prefix>_p85.zip",
+    )
+    p_build.add_argument(
+        "--min-observations-per-segment",
+        type=_positive_int,
+        default=2,
+        help="Minimum observed travel times required to trust a segment (default: 2)",
+    )
     p_build.set_defaults(func=_cmd_build)
 
     return parser

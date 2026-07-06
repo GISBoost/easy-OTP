@@ -175,6 +175,54 @@ def load_fallback_shapes_from_stops(
     return fallback_shapes
 
 
+def load_stop_locations(gtfs_zip_path: str) -> dict[str, tuple[float, float]]:
+    """Load stops.txt into stop_id -> (stop_lat, stop_lon).
+
+    A distinct, simpler loader from load_fallback_shapes_from_stops's inline
+    stops.txt parsing (that one exists to build per-trip polylines; this one
+    just exposes raw stop coordinates) - deliberately not shared code, to
+    keep each loader's contract simple and independently readable.
+    """
+    stop_latlon: dict[str, tuple[float, float]] = {}
+    with zipfile.ZipFile(gtfs_zip_path) as zf:
+        with zf.open("stops.txt") as fh:
+            reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
+            for row in reader:
+                stop_latlon[row["stop_id"]] = (float(row["stop_lat"]), float(row["stop_lon"]))
+    return stop_latlon
+
+
+def resolve_trip_shapes(
+    gtfs_zip_path: str,
+) -> tuple[dict[str, str], dict[str, list[tuple[float, float]]], bool]:
+    """Resolve (trip_shapes, shapes, fallback_used) for a static GTFS zip.
+
+    Tries load_shapes + load_trip_shape_index first; if shapes.txt is absent,
+    falls back to load_fallback_shapes_from_stops and remaps its trip_id-keyed
+    polylines onto a pseudo-shape_id keyspace (the trip_id itself) so callers
+    can do a uniform shapes.get(trip_shapes.get(trip_id)) lookup regardless of
+    which loader produced the data.
+
+    Factored out of what was cli.py's _cmd_match inline logic so that FA-3's
+    build command resolves shapes identically to FA-2's match command for the
+    same --static input - duplicating this logic would risk the two drifting
+    apart, which would silently misalign build's stop distances against the
+    distance_along_shape_m values match already wrote out.
+    """
+    trip_shapes = load_trip_shape_index(gtfs_zip_path)
+    shapes = load_shapes(gtfs_zip_path)
+
+    fallback_used = False
+    if not shapes:
+        fallback_used = True
+        fallback_shapes = load_fallback_shapes_from_stops(gtfs_zip_path)
+        for trip_id, polyline in fallback_shapes.items():
+            shapes[trip_id] = polyline
+            trip_shapes[trip_id] = trip_id
+
+    return trip_shapes, shapes, fallback_used
+
+
 # ---------------------------------------------------------------------------
 # Point-to-polyline projection
 # ---------------------------------------------------------------------------

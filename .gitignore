@@ -20,6 +20,8 @@ tools/rt_diagnose/.venv/
 
 # --- Family A reconstruction tooling (own venv, never versioned) ---
 tools/family_a_reconstruction/.venv/
+tools/family_a_reconstruction/*.csv
+tools/family_a_reconstruction/*.parquet
 
 # --- i18n developer tooling (build scripts, LLM translation helpers) ---
 tools/i18n/
