@@ -31,6 +31,7 @@ from qgis.core import (
     QgsProcessingException,
     QgsProcessingOutputString,
     QgsProcessingParameterBoolean,
+    QgsProcessingParameterEnum,
     QgsProcessingParameterFile,
     QgsProcessingParameterString,
 )
@@ -45,7 +46,51 @@ from ..core.gtfsrt_realizer import (
     load_static_indices,
     rebuild_stop_times,
     repackage_gtfs,
+    sample_feed_capabilities,
 )
+
+_MATCHING_MODE_OPTIONS = ["AUTO", "TRIP_ID", "ROUTE_STOP_FALLBACK"]
+
+# AUTO-resolution thresholds — deliberately explicit, revisitable choices (see
+# shortHelpString). 0.05 matches the pre-existing trip-id overlap warning threshold.
+_TRIP_ID_OVERLAP_THRESHOLD = 0.05
+_FALLBACK_CAPABILITY_THRESHOLD = 0.5
+
+
+def resolve_matching_mode(overlap: float, capability: dict, requested_mode: str) -> str:
+    """Resolve AUTO to a concrete matching mode; pass an explicit mode through unchanged.
+
+    AUTO resolution: TRIP_ID if trip_id overlap >= 5%; else ROUTE_STOP_FALLBACK if the
+    capability sample shows route_id_overlap, stop_id_presence_ratio, stop_id_overlap,
+    and absolute_time_ratio ALL >= 50% — route_id_overlap must be checked too, since
+    collect_segment_times' ROUTE_STOP_FALLBACK branch silently skips any TripUpdate
+    whose route_id isn't in the static feed; without this check AUTO could select a
+    mode that then drops most entities with no fail-fast signal, recreating the
+    silent-empty-result problem this milestone exists to fix. Else raises ValueError
+    naming both modes and the measured ratios — a fail-fast message.
+    """
+    if requested_mode != "AUTO":
+        return requested_mode
+
+    if overlap >= _TRIP_ID_OVERLAP_THRESHOLD:
+        return "TRIP_ID"
+
+    if (
+        capability.get("route_id_overlap", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+        and capability.get("stop_id_presence_ratio", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+        and capability.get("stop_id_overlap", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+        and capability.get("absolute_time_ratio", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+    ):
+        return "ROUTE_STOP_FALLBACK"
+
+    raise ValueError(
+        f"Neither TRIP_ID (trip_id overlap {overlap:.0%}) nor ROUTE_STOP_FALLBACK "
+        f"(route_id overlap {capability.get('route_id_overlap', 0.0):.0%}, stop_id "
+        f"presence {capability.get('stop_id_presence_ratio', 0.0):.0%}, stop_id overlap "
+        f"{capability.get('stop_id_overlap', 0.0):.0%}, absolute time "
+        f"{capability.get('absolute_time_ratio', 0.0):.0%}) is usable for this feed. "
+        "See docs/reference/RT_test-feeds-by-city.md for known-working feeds."
+    )
 
 
 def _ask_on_main_thread(title: str, text: str) -> int:
@@ -87,6 +132,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
     WRITE_P85 = "WRITE_P85"
     DEDUPLICATE_FROZEN_SNAPSHOTS = "DEDUPLICATE_FROZEN_SNAPSHOTS"
     RECONCILE_LAST_SNAPSHOT = "RECONCILE_LAST_SNAPSHOT"
+    MATCHING_MODE = "MATCHING_MODE"
     OUTPUT_P50 = "OUTPUT_P50"
     OUTPUT_P85 = "OUTPUT_P85"
 
@@ -132,6 +178,27 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "recognized when computing trip-id overlap and segment statistics. If a "
             "trip_id happens to appear in more than one file, the first file's "
             "(STATIC_GTFS's) version is kept and a warning is reported.\n\n"
+            "Trip matching mode (MATCHING_MODE):\n"
+            "By default (AUTO), trips are matched to the static feed by trip_id, exactly "
+            "as before RT3-5. If trip_id overlap is below 5% but the archive's "
+            "capability sample shows the feed carries usable route_id, stop_id, and "
+            "absolute-time fields (route_id overlap, stop_id presence, stop_id overlap "
+            "with the static feed, and absolute-time ratio ALL at least 50% — "
+            "thresholds chosen as a reasonable starting point, revisit if a known-good "
+            "feed narrowly misses them), AUTO falls back to matching by route_id + "
+            "stop_id instead. This handles feeds (e.g. Poznań, Kraków) whose trip_id "
+            "namespace is permanently disjoint from the static feed's — a different, "
+            "larger problem than a wrong-day static feed. If neither join is usable, "
+            "the algorithm fails fast with a message reporting the measured ratios, "
+            "instead of silently producing an uncorrected result. ROUTE_STOP_FALLBACK "
+            "matching cannot distinguish direction_id (direction is unknowable without "
+            "a matched trip), only counts stop-time pairs with an absolute observed "
+            "time (not a bare delay offset), and does not drop CANCELED trips from the "
+            "output (canceled_trip_ids are collected via the RT-side trip_id, which by "
+            "construction never matches a static trip_id in this mode). TRIP_ID and "
+            "ROUTE_STOP_FALLBACK can also be forced explicitly (e.g. to compare both on "
+            "the same archive); the four capability ratios are always logged, and a "
+            "warning is shown if a forced mode looks unlikely to work well.\n\n"
             "This algorithm assumes the archive covers a single service day. If the "
             "snapshot archive spans more than ~25 hours, a warning is logged (not "
             "blocking) noting that results may mix unrelated days.\n\n"
@@ -177,6 +244,13 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "disabling it weights repeated/evolving predictions of the same "
             "trip-segment equally.\n"
             "- Gaps (unobserved segments) fall back to scheduled travel time.\n"
+            "- ROUTE_STOP_FALLBACK matching (auto-selected or forced) loses "
+            "direction_id distinction and requires an absolute observed time per "
+            "stop event; pairs lacking either are skipped rather than counted.\n"
+            "- In ROUTE_STOP_FALLBACK mode, CANCELED-trip dropping does not apply: "
+            "canceled_trip_ids are collected using the RT-side trip_id, which by "
+            "construction does not match any static trip_id in this mode, so CANCELED "
+            "RT trips remain in the output feed (unlike TRIP_ID mode).\n"
             "- Output is a reproducible static GTFS feed; it is not a record of any "
             "single actual day.\n\n"
             "See docs/RT-3_realized-gtfs-notes.md for full methodology and references."
@@ -249,6 +323,17 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 defaultValue=True,
             )
         )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.MATCHING_MODE,
+                self.tr(
+                    "Trip matching mode (AUTO: use TRIP_ID if trip_id overlap >= 5%, "
+                    "else ROUTE_STOP_FALLBACK if the feed supports it, else fail)"
+                ),
+                options=_MATCHING_MODE_OPTIONS,
+                defaultValue=0,
+            )
+        )
         self.addOutput(
             QgsProcessingOutputString(
                 self.OUTPUT_P50,
@@ -313,6 +398,8 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         reconcile_last_snapshot = self.parameterAsBool(
             parameters, self.RECONCILE_LAST_SNAPSHOT, context
         )
+        matching_mode_idx = self.parameterAsEnum(parameters, self.MATCHING_MODE, context)
+        requested_matching_mode = _MATCHING_MODE_OPTIONS[matching_mode_idx]
         canceled_policy = "skip"
 
         if not output_prefix:
@@ -403,9 +490,62 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 "  • The static GTFS is from a different service date than the archive "
                 "(feeds whose trip_ids embed the date, e.g. Gdańsk).\n"
                 "  • The static GTFS is from a different city or agency.\n"
-                "The output will be produced but most segments will be uncorrected "
-                "(gaps falling back to scheduled times)."
+                "  • The feed's trip_id namespace is permanently disjoint from the "
+                "static feed's (e.g. Poznań, Kraków) — see the capability sample "
+                "below for whether ROUTE_STOP_FALLBACK matching can be used instead."
             ))
+
+        feedback.pushInfo(self.tr(
+            "Sampling feed capabilities (route_id / stop_id / absolute-time support)…"
+        ))
+        try:
+            capability = sample_feed_capabilities(snapshot_paths, static_index)
+        except Exception as exc:  # noqa: BLE001
+            capability = {}
+            feedback.pushWarning(self.tr(f"Capability sample failed: {exc}"))
+
+        feedback.pushInfo(self.tr(
+            "Capability sample — route_id overlap: {0:.0%}  |  stop_id presence: "
+            "{1:.0%}  |  stop_id overlap: {2:.0%}  |  absolute time: {3:.0%}"
+        ).format(
+            capability.get("route_id_overlap", 0.0),
+            capability.get("stop_id_presence_ratio", 0.0),
+            capability.get("stop_id_overlap", 0.0),
+            capability.get("absolute_time_ratio", 0.0),
+        ))
+
+        try:
+            matching_mode = resolve_matching_mode(overlap, capability, requested_matching_mode)
+        except ValueError as exc:
+            raise QgsProcessingException(self.tr(str(exc))) from exc
+
+        feedback.pushInfo(self.tr(f"Matching mode: {matching_mode}"))
+        if matching_mode == "ROUTE_STOP_FALLBACK":
+            feedback.pushWarning(self.tr(
+                "ROUTE_STOP_FALLBACK matching is in use: segments are joined on "
+                "route_id + stop_id instead of trip_id, so direction_id cannot be "
+                "distinguished (an intentional, documented limitation), and only "
+                "stop-time pairs with absolute observed times are counted."
+            ))
+        elif requested_matching_mode != "AUTO":
+            # User forced a mode — don't block it, but warn if the sample suggests it
+            # is unlikely to produce usable segments.
+            if matching_mode == "TRIP_ID" and overlap < _TRIP_ID_OVERLAP_THRESHOLD:
+                feedback.pushWarning(self.tr(
+                    f"TRIP_ID matching was forced, but trip_id overlap is only "
+                    f"{overlap:.0%} — most segments will likely be uncorrected."
+                ))
+            elif matching_mode == "ROUTE_STOP_FALLBACK" and not (
+                capability.get("route_id_overlap", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+                and capability.get("stop_id_presence_ratio", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+                and capability.get("stop_id_overlap", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+                and capability.get("absolute_time_ratio", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+            ):
+                feedback.pushWarning(self.tr(
+                    "ROUTE_STOP_FALLBACK matching was forced, but the capability "
+                    "sample suggests this feed may not support it well — most "
+                    "segments will likely be skipped."
+                ))
 
         span_sec = check_snapshot_time_span(raw_snapshot_paths)
         if span_sec > 25 * 3600:
@@ -431,13 +571,14 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         partial_outputs: list[str] = []
         _completed = False
         try:
-            segment_times, canceled_trip_ids = collect_segment_times(
+            segment_times, canceled_trip_ids, fallback_time_skipped = collect_segment_times(
                 snapshot_paths,
                 static_index,
                 canceled_policy=canceled_policy,
                 progress_cb=_progress,
                 cancel_check=_cancel,
                 reconcile_last_snapshot=reconcile_last_snapshot,
+                matching_mode=matching_mode,
             )
 
             if feedback.isCanceled():
@@ -445,7 +586,8 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
 
             feedback.pushInfo(self.tr(
                 f"Segments observed: {len(segment_times):,}  |  "
-                f"CANCELED trips: {len(canceled_trip_ids)}"
+                f"CANCELED trips: {len(canceled_trip_ids)}  |  "
+                f"skipped (no absolute time): {fallback_time_skipped:,}"
             ))
             feedback.setProgress(65)
 
@@ -459,7 +601,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             # --- Step 8a: rebuild stop times for P50 ---
             feedback.pushInfo(self.tr("Rebuilding stop_times for P50 feed…"))
             p50_corrections, p50_corrected, p50_gaps = rebuild_stop_times(
-                static_index, p50_stats, drop_trip_ids
+                static_index, p50_stats, drop_trip_ids, matching_mode=matching_mode
             )
             feedback.setProgress(75)
 
@@ -468,7 +610,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             if write_p85:
                 feedback.pushInfo(self.tr("Rebuilding stop_times for P85 feed…"))
                 p85_corrections, p85_corrected, p85_gaps = rebuild_stop_times(
-                    static_index, p85_stats, drop_trip_ids
+                    static_index, p85_stats, drop_trip_ids, matching_mode=matching_mode
                 )
             feedback.setProgress(80)
 

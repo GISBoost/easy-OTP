@@ -31,6 +31,26 @@ _SR_CANCELED = 3
 _STU_SKIPPED = 1
 
 
+def segment_key_for(
+    route_id: str,
+    direction_id: str,
+    from_stop_id: str,
+    to_stop_id: str,
+    matching_mode: str,
+) -> SegmentKey:
+    """Build the SegmentKey for either matching mode. Sole source of truth for its shape.
+
+    TRIP_ID: (route_id, direction_id, from_stop_id, to_stop_id) — unchanged from pre-RT3-5.
+    ROUTE_STOP_FALLBACK: direction is unknowable without a matched trip, so direction_id
+    is replaced with "" — an intentional, documented loss of direction distinction.
+    """
+    if matching_mode == "ROUTE_STOP_FALLBACK":
+        return (route_id, "", from_stop_id, to_stop_id)
+    if matching_mode == "TRIP_ID":
+        return (route_id, direction_id, from_stop_id, to_stop_id)
+    raise ValueError(f"Unresolved matching_mode: {matching_mode!r}")
+
+
 # ---------------------------------------------------------------------------
 # GTFS time helpers
 # ---------------------------------------------------------------------------
@@ -53,6 +73,18 @@ def format_gtfs_time(seconds: int) -> str:
 # Static GTFS index
 # ---------------------------------------------------------------------------
 
+def _read_zip_column(zf: zipfile.ZipFile, filename: str, column: str) -> set[str]:
+    """Return the set of values in `column` of a CSV member, or an empty set."""
+    try:
+        with zf.open(filename) as fh:
+            reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
+            if not reader.fieldnames or column not in reader.fieldnames:
+                return set()
+            return {row[column].strip() for row in reader if row.get(column)}
+    except KeyError:
+        return set()
+
+
 @dataclass
 class StaticIndex:
     # trip_id -> (route_id, direction_id)
@@ -63,6 +95,10 @@ class StaticIndex:
     stop_map: dict[tuple[str, int], tuple[str, int, int]]
     # all trip_ids present in the static feed
     all_trip_ids: set[str]
+    # all route_ids present in the static feed's routes.txt (RT3-5 fallback matching)
+    all_route_ids: set[str]
+    # all stop_ids present in the static feed's stops.txt (RT3-5 fallback matching)
+    all_stop_ids: set[str]
 
 
 def load_static_index(gtfs_zip_path: str) -> StaticIndex:
@@ -93,6 +129,9 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
                 trip_stops_raw[trip_id].append((seq, stop_id, arr_sec, dep_sec))
                 stop_map[(trip_id, seq)] = (stop_id, arr_sec, dep_sec)
 
+        all_route_ids = _read_zip_column(zf, "routes.txt", "route_id")
+        all_stop_ids = _read_zip_column(zf, "stops.txt", "stop_id")
+
     trip_stops = {
         tid: sorted(stops, key=lambda x: x[0])
         for tid, stops in trip_stops_raw.items()
@@ -103,6 +142,8 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
         trip_stops=trip_stops,
         stop_map=stop_map,
         all_trip_ids=set(trip_route.keys()),
+        all_route_ids=all_route_ids,
+        all_stop_ids=all_stop_ids,
     )
 
 
@@ -119,12 +160,19 @@ def load_static_indices(paths: list[str]) -> tuple[StaticIndex, int]:
     Returns (merged_index, collision_count) — collision_count is the number
     of distinct trip_ids seen in more than one input file, counted once per
     trip_id regardless of how many files (2 or more) it reappears in.
+
+    all_route_ids/all_stop_ids are unioned across ALL input files unconditionally,
+    independent of the first-file-wins trip_id collision policy above: fallback
+    matching (RT3-5) only needs to know whether a route_id/stop_id exists anywhere
+    in the combined static feed set, not which file's trip row "won" a collision.
     """
     trip_route: dict[str, tuple[str, str]] = {}
     trip_stops: dict[str, list[tuple]] = {}
     stop_map: dict[tuple[str, int], tuple[str, int, int]] = {}
     seen_trip_ids: set[str] = set()
     collided_trip_ids: set[str] = set()
+    all_route_ids: set[str] = set()
+    all_stop_ids: set[str] = set()
 
     for path in paths:
         try:
@@ -145,6 +193,8 @@ def load_static_indices(paths: list[str]) -> tuple[StaticIndex, int]:
                 stop_map[(trip_id, seq)] = value
 
         seen_trip_ids |= new_trip_ids
+        all_route_ids |= idx.all_route_ids
+        all_stop_ids |= idx.all_stop_ids
 
     return (
         StaticIndex(
@@ -152,6 +202,8 @@ def load_static_indices(paths: list[str]) -> tuple[StaticIndex, int]:
             trip_stops=trip_stops,
             stop_map=stop_map,
             all_trip_ids=set(seen_trip_ids),
+            all_route_ids=all_route_ids,
+            all_stop_ids=all_stop_ids,
         ),
         len(collided_trip_ids),
     )
@@ -202,21 +254,35 @@ def collect_segment_times(
     progress_cb: Optional[Callable[[float], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     reconcile_last_snapshot: bool = True,
-) -> tuple[dict[SegmentKey, list[float]], set[str]]:
-    """Parse each .pb snapshot; return (segment_times, canceled_trip_ids).
+    matching_mode: str = "TRIP_ID",
+) -> tuple[dict[SegmentKey, list[float]], set[str], int]:
+    """Parse each .pb snapshot; return (segment_times, canceled_trip_ids, fallback_time_skipped).
 
     segment_times: SegmentKey -> list of observed travel times (seconds)
     canceled_trip_ids: trip_ids seen with CANCELED status (for drop logic)
+    fallback_time_skipped: pairs skipped in ROUTE_STOP_FALLBACK mode for lacking an
+    absolute observed time (no matched static trip to anchor a bare delay against).
+    Always 0 in TRIP_ID mode.
 
     reconcile_last_snapshot: when True (default), keep only the chronologically
     last snapshot's observation per (trip_id, from_seq, to_seq) — predictions
     made closer to the actual event are more accurate, so repeated observations
     of the same trip-segment across snapshots are collapsed to one. When False,
     every snapshot's observation is appended (pre-0.7 behavior). Assumes
-    snapshot_paths is already in chronological order.
+    snapshot_paths is already in chronological order. Applies identically in both
+    matching modes: grouping uses the RT-side trip_id regardless of whether it
+    matches the static feed, so it needs no knowledge of matching_mode.
+
+    matching_mode: "TRIP_ID" (default) requires an exact static trip_id match, as
+    before RT3-5. "ROUTE_STOP_FALLBACK" instead resolves route_id/stop_id directly
+    from the RT message and validates them against the static feed's known ids —
+    for feeds (Poznan, Krakow) whose trip_id namespace is permanently disjoint from
+    the static feed's. direction_id cannot be recovered in this mode (no matched
+    trip); segment_key_for zeroes it.
     """
     segment_times: dict[SegmentKey, list[float]] = defaultdict(list)
     canceled_trip_ids: set[str] = set()
+    fallback_time_skipped = 0
     # (trip_id, from_seq, to_seq) -> (seg_time, SegmentKey) of the chronologically
     # last snapshot with a complete, passing observation for that key.
     # Only populated/consumed when reconcile_last_snapshot=True.
@@ -245,10 +311,16 @@ def collect_segment_times(
                 if canceled_policy == "skip":
                     continue
 
-            if trip_id not in static_index.trip_route:
-                continue
+            if matching_mode == "ROUTE_STOP_FALLBACK":
+                route_id = tu.trip.route_id
+                if not route_id or route_id not in static_index.all_route_ids:
+                    continue
+                direction_id = ""
+            else:
+                if trip_id not in static_index.trip_route:
+                    continue
+                route_id, direction_id = static_index.trip_route[trip_id]
 
-            route_id, direction_id = static_index.trip_route[trip_id]
             updates = [
                 s for s in tu.stop_time_update
                 if getattr(s, "schedule_relationship", 0) != _STU_SKIPPED
@@ -265,29 +337,46 @@ def collect_segment_times(
                 from_seq = stu_from.stop_sequence
                 to_seq = stu_to.stop_sequence
 
-                from_entry = static_index.stop_map.get((trip_id, from_seq))
-                to_entry = static_index.stop_map.get((trip_id, to_seq))
-                if not from_entry or not to_entry:
-                    continue
+                if matching_mode == "ROUTE_STOP_FALLBACK":
+                    from_stop_id = stu_from.stop_id
+                    to_stop_id = stu_to.stop_id
+                    if not from_stop_id or from_stop_id not in static_index.all_stop_ids:
+                        continue
+                    if not to_stop_id or to_stop_id not in static_index.all_stop_ids:
+                        continue
 
-                from_stop_id = from_entry[0]
-                to_stop_id = to_entry[0]
-                sched_dep = from_entry[2]   # dep_sec at from_stop
-                sched_arr = to_entry[1]     # arr_sec at to_stop
-
-                dep_abs, dep_delay = _get_observed_departure(stu_from)
-                arr_abs, arr_delay = _get_observed_arrival(stu_to)
-
-                if dep_abs > 0 and arr_abs > 0:
+                    dep_abs, _dep_delay = _get_observed_departure(stu_from)
+                    arr_abs, _arr_delay = _get_observed_arrival(stu_to)
+                    if dep_abs <= 0 or arr_abs <= 0:
+                        fallback_time_skipped += 1
+                        continue
                     seg_time = float(arr_abs - dep_abs)
                 else:
-                    seg_time = float((sched_arr + arr_delay) - (sched_dep + dep_delay))
+                    from_entry = static_index.stop_map.get((trip_id, from_seq))
+                    to_entry = static_index.stop_map.get((trip_id, to_seq))
+                    if not from_entry or not to_entry:
+                        continue
+
+                    from_stop_id = from_entry[0]
+                    to_stop_id = to_entry[0]
+                    sched_dep = from_entry[2]   # dep_sec at from_stop
+                    sched_arr = to_entry[1]     # arr_sec at to_stop
+
+                    dep_abs, dep_delay = _get_observed_departure(stu_from)
+                    arr_abs, arr_delay = _get_observed_arrival(stu_to)
+
+                    if dep_abs > 0 and arr_abs > 0:
+                        seg_time = float(arr_abs - dep_abs)
+                    else:
+                        seg_time = float((sched_arr + arr_delay) - (sched_dep + dep_delay))
 
                 # Reject non-positive or implausibly long segments (> 2 h)
                 if seg_time <= 0 or seg_time > 7200:
                     continue
 
-                key: SegmentKey = (route_id, direction_id, from_stop_id, to_stop_id)
+                key = segment_key_for(
+                    route_id, direction_id, from_stop_id, to_stop_id, matching_mode
+                )
                 if reconcile_last_snapshot:
                     latest_per_trip_segment[(trip_id, from_seq, to_seq)] = (seg_time, key)
                 else:
@@ -300,7 +389,7 @@ def collect_segment_times(
         for seg_time, key in latest_per_trip_segment.values():
             segment_times[key].append(seg_time)
 
-    return dict(segment_times), canceled_trip_ids
+    return dict(segment_times), canceled_trip_ids, fallback_time_skipped
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +425,7 @@ def rebuild_stop_times(
     static_index: StaticIndex,
     segment_stats: dict[SegmentKey, float],
     drop_trip_ids: frozenset[str] = frozenset(),
+    matching_mode: str = "TRIP_ID",
 ) -> tuple[dict[tuple[str, int], tuple[int, int]], int, int]:
     """Compute corrected arrival/departure times for every stop in every trip.
 
@@ -343,6 +433,11 @@ def rebuild_stop_times(
       corrections: (trip_id, stop_sequence) -> (new_arr_sec, new_dep_sec)
       corrected_count: segments that used an observed segment time
       gap_count: segments that fell back to the scheduled duration
+
+    matching_mode must match whatever mode segment_stats was built with
+    (collect_segment_times' matching_mode), since it determines the SegmentKey
+    shape via segment_key_for — this function still walks the static feed's
+    trip_stops (always trip-keyed) regardless of mode; only the lookup key changes.
     """
     corrections: dict[tuple[str, int], tuple[int, int]] = {}
     corrected_count = 0
@@ -362,7 +457,9 @@ def rebuild_stop_times(
                 new_dep = float(dep_sec)
             else:
                 prev_seq, prev_stop_id, _prev_arr, prev_dep = stops[idx - 1]
-                key: SegmentKey = (route_id, direction_id, prev_stop_id, stop_id)
+                key = segment_key_for(
+                    route_id, direction_id, prev_stop_id, stop_id, matching_mode
+                )
                 sched_travel = max(0.0, float(arr_sec - prev_dep))
                 dwell = max(0.0, float(dep_sec - arr_sec))
 
@@ -482,6 +579,74 @@ def check_trip_overlap(
     if all_seen == 0:
         return 0.0
     return in_static / all_seen
+
+
+def sample_feed_capabilities(
+    snapshot_paths: list[Path],
+    static_index: StaticIndex,
+) -> dict:
+    """Sample up to 5 snapshots and report what a fallback join could rely on.
+
+    Returns a dict with keys: route_id_overlap, stop_id_presence_ratio, stop_id_overlap,
+    absolute_time_ratio — each a float in [0, 1]. Does not raise; returns zeros if no
+    snapshots are readable or the relevant denominator is empty.
+    """
+    sample = snapshot_paths[:5]
+    route_id_entities = 0
+    route_id_in_static = 0
+    stu_total = 0
+    stop_id_present = 0
+    stop_id_in_static = 0
+    event_total = 0
+    abs_time_present = 0
+
+    for path in sample:
+        try:
+            feed = decode_snapshot(path.read_bytes())
+        except Exception:  # noqa: BLE001
+            continue
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
+                continue
+            tu = entity.trip_update
+
+            route_id = tu.trip.route_id
+            if route_id:
+                route_id_entities += 1
+                if route_id in static_index.all_route_ids:
+                    route_id_in_static += 1
+
+            for stu in tu.stop_time_update:
+                stu_total += 1
+                stop_id = stu.stop_id
+                if stop_id:
+                    stop_id_present += 1
+                    if stop_id in static_index.all_stop_ids:
+                        stop_id_in_static += 1
+
+                if stu.HasField("arrival"):
+                    event_total += 1
+                    if stu.arrival.time != 0:
+                        abs_time_present += 1
+                if stu.HasField("departure"):
+                    event_total += 1
+                    if stu.departure.time != 0:
+                        abs_time_present += 1
+
+    return {
+        "route_id_overlap": (
+            route_id_in_static / route_id_entities if route_id_entities else 0.0
+        ),
+        "stop_id_presence_ratio": (
+            stop_id_present / stu_total if stu_total else 0.0
+        ),
+        "stop_id_overlap": (
+            stop_id_in_static / stop_id_present if stop_id_present else 0.0
+        ),
+        "absolute_time_ratio": (
+            abs_time_present / event_total if event_total else 0.0
+        ),
+    }
 
 
 def check_snapshot_time_span(snapshot_paths: list[Path]) -> float:

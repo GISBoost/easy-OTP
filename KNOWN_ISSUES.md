@@ -100,6 +100,8 @@ Diagnostic (2026-06-20, time-matched fresh downloads):
 
 **Workaround:** none for RT-1. Forward path for these cities is RT-2 `RecordGtfsRt` + RT-3 `BuildRealizedGtfs` (v0.5) — record a day's `.pb` snapshots and synthesize a realized static GTFS whose ids match by construction. The output layer is correctly marked `RT-NOT-APPLIED_` so it cannot be mistaken for a realtime result.
 
+**Update (RT3-5, pending human verification):** `BuildRealizedGtfs` now has a `MATCHING_MODE` parameter with a `ROUTE_STOP_FALLBACK` mode — when trip_id overlap is too low to use, it instead joins on `route_id` + `stop_id`, gated by an empirical capability sample of the archive (`AUTO` picks it automatically when the sample looks usable). This narrows this issue for feeds like Poznań/Kraków whose trip_id namespace is permanently disjoint from the static feed's. It does **not** fully resolve Poznań yet — that feed also has a separate, independent defect (single-`StopTimeUpdate`-per-`TripUpdate`, see #18) that RT3-5 cannot fix; full correction there is pending RT3-6.
+
 ## 11. Date-embedded trip\_ids (Gdańsk) require same-day static GTFS re-download
 
 **Severity:** medium (RT silently applies nothing if static is stale). · **Tracker:** [#11](../../issues/11)
@@ -189,9 +191,12 @@ time from — independent of trip_id matching. This is a different root cause fr
 **Workaround:** none. `RunTemporalAccessibility` on the resulting feed falls back to
 scheduled times everywhere (output is still valid, just not RT-corrected).
 
-**Status:** confirmed **not** fixable by RT3-5's planned route/stop fallback matching —
-the problem is the feed shape (no adjacent stop pair per snapshot), not id matching. A
-fix needs cross-snapshot stitching per trip_id, a separate and larger piece of work.
+**Status:** confirmed **not** fixable by RT3-5's route/stop fallback matching — the
+problem is the feed shape (no adjacent stop pair per snapshot), not id matching. Scoped
+(not yet implemented) as **RT3-6** — cross-snapshot stitching per trip_id, a new
+`SEGMENT_SOURCE_MODE` (`AUTO`/`PER_MESSAGE`/`CROSS_SNAPSHOT`) — see `docs/prd/
+PR_easy-OTP_v07.md` §RT3-6 and milestone 0.6.7 in `docs/prompts/
+easy-OTP_v07_prompts_for-claude-code.md`.
 
 ---
 

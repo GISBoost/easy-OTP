@@ -7,12 +7,33 @@ Run: py -m pytest easy_otp/test/test_build_realized_gtfs.py -v
 import csv
 import io
 import statistics
+import sys
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# QGIS stub (same pattern as test_run_travel_time_matrix.py) — lets us import
+# easy_otp.algorithms.build_realized_gtfs (for resolve_matching_mode) without a
+# real QGIS install.
+# ---------------------------------------------------------------------------
+
+class _FakeQgsProcessingException(RuntimeError):
+    pass
+
+
+if "qgis" not in sys.modules:
+    _qgis_core = MagicMock()
+    _qgis_core.QgsProcessingException = _FakeQgsProcessingException
+    sys.modules["qgis"] = MagicMock()
+    sys.modules["qgis.core"] = _qgis_core
+    sys.modules["qgis.PyQt"] = MagicMock()
+    sys.modules["qgis.PyQt.QtCore"] = MagicMock()
+    sys.modules["qgis.PyQt.QtWidgets"] = MagicMock()
+
+from easy_otp.algorithms.build_realized_gtfs import resolve_matching_mode
 from easy_otp.core.gtfsrt_realizer import (
     StaticIndex,
     aggregate_segments,
@@ -27,6 +48,8 @@ from easy_otp.core.gtfsrt_realizer import (
     parse_gtfs_time,
     rebuild_stop_times,
     repackage_gtfs,
+    sample_feed_capabilities,
+    segment_key_for,
 )
 
 
@@ -73,16 +96,24 @@ def _read_zip_member(path: str, member: str) -> str:
 def _make_static_index(
     trips: dict[str, tuple[str, str]],          # trip_id -> (route_id, direction_id)
     stops: dict[str, list[tuple]],               # trip_id -> [(seq, stop_id, arr, dep), ...]
+    all_route_ids: set[str] | None = None,
+    all_stop_ids: set[str] | None = None,
 ) -> StaticIndex:
     stop_map = {}
     for trip_id, stop_list in stops.items():
         for seq, stop_id, arr, dep in stop_list:
             stop_map[(trip_id, seq)] = (stop_id, arr, dep)
+    if all_route_ids is None:
+        all_route_ids = {route_id for route_id, _direction_id in trips.values()}
+    if all_stop_ids is None:
+        all_stop_ids = {stop_id for stop_list in stops.values() for _, stop_id, _, _ in stop_list}
     return StaticIndex(
         trip_route=trips,
         trip_stops={tid: sorted(sl, key=lambda x: x[0]) for tid, sl in stops.items()},
         stop_map=stop_map,
         all_trip_ids=set(trips.keys()),
+        all_route_ids=all_route_ids,
+        all_stop_ids=all_stop_ids,
     )
 
 
@@ -694,9 +725,10 @@ def test_collect_uses_delay_offsets(tmp_path):
     feed.entity = [entity]
 
     with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
-        seg_times, canceled = collect_segment_times([snap], idx)
+        seg_times, canceled, skipped = collect_segment_times([snap], idx)
 
     assert canceled == set()
+    assert skipped == 0  # TRIP_ID mode never increments the fallback counter
     key = ("R1", "0", "A", "B")
     assert key in seg_times
     assert seg_times[key] == pytest.approx([660.0])
@@ -719,7 +751,7 @@ def test_collect_canceled_trip(tmp_path):
     feed.entity = [entity]
 
     with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
-        seg_times, canceled = collect_segment_times([snap], idx, canceled_policy="skip")
+        seg_times, canceled, _ = collect_segment_times([snap], idx, canceled_policy="skip")
 
     assert "t1" in canceled
     assert seg_times == {}
@@ -742,7 +774,7 @@ def test_collect_skips_trip_not_in_static(tmp_path):
     feed.entity = [entity]
 
     with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
-        seg_times, canceled = collect_segment_times([snap], idx)
+        seg_times, canceled, _ = collect_segment_times([snap], idx)
 
     assert seg_times == {}
 
@@ -784,7 +816,7 @@ def test_collect_rejects_nonpositive_segment_time(tmp_path):
     feed.entity = [entity]
 
     with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
-        seg_times, _ = collect_segment_times([snap], idx)
+        seg_times, _, _ = collect_segment_times([snap], idx)
 
     assert seg_times == {}
 
@@ -845,7 +877,7 @@ def test_collect_reconcile_keeps_last_snapshot_value(tmp_path):
     ]
 
     with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
-        seg_times, _ = collect_segment_times(snaps, idx, reconcile_last_snapshot=True)
+        seg_times, _, _ = collect_segment_times(snaps, idx, reconcile_last_snapshot=True)
 
     key = ("R1", "0", "A", "B")
     assert seg_times[key] == pytest.approx([900.0])
@@ -868,7 +900,7 @@ def test_collect_reconcile_false_keeps_all_snapshots(tmp_path):
     ]
 
     with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
-        seg_times, _ = collect_segment_times(snaps, idx, reconcile_last_snapshot=False)
+        seg_times, _, _ = collect_segment_times(snaps, idx, reconcile_last_snapshot=False)
 
     key = ("R1", "0", "A", "B")
     # Pins today's (pre-0.7) behavior explicitly so it can't silently drift.
@@ -891,7 +923,7 @@ def test_collect_reconcile_scoped_per_trip_id(tmp_path):
     ])
 
     with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
-        seg_times, _ = collect_segment_times([snap], idx, reconcile_last_snapshot=True)
+        seg_times, _, _ = collect_segment_times([snap], idx, reconcile_last_snapshot=True)
 
     key = ("R1", "0", "A", "B")
     # One reconciled observation per trip_id, not collapsed across trips.
@@ -917,7 +949,7 @@ def test_collect_reconcile_invalid_latest_does_not_evict_prior(tmp_path):
     ]
 
     with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
-        seg_times, _ = collect_segment_times(snaps, idx, reconcile_last_snapshot=True)
+        seg_times, _, _ = collect_segment_times(snaps, idx, reconcile_last_snapshot=True)
 
     key = ("R1", "0", "A", "B")
     assert seg_times[key] == pytest.approx([660.0])
@@ -942,7 +974,7 @@ def test_collect_reconcile_aggregate_integration(tmp_path):
     ])
 
     with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
-        seg_times, _ = collect_segment_times([snap], idx, reconcile_last_snapshot=True)
+        seg_times, _, _ = collect_segment_times([snap], idx, reconcile_last_snapshot=True)
 
     p50, p85 = aggregate_segments(seg_times)
     key = ("R1", "0", "A", "B")
@@ -1036,3 +1068,343 @@ def test_deduplicate_across_unreadable_gap(tmp_path):
 
     assert kept == [paths[0], missing]
     assert dropped == 1
+
+
+# ---------------------------------------------------------------------------
+# segment_key_for (RT3-5)
+# ---------------------------------------------------------------------------
+
+def test_segment_key_for_trip_id_mode_unchanged():
+    assert segment_key_for("R1", "0", "A", "B", "TRIP_ID") == ("R1", "0", "A", "B")
+
+
+def test_segment_key_for_fallback_zeroes_direction():
+    assert segment_key_for("R1", "1", "A", "B", "ROUTE_STOP_FALLBACK") == ("R1", "", "A", "B")
+
+
+def test_segment_key_for_unresolved_mode_raises():
+    with pytest.raises(ValueError):
+        segment_key_for("R1", "0", "A", "B", "AUTO")
+
+
+# ---------------------------------------------------------------------------
+# load_static_index / load_static_indices — all_route_ids / all_stop_ids (RT3-5)
+# ---------------------------------------------------------------------------
+
+def test_load_static_index_populates_route_and_stop_ids(tmp_path):
+    zip_path = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+        extra_files={
+            "routes.txt": "route_id,route_short_name\nR1,1\nR2,2\n",
+            "stops.txt": "stop_id,stop_name\nA,Stop A\nB,Stop B\n",
+        },
+    )
+    idx = load_static_index(zip_path)
+    assert idx.all_route_ids == {"R1", "R2"}
+    assert idx.all_stop_ids == {"A", "B"}
+
+
+def test_load_static_index_missing_routes_stops_files_yields_empty_sets(tmp_path):
+    zip_path = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+    )
+    idx = load_static_index(zip_path)
+    assert idx.all_route_ids == set()
+    assert idx.all_stop_ids == set()
+
+
+def test_load_static_indices_unions_route_and_stop_ids_even_across_collision(tmp_path):
+    # t1 collides (first-file-wins for trip data), but all_route_ids/all_stop_ids
+    # must still union across BOTH files regardless of the collision — a deliberate
+    # deviation from the trip-level merge policy (see load_static_indices docstring).
+    zip_a = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+        extra_files={"routes.txt": "route_id\nR1\n", "stops.txt": "stop_id\nA\n"},
+        name="first.zip",
+    )
+    zip_b = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R2", "direction_id": "1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "10:00:00", "departure_time": "10:00:00",
+             "stop_id": "Z", "stop_sequence": "1"},
+        ],
+        extra_files={"routes.txt": "route_id\nR9\n", "stops.txt": "stop_id\nZ\n"},
+        name="second.zip",
+    )
+    merged, collision_count = load_static_indices([zip_a, zip_b])
+    assert collision_count == 1
+    # First file's trip data wins (route R1), but both files' route/stop ids are unioned.
+    assert merged.trip_route["t1"] == ("R1", "0")
+    assert merged.all_route_ids == {"R1", "R9"}
+    assert merged.all_stop_ids == {"A", "Z"}
+
+
+# ---------------------------------------------------------------------------
+# collect_segment_times / rebuild_stop_times — ROUTE_STOP_FALLBACK mode (RT3-5)
+# ---------------------------------------------------------------------------
+
+def _make_fallback_trip_entity(
+    trip_id, route_id, from_stop_id, to_stop_id, dep_abs, arr_abs, from_seq=1, to_seq=2,
+):
+    """Build a mock entity for ROUTE_STOP_FALLBACK tests.
+
+    Unlike _make_trip_entity, this sets route_id and stop_id as real strings directly
+    on the mocks, and absolute event times rather than only delay — MagicMock
+    auto-vivifies any unset attribute as a truthy mock object, not "", so a fallback
+    test that skips setting these would silently produce zero segments for the wrong
+    reason (a mismatch, not a genuine skip) while still "passing" if it only checked
+    for the absence of an exception.
+    """
+    stu_from = MagicMock()
+    stu_from.stop_sequence = from_seq
+    stu_from.schedule_relationship = 0
+    stu_from.stop_id = from_stop_id
+    stu_from.HasField.side_effect = lambda f: f == "departure"
+    stu_from.departure = MagicMock(time=dep_abs, delay=0)
+    stu_from.arrival = MagicMock(time=0, delay=0)
+
+    stu_to = MagicMock()
+    stu_to.stop_sequence = to_seq
+    stu_to.schedule_relationship = 0
+    stu_to.stop_id = to_stop_id
+    stu_to.HasField.side_effect = lambda f: f == "arrival"
+    stu_to.arrival = MagicMock(time=arr_abs, delay=0)
+    stu_to.departure = MagicMock(time=0, delay=0)
+
+    tu = MagicMock()
+    tu.trip.trip_id = trip_id
+    tu.trip.route_id = route_id
+    tu.trip.schedule_relationship = 0
+    tu.stop_time_update = [stu_from, stu_to]
+
+    entity = MagicMock()
+    entity.HasField.side_effect = lambda f: f == "trip_update"
+    entity.trip_update = tu
+    return entity
+
+
+def test_collect_fallback_produces_segments_where_trip_id_mode_yields_none(tmp_path):
+    # Static feed knows about route R1 and stops A/B, but the RT trip_id is entirely
+    # absent from the static feed — the permanent disjoint-namespace scenario
+    # (Poznan/Krakow). Unlike real Poznan's single-StopTimeUpdate feed shape (#18,
+    # RT3-6), this synthetic entity carries two StopTimeUpdates, so a segment CAN be
+    # computed once route/stop matching succeeds — this is the core regression this
+    # milestone fixes.
+    snap = _fake_snapshot(tmp_path)
+    idx = _make_static_index(
+        trips={}, stops={}, all_route_ids={"R1"}, all_stop_ids={"A", "B"},
+    )
+    entity = _make_fallback_trip_entity(
+        "rt_only_trip_9", route_id="R1", from_stop_id="A", to_stop_id="B",
+        dep_abs=1000, arr_abs=1090,
+    )
+    feed = _make_feed([entity])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        trip_id_segments, _, _ = collect_segment_times([snap], idx, matching_mode="TRIP_ID")
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        fallback_segments, _, skipped = collect_segment_times(
+            [snap], idx, matching_mode="ROUTE_STOP_FALLBACK"
+        )
+
+    assert trip_id_segments == {}
+    assert skipped == 0
+    key = ("R1", "", "A", "B")
+    assert fallback_segments[key] == pytest.approx([90.0])
+
+
+def test_collect_fallback_skips_and_counts_missing_absolute_time(tmp_path):
+    snap = _fake_snapshot(tmp_path)
+    idx = _make_static_index(
+        trips={}, stops={}, all_route_ids={"R1"}, all_stop_ids={"A", "B"},
+    )
+    entity = _make_fallback_trip_entity(
+        "rt_only_trip_9", route_id="R1", from_stop_id="A", to_stop_id="B",
+        dep_abs=0, arr_abs=0,  # no absolute time available — must be skipped, not crash
+    )
+    feed = _make_feed([entity])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        seg_times, _, skipped = collect_segment_times(
+            [snap], idx, matching_mode="ROUTE_STOP_FALLBACK"
+        )
+
+    assert seg_times == {}
+    assert skipped == 1
+
+
+def test_rebuild_fallback_mode_round_trip(tmp_path):
+    # Static feed's own trip (walked by rebuild_stop_times) shares the same
+    # route/stops as the RT-side fallback entity below, even though the RT trip_id
+    # itself ("rt_only_trip_9") matches nothing in trip_route/stop_map.
+    snap = _fake_snapshot(tmp_path)
+    idx = _make_static_index(
+        trips={"static_trip_1": ("R1", "0")},
+        stops={"static_trip_1": [(1, "A", 0, 60), (2, "B", 150, 150)]},
+        all_route_ids={"R1"},
+        all_stop_ids={"A", "B"},
+    )
+    entity = _make_fallback_trip_entity(
+        "rt_only_trip_9", route_id="R1", from_stop_id="A", to_stop_id="B",
+        dep_abs=1000, arr_abs=1100,
+    )
+    feed = _make_feed([entity])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        seg_times, _, skipped = collect_segment_times(
+            [snap], idx, matching_mode="ROUTE_STOP_FALLBACK"
+        )
+    assert skipped == 0
+    p50_stats, _ = aggregate_segments(seg_times)
+
+    corrections, corrected, gaps = rebuild_stop_times(
+        idx, p50_stats, matching_mode="ROUTE_STOP_FALLBACK"
+    )
+    assert corrected == 1
+    assert gaps == 0
+    # running_time starts at dep[A]=60; observed travel = 1100-1000=100
+    arr_b, dep_b = corrections[("static_trip_1", 2)]
+    assert arr_b == 160
+
+
+def test_rebuild_fallback_mode_does_not_drop_canceled_trips():
+    # Known, documented limitation (see shortHelpString): canceled_trip_ids are always
+    # collected using the RT-side trip_id. In TRIP_ID mode that coincides with the
+    # static trip_id, so drop_trip_ids correctly removes the trip. In
+    # ROUTE_STOP_FALLBACK mode the RT trip_id namespace is, by construction, disjoint
+    # from the static one — so a "canceled" RT trip_id never matches any static
+    # trip_id, and rebuild_stop_times cannot drop it from the output. Pinned here so
+    # this doesn't silently regress or surprise a future maintainer.
+    idx = _make_static_index(
+        trips={"static_trip_1": ("R1", "0")},
+        stops={"static_trip_1": [(1, "A", 0, 60), (2, "B", 150, 150)]},
+        all_route_ids={"R1"},
+        all_stop_ids={"A", "B"},
+    )
+    drop_trip_ids = frozenset({"rt_only_trip_9"})  # an RT-side id, not a static one
+    corrections, _, _ = rebuild_stop_times(
+        idx, {}, drop_trip_ids=drop_trip_ids, matching_mode="ROUTE_STOP_FALLBACK"
+    )
+    assert ("static_trip_1", 1) in corrections
+
+
+# ---------------------------------------------------------------------------
+# sample_feed_capabilities (RT3-5)
+# ---------------------------------------------------------------------------
+
+def test_sample_feed_capabilities_mixed_feed(tmp_path):
+    snap = _fake_snapshot(tmp_path)
+    idx = _make_static_index(trips={}, stops={}, all_route_ids={"R1"}, all_stop_ids={"A"})
+
+    # Entity 1: route_id known; one STU with stop_id known + absolute time present.
+    stu1 = MagicMock()
+    stu1.stop_id = "A"
+    stu1.HasField.side_effect = lambda f: f == "departure"
+    stu1.departure = MagicMock(time=1000, delay=0)
+    stu1.arrival = MagicMock(time=0, delay=0)
+    tu1 = MagicMock()
+    tu1.trip.route_id = "R1"
+    tu1.stop_time_update = [stu1]
+    entity1 = MagicMock()
+    entity1.HasField.side_effect = lambda f: f == "trip_update"
+    entity1.trip_update = tu1
+
+    # Entity 2: route_id NOT known; one STU with no stop_id, no absolute time.
+    stu2 = MagicMock()
+    stu2.stop_id = ""
+    stu2.HasField.side_effect = lambda f: f == "departure"
+    stu2.departure = MagicMock(time=0, delay=30)
+    stu2.arrival = MagicMock(time=0, delay=0)
+    tu2 = MagicMock()
+    tu2.trip.route_id = "R9"
+    tu2.stop_time_update = [stu2]
+    entity2 = MagicMock()
+    entity2.HasField.side_effect = lambda f: f == "trip_update"
+    entity2.trip_update = tu2
+
+    feed = _make_feed([entity1, entity2])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        capability = sample_feed_capabilities([snap], idx)
+
+    assert capability["route_id_overlap"] == pytest.approx(0.5)
+    assert capability["stop_id_presence_ratio"] == pytest.approx(0.5)
+    assert capability["stop_id_overlap"] == pytest.approx(1.0)
+    assert capability["absolute_time_ratio"] == pytest.approx(0.5)
+
+
+def test_sample_feed_capabilities_empty_returns_zeros():
+    idx = _make_static_index(trips={}, stops={})
+    capability = sample_feed_capabilities([], idx)
+    assert capability == {
+        "route_id_overlap": 0.0,
+        "stop_id_presence_ratio": 0.0,
+        "stop_id_overlap": 0.0,
+        "absolute_time_ratio": 0.0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# resolve_matching_mode (RT3-5, build_realized_gtfs.py)
+# ---------------------------------------------------------------------------
+
+def test_resolve_matching_mode_explicit_passthrough():
+    assert resolve_matching_mode(0.0, {}, "TRIP_ID") == "TRIP_ID"
+    assert resolve_matching_mode(0.0, {}, "ROUTE_STOP_FALLBACK") == "ROUTE_STOP_FALLBACK"
+
+
+def test_resolve_matching_mode_auto_picks_trip_id_on_good_overlap():
+    assert resolve_matching_mode(0.10, {}, "AUTO") == "TRIP_ID"
+
+
+def test_resolve_matching_mode_auto_picks_fallback_when_capable():
+    capability = {
+        "route_id_overlap": 0.9,
+        "stop_id_presence_ratio": 0.9,
+        "stop_id_overlap": 0.9,
+        "absolute_time_ratio": 0.9,
+    }
+    assert resolve_matching_mode(0.0, capability, "AUTO") == "ROUTE_STOP_FALLBACK"
+
+
+def test_resolve_matching_mode_auto_raises_when_neither_usable():
+    capability = {
+        "route_id_overlap": 0.1,
+        "stop_id_presence_ratio": 0.1,
+        "stop_id_overlap": 0.1,
+        "absolute_time_ratio": 0.1,
+    }
+    with pytest.raises(ValueError):
+        resolve_matching_mode(0.0, capability, "AUTO")
+
+
+def test_resolve_matching_mode_auto_rejects_fallback_when_route_id_overlap_low():
+    # Regression pin: collect_segment_times' ROUTE_STOP_FALLBACK branch silently
+    # skips any TripUpdate whose route_id isn't in the static feed, so a low
+    # route_id_overlap must block AUTO from selecting ROUTE_STOP_FALLBACK even when
+    # the other three ratios look fine — otherwise most entities get silently
+    # dropped with no fail-fast signal.
+    capability = {
+        "route_id_overlap": 0.05,
+        "stop_id_presence_ratio": 0.9,
+        "stop_id_overlap": 0.9,
+        "absolute_time_ratio": 0.9,
+    }
+    with pytest.raises(ValueError):
+        resolve_matching_mode(0.0, capability, "AUTO")
