@@ -33,7 +33,10 @@ if "qgis" not in sys.modules:
     sys.modules["qgis.PyQt.QtCore"] = MagicMock()
     sys.modules["qgis.PyQt.QtWidgets"] = MagicMock()
 
-from easy_otp.algorithms.build_realized_gtfs import resolve_matching_mode
+from easy_otp.algorithms.build_realized_gtfs import (
+    resolve_matching_mode,
+    resolve_segment_source_mode,
+)
 from easy_otp.core.gtfsrt_realizer import (
     StaticIndex,
     aggregate_segments,
@@ -49,6 +52,7 @@ from easy_otp.core.gtfsrt_realizer import (
     rebuild_stop_times,
     repackage_gtfs,
     sample_feed_capabilities,
+    sample_message_shape,
     segment_key_for,
 )
 
@@ -1408,3 +1412,436 @@ def test_resolve_matching_mode_auto_rejects_fallback_when_route_id_overlap_low()
     }
     with pytest.raises(ValueError):
         resolve_matching_mode(0.0, capability, "AUTO")
+
+
+# ---------------------------------------------------------------------------
+# sample_message_shape (RT3-6, #18)
+# ---------------------------------------------------------------------------
+
+def _make_shape_entity(n_stus: int) -> MagicMock:
+    """Entity exposing only len(stop_time_update) == n_stus, for shape sampling."""
+    entity = MagicMock()
+    entity.HasField.side_effect = lambda f: f == "trip_update"
+    entity.trip_update.stop_time_update = [MagicMock() for _ in range(n_stus)]
+    return entity
+
+
+def test_sample_message_shape_all_single_stop_median_one(tmp_path):
+    snap = _fake_snapshot(tmp_path)
+    feed = _make_feed([_make_shape_entity(1) for _ in range(5)])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        shape = sample_message_shape([snap])
+
+    assert shape["median_stop_updates_per_trip"] == 1
+    assert shape["single_stop_fraction"] == pytest.approx(1.0)
+
+
+def test_sample_message_shape_mixed_counts_median_and_fraction(tmp_path):
+    snap = _fake_snapshot(tmp_path)
+    counts = [1, 1, 3, 5]
+    feed = _make_feed([_make_shape_entity(n) for n in counts])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        shape = sample_message_shape([snap])
+
+    assert shape["median_stop_updates_per_trip"] == int(round(statistics.median(counts)))
+    assert shape["single_stop_fraction"] == pytest.approx(0.5)
+
+
+def test_sample_message_shape_empty_snapshot_list_returns_zeros():
+    shape = sample_message_shape([])
+    assert shape == {"median_stop_updates_per_trip": 0, "single_stop_fraction": 0.0}
+
+
+def test_sample_message_shape_unreadable_snapshot_returns_zeros(tmp_path):
+    snap = _fake_snapshot(tmp_path)
+    with patch(
+        "easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=ValueError("corrupt")
+    ):
+        shape = sample_message_shape([snap])
+
+    assert shape == {"median_stop_updates_per_trip": 0, "single_stop_fraction": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# collect_segment_times — SEGMENT_SOURCE_MODE=CROSS_SNAPSHOT (RT3-6, #18)
+# ---------------------------------------------------------------------------
+
+def _make_single_stop_entity(
+    trip_id,
+    stop_sequence,
+    route_id="",
+    stop_id="",
+    arr_time=0,
+    arr_delay=0,
+    dep_time=0,
+    dep_delay=0,
+    canceled=False,
+    skipped=False,
+) -> MagicMock:
+    """Build a mock entity with exactly ONE StopTimeUpdate (Poznań next-stop-only
+    shape). Both arrival and departure are always explicitly constructed (even
+    when 0), per the same MagicMock-auto-vivification caution documented on
+    _make_fallback_trip_entity above.
+    """
+    stu = MagicMock()
+    stu.stop_sequence = stop_sequence
+    stu.schedule_relationship = 1 if skipped else 0
+    stu.stop_id = stop_id
+    stu.HasField.side_effect = lambda f: f in ("arrival", "departure")
+    stu.arrival = MagicMock(time=arr_time, delay=arr_delay)
+    stu.departure = MagicMock(time=dep_time, delay=dep_delay)
+
+    tu = MagicMock()
+    tu.trip.trip_id = trip_id
+    tu.trip.route_id = route_id
+    tu.trip.schedule_relationship = 3 if canceled else 0
+    tu.stop_time_update = [stu]
+
+    entity = MagicMock()
+    entity.HasField.side_effect = lambda f: f == "trip_update"
+    entity.trip_update = tu
+    return entity
+
+
+def test_collect_cross_snapshot_stitches_consecutive_stops_trip_id_mode(tmp_path):
+    # The core regression fix (#18): Poznan-shaped feed — every TripUpdate carries
+    # exactly one StopTimeUpdate, so PER_MESSAGE's adjacent-pair loop never has a
+    # second stop to pair with. CROSS_SNAPSHOT instead stitches stop_sequence 1,
+    # 2, 3 observed across three separate snapshots into two segments.
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 100), (2, "B", 200, 300), (3, "C", 400, 500)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080200.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity("t1", 1, dep_time=1010)]),
+        _make_feed([_make_single_stop_entity("t1", 2, arr_time=1100, dep_time=1110)]),
+        _make_feed([_make_single_stop_entity("t1", 3, arr_time=1200)]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        segment_times, canceled_trip_ids, skipped = collect_segment_times(
+            snaps, idx, matching_mode="TRIP_ID", segment_source_mode="CROSS_SNAPSHOT",
+        )
+
+    assert segment_times[("R1", "0", "A", "B")] == pytest.approx([90.0])
+    assert segment_times[("R1", "0", "B", "C")] == pytest.approx([90.0])
+    assert canceled_trip_ids == set()
+    assert skipped == 0
+
+
+def test_collect_per_message_yields_zero_segments_on_poznan_shaped_feed(tmp_path):
+    # Pins the #18 baseline bug this milestone fixes: run the IDENTICAL
+    # Poznan-shaped snapshots from the test above (one StopTimeUpdate per
+    # message) through PER_MESSAGE instead — its adjacent-pair loop never has a
+    # second stop within the same message to pair with, so it must still
+    # produce zero segments. A future change can't silently "fix" PER_MESSAGE
+    # without updating this test.
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 100), (2, "B", 200, 300), (3, "C", 400, 500)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080200.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity("t1", 1, dep_time=1010)]),
+        _make_feed([_make_single_stop_entity("t1", 2, arr_time=1100, dep_time=1110)]),
+        _make_feed([_make_single_stop_entity("t1", 3, arr_time=1200)]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        segment_times, _, _ = collect_segment_times(
+            snaps, idx, matching_mode="TRIP_ID", segment_source_mode="PER_MESSAGE",
+        )
+
+    assert segment_times == {}
+
+
+def test_collect_cross_snapshot_uses_scheduled_delay_fallback_when_no_absolute_time(
+    tmp_path,
+):
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 1000), (2, "B", 1600, 1600)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity("t1", 1, dep_delay=50)]),
+        _make_feed([_make_single_stop_entity("t1", 2, arr_delay=80)]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        segment_times, _, _ = collect_segment_times(
+            snaps, idx, matching_mode="TRIP_ID", segment_source_mode="CROSS_SNAPSHOT",
+        )
+
+    # sched_dep=1000, dep_delay=50 -> 1050; sched_arr=1600, arr_delay=80 -> 1680
+    assert segment_times[("R1", "0", "A", "B")] == pytest.approx([630.0])
+
+
+def test_collect_cross_snapshot_skips_and_counts_sequence_gap(tmp_path):
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 100), (2, "B", 200, 300), (3, "C", 400, 500)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity("t1", 1, dep_time=1010)]),
+        _make_feed([_make_single_stop_entity("t1", 3, arr_time=1200)]),  # seq 2 never seen
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        segment_times, _, skipped = collect_segment_times(
+            snaps, idx, matching_mode="TRIP_ID", segment_source_mode="CROSS_SNAPSHOT",
+        )
+
+    assert segment_times == {}
+    assert skipped == 1
+
+
+def test_collect_cross_snapshot_last_snapshot_wins_per_stop(tmp_path):
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 1000), (2, "B", 1600, 1600)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080200.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity("t1", 1, dep_time=500)]),
+        _make_feed([_make_single_stop_entity("t1", 2, arr_time=999)]),   # early guess
+        _make_feed([_make_single_stop_entity("t1", 2, arr_time=1200)]),  # later, more mature
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        segment_times, _, _ = collect_segment_times(
+            snaps, idx, matching_mode="TRIP_ID", segment_source_mode="CROSS_SNAPSHOT",
+        )
+
+    # If the earlier (999) observation had won instead of the later (1200) one,
+    # this would be 499.0 — pins that the chronologically last snapshot wins.
+    assert segment_times[("R1", "0", "A", "B")] == pytest.approx([700.0])
+
+
+def test_collect_cross_snapshot_reconcile_last_snapshot_is_noop(tmp_path):
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 100), (2, "B", 200, 300), (3, "C", 400, 500)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080200.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity("t1", 1, dep_time=1010)]),
+        _make_feed([_make_single_stop_entity("t1", 2, arr_time=1100, dep_time=1110)]),
+        _make_feed([_make_single_stop_entity("t1", 3, arr_time=1200)]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        result_true = collect_segment_times(
+            snaps, idx, matching_mode="TRIP_ID", segment_source_mode="CROSS_SNAPSHOT",
+            reconcile_last_snapshot=True,
+        )
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        result_false = collect_segment_times(
+            snaps, idx, matching_mode="TRIP_ID", segment_source_mode="CROSS_SNAPSHOT",
+            reconcile_last_snapshot=False,
+        )
+
+    assert result_true == result_false
+
+
+def test_collect_cross_snapshot_canceled_trip_skip_policy(tmp_path):
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 100), (2, "B", 200, 300)]},
+    )
+    snap = _fake_snapshot(tmp_path)
+    feed = _make_feed([_make_single_stop_entity("t1", 1, dep_time=1010, canceled=True)])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        segment_times, canceled_trip_ids, _ = collect_segment_times(
+            [snap], idx, matching_mode="TRIP_ID", segment_source_mode="CROSS_SNAPSHOT",
+            canceled_policy="skip",
+        )
+
+    assert segment_times == {}
+    assert canceled_trip_ids == {"t1"}
+
+
+def test_collect_cross_snapshot_stu_skipped_not_anchored(tmp_path):
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 100), (2, "B", 200, 300), (3, "C", 400, 500)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080200.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity("t1", 1, dep_time=1010)]),
+        _make_feed([_make_single_stop_entity("t1", 2, arr_time=1100, skipped=True)]),
+        _make_feed([_make_single_stop_entity("t1", 3, arr_time=1200)]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        segment_times, _, skipped = collect_segment_times(
+            snaps, idx, matching_mode="TRIP_ID", segment_source_mode="CROSS_SNAPSHOT",
+        )
+
+    # Stop 2 was SKIPPED — never anchored, so 1->3 is treated as an unobserved
+    # gap, not a segment computed straight through the skipped stop.
+    assert segment_times == {}
+    assert skipped == 1
+
+
+def test_collect_cross_snapshot_fallback_mode_produces_segments(tmp_path):
+    idx = _make_static_index(
+        trips={}, stops={}, all_route_ids={"R1"}, all_stop_ids={"A", "B"},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity(
+            "rt_only_trip", 1, route_id="R1", stop_id="A", dep_time=1000,
+        )]),
+        _make_feed([_make_single_stop_entity(
+            "rt_only_trip", 2, route_id="R1", stop_id="B", arr_time=1090,
+        )]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        segment_times, _, skipped = collect_segment_times(
+            snaps, idx, matching_mode="ROUTE_STOP_FALLBACK",
+            segment_source_mode="CROSS_SNAPSHOT",
+        )
+
+    assert segment_times[("R1", "", "A", "B")] == pytest.approx([90.0])
+    assert skipped == 0
+
+
+def test_collect_cross_snapshot_fallback_mode_requires_absolute_time(tmp_path):
+    idx = _make_static_index(
+        trips={}, stops={}, all_route_ids={"R1"}, all_stop_ids={"A", "B"},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity(
+            "rt_only_trip", 1, route_id="R1", stop_id="A", dep_delay=30,
+        )]),
+        _make_feed([_make_single_stop_entity(
+            "rt_only_trip", 2, route_id="R1", stop_id="B", arr_delay=40,
+        )]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        segment_times, _, skipped = collect_segment_times(
+            snaps, idx, matching_mode="ROUTE_STOP_FALLBACK",
+            segment_source_mode="CROSS_SNAPSHOT",
+        )
+
+    assert segment_times == {}
+    assert skipped == 1
+
+
+def test_collect_per_message_default_unchanged_when_source_mode_omitted(tmp_path):
+    # The real regression guard for "PER_MESSAGE provably unchanged" is that all
+    # pre-existing tests in this file keep passing byte-for-byte; this is a small,
+    # explicit, discoverable pin on top of that, not a replacement for it.
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 3600), (2, "B", 4200, 4200)]},
+    )
+    snap = _fake_snapshot(tmp_path)
+    feed = _make_feed([_make_trip_entity("t1", dep_delay=0, arr_delay=60)])
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        default_result = collect_segment_times([snap], idx)
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", return_value=feed):
+        explicit_result = collect_segment_times([snap], idx, segment_source_mode="PER_MESSAGE")
+
+    assert default_result == explicit_result
+
+
+def test_collect_cross_snapshot_round_trip_rebuild(tmp_path):
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 100), (2, "B", 200, 300), (3, "C", 400, 500)]},
+    )
+    snaps = [
+        _fake_snapshot(tmp_path, "snapshot_20260705-080000.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080100.pb"),
+        _fake_snapshot(tmp_path, "snapshot_20260705-080200.pb"),
+    ]
+    feeds = [
+        _make_feed([_make_single_stop_entity("t1", 1, dep_time=1010)]),
+        _make_feed([_make_single_stop_entity("t1", 2, arr_time=1100, dep_time=1110)]),
+        _make_feed([_make_single_stop_entity("t1", 3, arr_time=1200)]),
+    ]
+
+    with patch("easy_otp.core.gtfsrt_realizer.decode_snapshot", side_effect=feeds):
+        segment_times, _, _ = collect_segment_times(
+            snaps, idx, matching_mode="TRIP_ID", segment_source_mode="CROSS_SNAPSHOT",
+        )
+
+    p50_stats, _ = aggregate_segments(segment_times)
+    corrections, corrected_count, gap_count = rebuild_stop_times(
+        idx, p50_stats, matching_mode="TRIP_ID"
+    )
+
+    assert corrected_count == 2
+    assert gap_count == 0
+    assert corrections[("t1", 2)] == (190, 290)
+    assert corrections[("t1", 3)] == (380, 480)
+
+
+# ---------------------------------------------------------------------------
+# resolve_segment_source_mode (RT3-6, build_realized_gtfs.py)
+# ---------------------------------------------------------------------------
+
+def test_resolve_segment_source_mode_explicit_passthrough():
+    assert resolve_segment_source_mode({}, "PER_MESSAGE") == "PER_MESSAGE"
+    assert resolve_segment_source_mode({}, "CROSS_SNAPSHOT") == "CROSS_SNAPSHOT"
+
+
+def test_resolve_segment_source_mode_auto_picks_cross_snapshot_for_single_stop_median():
+    shape = {"median_stop_updates_per_trip": 1, "single_stop_fraction": 1.0}
+    assert resolve_segment_source_mode(shape, "AUTO") == "CROSS_SNAPSHOT"
+
+
+def test_resolve_segment_source_mode_auto_picks_per_message_for_multi_stop_median():
+    shape = {"median_stop_updates_per_trip": 8, "single_stop_fraction": 0.0}
+    assert resolve_segment_source_mode(shape, "AUTO") == "PER_MESSAGE"
+
+
+def test_resolve_segment_source_mode_empty_shape_defaults_to_cross_snapshot():
+    # A failed sample (shape={}, same pattern as capability={} on sampling
+    # failure) resolves via the .get(..., 0) default to CROSS_SNAPSHOT — harmless,
+    # since zero anchors collected either way produces zero segments regardless
+    # of which mode is nominally selected.
+    assert resolve_segment_source_mode({}, "AUTO") == "CROSS_SNAPSHOT"

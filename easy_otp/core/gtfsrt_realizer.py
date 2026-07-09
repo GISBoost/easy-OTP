@@ -247,6 +247,160 @@ def _has_event(stu) -> bool:
     return stu.HasField("arrival") or stu.HasField("departure")
 
 
+def _collect_segment_times_cross_snapshot(
+    snapshot_paths: list[Path],
+    static_index: StaticIndex,
+    canceled_policy: str,
+    progress_cb: Optional[Callable[[float], None]],
+    cancel_check: Optional[Callable[[], bool]],
+    matching_mode: str,
+) -> tuple[dict[SegmentKey, list[float]], set[str], int]:
+    """CROSS_SNAPSHOT segment collection (RT3-6, #18): stitch per-stop observations
+    for the same trip_id across the whole snapshot archive, for feeds whose
+    TripUpdates carry only the next stop (e.g. Poznan), so collect_segment_times'
+    PER_MESSAGE adjacent-pair loop never has a second stop to pair with.
+
+    Pass 1: chronological walk over snapshot_paths, recording one observed
+    (arrival, departure, stop_id) anchor per (trip_id, stop_sequence) — a later
+    snapshot's observation overwrites an earlier one (chronological order means
+    "last write wins" == "most mature observation wins", the same principle as
+    reconcile_last_snapshot, applied per-stop instead of per-pair; consequently
+    reconcile_last_snapshot has no additional effect in this mode). A SKIPPED
+    StopTimeUpdate is never anchored (treated as unobserved, same as today's
+    _STU_SKIPPED filter) — it also does not overwrite or invalidate an existing
+    anchor from an earlier snapshot for the same (trip_id, stop_sequence); it is
+    simply not written, leaving whatever was already recorded in place.
+
+    Pass 2: per trip_id, pairs of strictly consecutive observed stop_sequence
+    values are turned into segments exactly as in the PER_MESSAGE branch (same
+    absolute-time-preferred / scheduled+delay fallback for TRIP_ID mode, same
+    absolute-time requirement for ROUTE_STOP_FALLBACK mode, same >2h/non-positive
+    filter, same segment_key_for). A sequence gap (an intermediate stop never
+    observed) is skipped and counted, never interpolated.
+
+    Returns the same 3-tuple shape as collect_segment_times; the 3rd value here
+    counts stop-pairs skipped in Pass 2 (sequence gaps, or — in
+    ROUTE_STOP_FALLBACK matching mode — pairs lacking an absolute observed
+    time) — a different meaning from PER_MESSAGE's fallback_time_skipped.
+    """
+    # (trip_id, stop_sequence) -> (arr_abs, arr_delay, dep_abs, dep_delay, stop_id)
+    anchors: dict[tuple[str, int], tuple[int, int, int, int, str]] = {}
+    trip_meta: dict[str, tuple[str, str]] = {}
+    canceled_trip_ids: set[str] = set()
+    total = len(snapshot_paths)
+
+    for i, path in enumerate(snapshot_paths):
+        if cancel_check and cancel_check():
+            break
+
+        try:
+            feed = decode_snapshot(path.read_bytes())
+        except Exception:  # noqa: BLE001 — corrupt / unreadable snapshot
+            if progress_cb:
+                progress_cb((i + 1) / total)
+            continue
+
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
+                continue
+            tu = entity.trip_update
+            trip_id = tu.trip.trip_id
+
+            if tu.trip.schedule_relationship == _SR_CANCELED:
+                canceled_trip_ids.add(trip_id)
+                if canceled_policy == "skip":
+                    continue
+
+            if matching_mode == "ROUTE_STOP_FALLBACK":
+                route_id = tu.trip.route_id
+                if not route_id or route_id not in static_index.all_route_ids:
+                    continue
+                direction_id = ""
+            else:
+                if trip_id not in static_index.trip_route:
+                    continue
+                route_id, direction_id = static_index.trip_route[trip_id]
+
+            trip_meta[trip_id] = (route_id, direction_id)
+
+            for stu in tu.stop_time_update:
+                if getattr(stu, "schedule_relationship", 0) == _STU_SKIPPED:
+                    continue
+                if not _has_event(stu):
+                    continue
+                arr_abs, arr_delay = _get_observed_arrival(stu)
+                dep_abs, dep_delay = _get_observed_departure(stu)
+                anchors[(trip_id, stu.stop_sequence)] = (
+                    arr_abs, arr_delay, dep_abs, dep_delay, stu.stop_id
+                )
+
+        if progress_cb:
+            progress_cb((i + 1) / total)
+
+    segment_times: dict[SegmentKey, list[float]] = defaultdict(list)
+    skipped_pairs = 0
+
+    seqs_by_trip: dict[str, list[int]] = defaultdict(list)
+    for trip_id, seq in anchors:
+        seqs_by_trip[trip_id].append(seq)
+
+    for trip_id, seqs in seqs_by_trip.items():
+        route_id, direction_id = trip_meta[trip_id]
+        seqs.sort()
+
+        for k in range(len(seqs) - 1):
+            from_seq = seqs[k]
+            to_seq = seqs[k + 1]
+            if to_seq != from_seq + 1:
+                skipped_pairs += 1
+                continue
+
+            arr_abs_from, arr_delay_from, dep_abs_from, dep_delay_from, from_stop_id = (
+                anchors[(trip_id, from_seq)]
+            )
+            arr_abs_to, arr_delay_to, dep_abs_to, dep_delay_to, to_stop_id = (
+                anchors[(trip_id, to_seq)]
+            )
+
+            if matching_mode == "ROUTE_STOP_FALLBACK":
+                if not from_stop_id or from_stop_id not in static_index.all_stop_ids:
+                    continue
+                if not to_stop_id or to_stop_id not in static_index.all_stop_ids:
+                    continue
+                if dep_abs_from <= 0 or arr_abs_to <= 0:
+                    skipped_pairs += 1
+                    continue
+                seg_time = float(arr_abs_to - dep_abs_from)
+            else:
+                from_entry = static_index.stop_map.get((trip_id, from_seq))
+                to_entry = static_index.stop_map.get((trip_id, to_seq))
+                if not from_entry or not to_entry:
+                    continue
+
+                from_stop_id = from_entry[0]
+                to_stop_id = to_entry[0]
+                sched_dep = from_entry[2]   # dep_sec at from_stop
+                sched_arr = to_entry[1]     # arr_sec at to_stop
+
+                if dep_abs_from > 0 and arr_abs_to > 0:
+                    seg_time = float(arr_abs_to - dep_abs_from)
+                else:
+                    seg_time = float(
+                        (sched_arr + arr_delay_to) - (sched_dep + dep_delay_from)
+                    )
+
+            # Reject non-positive or implausibly long segments (> 2 h)
+            if seg_time <= 0 or seg_time > 7200:
+                continue
+
+            key = segment_key_for(
+                route_id, direction_id, from_stop_id, to_stop_id, matching_mode
+            )
+            segment_times[key].append(seg_time)
+
+    return dict(segment_times), canceled_trip_ids, skipped_pairs
+
+
 def collect_segment_times(
     snapshot_paths: list[Path],
     static_index: StaticIndex,
@@ -255,6 +409,7 @@ def collect_segment_times(
     cancel_check: Optional[Callable[[], bool]] = None,
     reconcile_last_snapshot: bool = True,
     matching_mode: str = "TRIP_ID",
+    segment_source_mode: str = "PER_MESSAGE",
 ) -> tuple[dict[SegmentKey, list[float]], set[str], int]:
     """Parse each .pb snapshot; return (segment_times, canceled_trip_ids, fallback_time_skipped).
 
@@ -262,7 +417,10 @@ def collect_segment_times(
     canceled_trip_ids: trip_ids seen with CANCELED status (for drop logic)
     fallback_time_skipped: pairs skipped in ROUTE_STOP_FALLBACK mode for lacking an
     absolute observed time (no matched static trip to anchor a bare delay against).
-    Always 0 in TRIP_ID mode.
+    Always 0 in TRIP_ID mode. In CROSS_SNAPSHOT mode this slot instead counts
+    stop-pairs skipped in its second pass (non-consecutive stop_sequence gaps, or
+    — in ROUTE_STOP_FALLBACK matching mode — pairs missing an absolute observed
+    time) — see _collect_segment_times_cross_snapshot.
 
     reconcile_last_snapshot: when True (default), keep only the chronologically
     last snapshot's observation per (trip_id, from_seq, to_seq) — predictions
@@ -271,7 +429,9 @@ def collect_segment_times(
     every snapshot's observation is appended (pre-0.7 behavior). Assumes
     snapshot_paths is already in chronological order. Applies identically in both
     matching modes: grouping uses the RT-side trip_id regardless of whether it
-    matches the static feed, so it needs no knowledge of matching_mode.
+    matches the static feed, so it needs no knowledge of matching_mode. Has no
+    additional effect when segment_source_mode is CROSS_SNAPSHOT — that mode
+    already reconciles per-stop, unconditionally, while collecting.
 
     matching_mode: "TRIP_ID" (default) requires an exact static trip_id match, as
     before RT3-5. "ROUTE_STOP_FALLBACK" instead resolves route_id/stop_id directly
@@ -279,7 +439,22 @@ def collect_segment_times(
     for feeds (Poznan, Krakow) whose trip_id namespace is permanently disjoint from
     the static feed's. direction_id cannot be recovered in this mode (no matched
     trip); segment_key_for zeroes it.
+
+    segment_source_mode: "PER_MESSAGE" (default) is the exact pre-RT3-6 code path
+    below, unchanged — segments are computed only from adjacent StopTimeUpdate
+    pairs within a single message. "CROSS_SNAPSHOT" (RT3-6, #18) instead stitches
+    per-stop observations for the same trip_id across the whole snapshot archive,
+    for feeds (e.g. Poznan) whose TripUpdates always carry a single StopTimeUpdate,
+    so the PER_MESSAGE adjacent-pair loop never has a second stop to pair with —
+    see _collect_segment_times_cross_snapshot.
     """
+    if segment_source_mode == "CROSS_SNAPSHOT":
+        return _collect_segment_times_cross_snapshot(
+            snapshot_paths, static_index, canceled_policy,
+            progress_cb, cancel_check, matching_mode,
+        )
+
+    # --- PER_MESSAGE: everything below is unchanged from before RT3-6 ---
     segment_times: dict[SegmentKey, list[float]] = defaultdict(list)
     canceled_trip_ids: set[str] = set()
     fallback_time_skipped = 0
@@ -646,6 +821,36 @@ def sample_feed_capabilities(
         "absolute_time_ratio": (
             abs_time_present / event_total if event_total else 0.0
         ),
+    }
+
+
+def sample_message_shape(snapshot_paths: list[Path]) -> dict:
+    """Sample up to 5 snapshots; report the StopTimeUpdate-per-TripUpdate shape.
+
+    Returns a dict with keys: median_stop_updates_per_trip (int) — the median
+    StopTimeUpdate count per TripUpdate, pooled across all sampled TripUpdates
+    (one median over the pooled counts, not averaged per-snapshot); and
+    single_stop_fraction (float in [0, 1]) — the fraction of sampled TripUpdates
+    carrying exactly one StopTimeUpdate (the Poznan-shaped next-stop-only
+    signature, RT3-6 / #18). Does not raise; returns zeros if no snapshots are
+    readable or no TripUpdates are found in the sample.
+    """
+    sample = snapshot_paths[:5]
+    counts: list[int] = []
+    for path in sample:
+        try:
+            feed = decode_snapshot(path.read_bytes())
+        except Exception:  # noqa: BLE001
+            continue
+        for entity in feed.entity:
+            if entity.HasField("trip_update"):
+                counts.append(len(entity.trip_update.stop_time_update))
+
+    if not counts:
+        return {"median_stop_updates_per_trip": 0, "single_stop_fraction": 0.0}
+    return {
+        "median_stop_updates_per_trip": int(round(statistics.median(counts))),
+        "single_stop_fraction": sum(1 for c in counts if c == 1) / len(counts),
     }
 
 

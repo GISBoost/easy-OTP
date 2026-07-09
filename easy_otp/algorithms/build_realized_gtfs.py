@@ -47,14 +47,19 @@ from ..core.gtfsrt_realizer import (
     rebuild_stop_times,
     repackage_gtfs,
     sample_feed_capabilities,
+    sample_message_shape,
 )
 
 _MATCHING_MODE_OPTIONS = ["AUTO", "TRIP_ID", "ROUTE_STOP_FALLBACK"]
+_SEGMENT_SOURCE_MODE_OPTIONS = ["AUTO", "PER_MESSAGE", "CROSS_SNAPSHOT"]
 
 # AUTO-resolution thresholds — deliberately explicit, revisitable choices (see
 # shortHelpString). 0.05 matches the pre-existing trip-id overlap warning threshold.
 _TRIP_ID_OVERLAP_THRESHOLD = 0.05
 _FALLBACK_CAPABILITY_THRESHOLD = 0.5
+# Provisional — needs confirmation on a real Poznań archive (RT3-6, #18); revisit if
+# a known next-stop-only feed narrowly misses this cutoff.
+_SINGLE_STOP_MEDIAN_THRESHOLD = 1
 
 
 def resolve_matching_mode(overlap: float, capability: dict, requested_mode: str) -> str:
@@ -91,6 +96,28 @@ def resolve_matching_mode(overlap: float, capability: dict, requested_mode: str)
         f"{capability.get('absolute_time_ratio', 0.0):.0%}) is usable for this feed. "
         "See docs/reference/RT_test-feeds-by-city.md for known-working feeds."
     )
+
+
+def resolve_segment_source_mode(shape: dict, requested_mode: str) -> str:
+    """Resolve AUTO to PER_MESSAGE or CROSS_SNAPSHOT; pass an explicit mode through unchanged.
+
+    AUTO resolution: CROSS_SNAPSHOT if the message-shape sample's
+    median_stop_updates_per_trip is <= 1 (a next-stop-only feed, e.g. Poznań —
+    RT3-6, #18); else PER_MESSAGE. <= 1 (not == 1) is a deliberate widening of
+    the PRD's proposed "median == 1" cutoff, to also cover an empty/unreadable
+    sample (median 0) with the safer of the two modes for that edge case —
+    CROSS_SNAPSHOT can never produce more segments than PER_MESSAGE would on a
+    genuinely empty sample, since Pass 1 records zero anchors either way.
+    Unlike resolve_matching_mode, this never raises — PER_MESSAGE is always a
+    safe default when the sample doesn't clearly indicate a next-stop-only feed.
+    """
+    if requested_mode != "AUTO":
+        return requested_mode
+
+    if shape.get("median_stop_updates_per_trip", 0) <= _SINGLE_STOP_MEDIAN_THRESHOLD:
+        return "CROSS_SNAPSHOT"
+
+    return "PER_MESSAGE"
 
 
 def _ask_on_main_thread(title: str, text: str) -> int:
@@ -133,6 +160,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
     DEDUPLICATE_FROZEN_SNAPSHOTS = "DEDUPLICATE_FROZEN_SNAPSHOTS"
     RECONCILE_LAST_SNAPSHOT = "RECONCILE_LAST_SNAPSHOT"
     MATCHING_MODE = "MATCHING_MODE"
+    SEGMENT_SOURCE_MODE = "SEGMENT_SOURCE_MODE"
     OUTPUT_P50 = "OUTPUT_P50"
     OUTPUT_P85 = "OUTPUT_P85"
 
@@ -199,6 +227,32 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "ROUTE_STOP_FALLBACK can also be forced explicitly (e.g. to compare both on "
             "the same archive); the four capability ratios are always logged, and a "
             "warning is shown if a forced mode looks unlikely to work well.\n\n"
+            "Segment source mode (SEGMENT_SOURCE_MODE):\n"
+            "By default (AUTO), segments are computed from adjacent StopTimeUpdate "
+            "pairs within a single TripUpdate message (PER_MESSAGE) — this is the "
+            "unchanged pre-0.7 behavior for every already-verified feed (e.g. Gdańsk, "
+            "Szczecin, the Polish rail feed). Some feeds (e.g. Poznań) instead publish "
+            "next-stop-only TripUpdates, carrying exactly one StopTimeUpdate per trip "
+            "per message — for these, PER_MESSAGE's adjacent-pair loop never has a "
+            "second stop to pair with, yielding zero segments even at high trip_id "
+            "overlap (RT3-6, #18). When the archive's message-shape sample shows a "
+            "median of <= 1 StopTimeUpdate per TripUpdate (a provisional threshold, "
+            "pending confirmation on a real Poznań archive), AUTO instead selects "
+            "CROSS_SNAPSHOT: per trip_id, observations of each stop are stitched "
+            "across the whole archive (the chronologically latest snapshot's "
+            "observation of a given stop wins), and segments are computed only "
+            "between strictly consecutive stop_sequence values. A stop_sequence gap "
+            "(an intermediate stop never observed between polls) is skipped and "
+            "counted, never interpolated — a polling interval too coarse relative to "
+            "stop spacing will still produce sparse coverage, just fewer outright "
+            "gaps than before. RECONCILE_LAST_SNAPSHOT has no additional effect when "
+            "SEGMENT_SOURCE_MODE resolves to CROSS_SNAPSHOT: the equivalent "
+            "reconciliation already happens per-stop while collecting. "
+            "SEGMENT_SOURCE_MODE and MATCHING_MODE are independent axes — "
+            "CROSS_SNAPSHOT composes with either TRIP_ID (uses the static schedule "
+            "base exactly like PER_MESSAGE, no absolute-time requirement) or "
+            "ROUTE_STOP_FALLBACK (inherits its absolute-time requirement). Both "
+            "modes can also be forced explicitly.\n\n"
             "This algorithm assumes the archive covers a single service day. If the "
             "snapshot archive spans more than ~25 hours, a warning is logged (not "
             "blocking) noting that results may mix unrelated days.\n\n"
@@ -251,6 +305,10 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "canceled_trip_ids are collected using the RT-side trip_id, which by "
             "construction does not match any static trip_id in this mode, so CANCELED "
             "RT trips remain in the output feed (unlike TRIP_ID mode).\n"
+            "- CROSS_SNAPSHOT stitches per-stop observations across snapshots; a "
+            "stop_sequence gap (a missed poll) is skipped and counted, never "
+            "interpolated — polling must be frequent enough relative to stop spacing "
+            "for good coverage.\n"
             "- Output is a reproducible static GTFS feed; it is not a record of any "
             "single actual day.\n\n"
             "See docs/RT-3_realized-gtfs-notes.md for full methodology and references."
@@ -334,6 +392,18 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 defaultValue=0,
             )
         )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.SEGMENT_SOURCE_MODE,
+                self.tr(
+                    "Segment source mode (AUTO: use CROSS_SNAPSHOT if the archive's "
+                    "TripUpdates carry a median of <= 1 StopTimeUpdate each, else "
+                    "PER_MESSAGE)"
+                ),
+                options=_SEGMENT_SOURCE_MODE_OPTIONS,
+                defaultValue=0,
+            )
+        )
         self.addOutput(
             QgsProcessingOutputString(
                 self.OUTPUT_P50,
@@ -400,6 +470,10 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         )
         matching_mode_idx = self.parameterAsEnum(parameters, self.MATCHING_MODE, context)
         requested_matching_mode = _MATCHING_MODE_OPTIONS[matching_mode_idx]
+        segment_source_mode_idx = self.parameterAsEnum(
+            parameters, self.SEGMENT_SOURCE_MODE, context
+        )
+        requested_segment_source_mode = _SEGMENT_SOURCE_MODE_OPTIONS[segment_source_mode_idx]
         canceled_policy = "skip"
 
         if not output_prefix:
@@ -547,6 +621,36 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                     "segments will likely be skipped."
                 ))
 
+        feedback.pushInfo(self.tr(
+            "Sampling message shape (StopTimeUpdate count per TripUpdate)…"
+        ))
+        try:
+            shape = sample_message_shape(snapshot_paths)
+        except Exception as exc:  # noqa: BLE001
+            shape = {}
+            feedback.pushWarning(self.tr(f"Message-shape sample failed: {exc}"))
+
+        feedback.pushInfo(self.tr(
+            "Message shape sample — median StopTimeUpdate/TripUpdate: {0}  |  "
+            "single-stop TripUpdates: {1:.0%}"
+        ).format(
+            shape.get("median_stop_updates_per_trip", 0),
+            shape.get("single_stop_fraction", 0.0),
+        ))
+
+        segment_source_mode = resolve_segment_source_mode(
+            shape, requested_segment_source_mode
+        )
+        feedback.pushInfo(self.tr(f"Segment source mode: {segment_source_mode}"))
+
+        if segment_source_mode == "CROSS_SNAPSHOT" and reconcile_last_snapshot:
+            feedback.pushInfo(self.tr(
+                "RECONCILE_LAST_SNAPSHOT has no additional effect when "
+                "SEGMENT_SOURCE_MODE resolves to CROSS_SNAPSHOT: per-stop "
+                "reconciliation (latest snapshot wins) already happens "
+                "unconditionally while collecting."
+            ))
+
         span_sec = check_snapshot_time_span(raw_snapshot_paths)
         if span_sec > 25 * 3600:
             feedback.pushWarning(self.tr(
@@ -579,15 +683,21 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 cancel_check=_cancel,
                 reconcile_last_snapshot=reconcile_last_snapshot,
                 matching_mode=matching_mode,
+                segment_source_mode=segment_source_mode,
             )
 
             if feedback.isCanceled():
                 return {self.OUTPUT_P50: "", self.OUTPUT_P85: ""}
 
+            skip_label = (
+                self.tr("skipped (sequence gaps / no absolute time)")
+                if segment_source_mode == "CROSS_SNAPSHOT"
+                else self.tr("skipped (no absolute time)")
+            )
             feedback.pushInfo(self.tr(
                 f"Segments observed: {len(segment_times):,}  |  "
                 f"CANCELED trips: {len(canceled_trip_ids)}  |  "
-                f"skipped (no absolute time): {fallback_time_skipped:,}"
+                f"{skip_label}: {fallback_time_skipped:,}"
             ))
             feedback.setProgress(65)
 

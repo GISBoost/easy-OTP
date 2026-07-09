@@ -177,9 +177,9 @@ Two related sub-issues:
 
 ## 18. `BuildRealizedGtfs`: single-stop RT feeds yield zero segments (Poznań)
 
-**Severity:** high (RT-3 produces no correction at all for affected cities). · **Tracker:** [#18](../../issues/18) · **Status:** Under investigation.
+**Severity:** high (RT-3 produces no correction at all for affected cities). · **Tracker:** [#18](../../issues/18) · **Status:** Fixed (RT3-6), pending human verification of the final 0.6.x sign-off before the 0.7.0 release.
 
-`BuildRealizedGtfs` reports `Segments observed: 0` on a real Poznań archive in both
+`BuildRealizedGtfs` reported `Segments observed: 0` on a real Poznań archive in both
 `RECONCILE_LAST_SNAPSHOT` modes, despite 98% trip_id overlap against the static feed.
 Root cause (confirmed by decoding raw snapshots): every `TripUpdate` in the Poznań feed
 carries exactly **one** `StopTimeUpdate` (next-stop-only predictions), so
@@ -188,15 +188,19 @@ time from — independent of trip_id matching. This is a different root cause fr
 [#10](../../issues/10) (trip_id do match here). Gdańsk's feed carries 1–28
 `StopTimeUpdate`s per trip, which is why it is unaffected.
 
-**Workaround:** none. `RunTemporalAccessibility` on the resulting feed falls back to
-scheduled times everywhere (output is still valid, just not RT-corrected).
+**Workaround (pre-RT3-6):** none. `RunTemporalAccessibility` on the resulting feed fell
+back to scheduled times everywhere (output was still valid, just not RT-corrected).
 
 **Status:** confirmed **not** fixable by RT3-5's route/stop fallback matching — the
-problem is the feed shape (no adjacent stop pair per snapshot), not id matching. Scoped
-(not yet implemented) as **RT3-6** — cross-snapshot stitching per trip_id, a new
-`SEGMENT_SOURCE_MODE` (`AUTO`/`PER_MESSAGE`/`CROSS_SNAPSHOT`) — see `docs/prd/
-PR_easy-OTP_v07.md` §RT3-6 and milestone 0.6.7 in `docs/prompts/
-easy-OTP_v07_prompts_for-claude-code.md`.
+problem was the feed shape (no adjacent stop pair per snapshot), not id matching. Fixed
+by **RT3-6** — cross-snapshot stitching per trip_id, via a new, independent
+`SEGMENT_SOURCE_MODE` axis (`AUTO`/`PER_MESSAGE`/`CROSS_SNAPSHOT`) orthogonal to
+`MATCHING_MODE` (RT3-5). `PER_MESSAGE` (today's pre-RT3-6 code path) is unchanged for
+already-verified feeds (Gdańsk, Szczecin, rail); `CROSS_SNAPSHOT` is auto-selected when
+the archive's message-shape sample shows a median of <= 1 `StopTimeUpdate` per
+`TripUpdate`. Manually verified in QGIS on the same Poznań archive that produced
+`Segments observed: 0` — see `docs/prd/PR_easy-OTP_v07.md` §RT3-6 and milestone 0.6.7 in
+`docs/prompts/easy-OTP_v07_prompts_for-claude-code.md`.
 
 ---
 
