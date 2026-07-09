@@ -2,8 +2,7 @@
 
 > **This is not a Processing algorithm.** It does not appear in the QGIS Toolbox and cannot
 > be run from within QGIS. It requires its own standalone Python environment (see Setup
-> below) and is operated entirely from the command line, for advanced users comfortable with
-> a terminal.
+> below) and is operated entirely from the command line, for advanced users comfortable with a terminal.
 
 Standalone tool — **not part of the easy-OTP QGIS plugin** and never imported by it. It
 reconstructs an observed GTFS from GTFS-RT **VehiclePositions** for cities that publish no
