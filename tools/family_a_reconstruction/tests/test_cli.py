@@ -36,6 +36,7 @@ def test_build_defaults():
     )
     assert args.func is _cmd_build
     assert args.min_observations_per_segment == 2
+    assert args.time_bucket_minutes == 120
 
 
 def test_match_defaults():
@@ -338,11 +339,14 @@ def test_cmd_match_parquet_without_pyarrow_returns_1(tmp_path, capsys, monkeypat
 
 
 def _make_build_static_zip(tmp_path):
+    # service_id + calendar.txt (svc1 active weekdays, 2026-01-01 is a
+    # Thursday) so FA-5's day-type gating resolves this trip to a non-empty
+    # day_type set instead of degenerating into "always a gap".
     path = tmp_path / "gtfs_build.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr(
             "trips.txt",
-            "trip_id,route_id,direction_id,shape_id\nt1,R1,0,shape1\n",
+            "trip_id,route_id,direction_id,shape_id,service_id\nt1,R1,0,shape1,svc1\n",
         )
         zf.writestr(
             "stops.txt",
@@ -360,6 +364,12 @@ def _make_build_static_zip(tmp_path):
             "shape1,0.0,0.0,0\n"
             "shape1,0.01,0.0,1\n",
         )
+        zf.writestr(
+            "calendar.txt",
+            "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,"
+            "start_date,end_date\n"
+            "svc1,1,1,1,1,1,0,0,20260101,20261231\n",
+        )
     return path
 
 
@@ -369,6 +379,7 @@ def _make_build_args(tmp_path, **overrides):
         static = None
         out_prefix = None
         min_observations_per_segment = 1
+        time_bucket_minutes = 120
 
     ns = _NS()
     for key, value in overrides.items():
@@ -383,10 +394,13 @@ def test_cmd_build_end_to_end_writes_both_zips(tmp_path, capsys):
     d_b = project_point_to_polyline(0.01, 0.0, [(0.0, 0.0), (0.01, 0.0)])[0]
 
     matched_path = tmp_path / "matched.csv"
+    # 07:00:00 UTC = 08:00:00 local Europe/Warsaw (UTC+1, no DST in January) -
+    # same bucket as stop_times.txt's scheduled 08:00:00/08:10:00, so this
+    # keeps exercising an actual correction post-FA-5, not just a gap.
     matched_path.write_text(
         "trip_id,timestamp,distance_along_shape_m,perpendicular_dist_m\n"
-        f"t1,2026-01-01T00:00:00Z,0.0,0.0\n"
-        f"t1,2026-01-01T00:00:50Z,{d_b},0.0\n",
+        f"t1,2026-01-01T07:00:00Z,0.0,0.0\n"
+        f"t1,2026-01-01T07:00:50Z,{d_b},0.0\n",
         encoding="utf-8",
     )
 
@@ -405,11 +419,12 @@ def test_cmd_build_end_to_end_writes_both_zips(tmp_path, capsys):
     assert "t1" in stop_times_content
 
     captured = capsys.readouterr()
+    assert "Agency timezone resolved" in captured.out
     assert "Trips processed" in captured.out
     assert "Segment observations collected" in captured.out
     assert "interpolation gaps" in captured.out
     assert "rejected (implausible segment time)" in captured.out
-    assert "Segments corrected" in captured.out
+    assert "Segments corrected: 1" in captured.out
     assert "P50 output written to" in captured.out
     assert "P85 output written to" in captured.out
 

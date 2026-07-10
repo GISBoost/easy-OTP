@@ -138,33 +138,76 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
 - `--min-observations-per-segment` (default `2`) — stop-to-stop segments observed fewer than
   this many times are dropped (treated as a gap, keeping the scheduled time) rather than
   trusted.
+- `--time-bucket-minutes` (default `120`) — time-of-day bucket width in minutes for segment
+  correction scoping (see below); 12 buckets/day at the default 2-hour width.
 
 Output: two GTFS zips, byte-identical to the input static feed except for corrected
 `arrival_time`/`departure_time` values in `stop_times.txt` (P50 = typical/median observed
-travel time per segment, P85 = pessimistic/85th-percentile). The command prints counts for
-trips processed/skipped, segments observed/corrected/dropped, interpolation gaps, missing
-stop locations, and rejected implausible segment times — use these to judge how much of the
-recording actually corrected the schedule versus fell back to planned times.
+travel time per segment, P85 = pessimistic/85th-percentile). The command prints the resolved
+agency timezone (`Agency timezone resolved: ...`), counts for trips processed/skipped, segments
+observed/corrected/dropped, interpolation gaps, missing stop locations, and rejected
+implausible segment times — use these to judge how much of the recording actually corrected the
+schedule versus fell back to planned times.
 
 Family A has no trip-cancellation signal (unlike RT-3, which can read `ScheduleRelationship`
 from `TripUpdate`s) — every trip in the static feed is reconstructed, cancelled or not.
 
-**Known limitation — corrections are not scoped to the recording's day or time of day.** A
-segment is keyed only by `(route_id, direction_id, from_stop_id, to_stop_id)` — once a segment
-passes the `--min-observations-per-segment` threshold, its P50/P85 value is applied to *every*
-trip in the static feed that shares that stop pair, regardless of what date or time of day that
-trip runs. A static feed commonly spans many weeks of distinct service patterns (`trips.txt`
-often has hundreds of thousands of trips across a `calendar_dates.txt`-driven schedule), so a
-single recording session's estimate for one segment can end up rewriting that segment's time on
-thousands of scheduled trips it never observed. This is more of a risk the shorter the
-recording and the closer `--min-observations-per-segment` sits to its default of 2: with only
-two observations, one noisy outlier (e.g. a vehicle dwelling at a terminus for its scheduled
-recovery time, which `build` cannot distinguish from genuine travel time) can double- or
-triple- the resulting P50 for that segment, and that inflated value then propagates to every
-matching trip. Mitigate by recording longer sessions (several hours or a full service day) and
-by comparing the printed "Segments corrected" against "Segments dropped (fewer than N
-observations)" to judge whether the sample actually supports trusting the result before using
-it for analysis.
+**Corrections are scoped by day-type and time-of-day.** A segment is keyed by
+`(route_id, direction_id, from_stop_id, to_stop_id, day_type, time_bucket)`, where `day_type`
+(`WEEKDAY`/`SATURDAY`/`SUNDAY`, derived from the observation's local calendar date) and
+`time_bucket` (`--time-bucket-minutes`-wide blocks of the observation's local time of day) are
+resolved from the static feed's `agency_timezone` (falls back to `Europe/Warsaw` with a warning
+if `agency.txt` is missing or lacks the column). A correction is only applied to a static trip
+whose own service actually runs on a day type the recording covered, at a scheduled time in the
+same bucket the recording observed — a trip departing at 3:48 AM is never corrected by an
+afternoon-only recording, even if it shares a route and stop pair with trips that were observed.
+This means short recordings will show a lower, but more trustworthy, "Segments corrected" count
+than a naive route/stop-only key would. Two residual limitations, both deliberately deferred:
+- `day_type` is derived from day-of-week only, with no public-holiday awareness (Polish
+  holidays run Sunday-style service, which this MVP does not detect) — not yet scheduled.
+- `day_type` on the observation side is derived from the **calendar date** of the observation's
+  local timestamp, not from GTFS's "service day" concept. For an overnight trip (scheduled past
+  midnight, e.g. `25:30:00`, which `calendar.txt`/`calendar_dates.txt` correctly attribute to
+  the *previous* service day) a real vehicle observation shortly after local midnight gets
+  `day_type` from the *next* calendar date instead — a mismatch against that trip's actual
+  service day. `matched_lodz.csv`'s recording window (15:44–19:46 local) never crosses
+  midnight, so this has not been observed in practice yet, but it is a known gap to address
+  before FA-6's multi-day/multi-night stitching, where it becomes reachable.
+
+Mitigate a short or sparse recording by recording longer sessions (several hours or a full
+service day, ideally repeated across day types) and by comparing the printed "Segments
+corrected" against "Segments dropped (fewer than N observations)" to judge whether the sample
+actually supports trusting the result before using it for analysis.
+
+**How far the correction footprint actually reaches in a static-vs-RT accessibility
+comparison (verified 2026-07-10 on real Łódź data).** Day-type/time-bucket scoping means "only
+a static trip whose own service and schedule fall in the observed window gets corrected", but
+that is not the same as "isochrone differences are confined to exactly the recording's clock
+window". Comparing `population_covered` between a static and an FA-5-corrected isochrone sweep
+(recording window 15:44–19:46 local, buckets touched: `[14:00,16:00)`, `[16:00,18:00)`,
+`[18:00,20:00)`, `cutoff=40 min`) showed two effects worth knowing about before reading such a
+comparison:
+- **Leading edge:** departures before `14:00` show an exact `0.00` diff up to `13:19`, then
+  become nonzero starting at exactly `13:20` — i.e. `bucket_start − cutoff`. A traveller
+  departing at 13:20 can, within a 40-minute budget, still ride into a segment scheduled in the
+  `14:00` bucket, so their isochrone legitimately reflects the correction. This is the isochrone
+  method's own reach into the corrected window, not a scoping leak.
+- **Trailing tail:** after `20:00` (end of the last touched bucket), diffs shrink but do not
+  hit zero immediately — a shrinking, sporadic tail persists for some trips. This comes from
+  `rebuild_stop_times`'s cumulative `running_time`: once *any* segment of a trip is corrected
+  (correctly gated to that segment's own scheduled day-type/time-bucket), every later stop of
+  that *same* `trip_id` inherits the accumulated shift, even stops scheduled well outside the
+  observed window — because the reconstruction is modelling what actually happened to that one
+  physical vehicle for the rest of its run, the same propagation the plugin's own RT-3 realizer
+  uses. Confirmed directly on `stop_times.txt`: trip `11443_1005` gets a segment correction at
+  19:53 (in-bucket) and then a constant `+3:34` offset on every subsequent stop through 20:48
+  (out-of-bucket) — a fixed carry-forward, not new corrections being applied there. This tail is
+  bounded to trips that were both active in the observed window and continued running past it —
+  it never reaches an unrelated `trip_id` (that's exactly what day-type/time-bucket scoping
+  prevents; see the 3:48 AM example above).
+
+Net effect on the same comparison: `mean_diff_pct ≈ −0.5%` across the full 12:00–22:00 sweep —
+small and concentrated, consistent with scoping working as intended.
 
 ## Worked example — Warszawa, end to end
 

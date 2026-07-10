@@ -15,12 +15,14 @@ No QGIS / GDAL imports. Run tests: pytest tests/test_segment_stats.py -v
 from __future__ import annotations
 
 import statistics
+import zoneinfo
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from family_a.build_gtfs import SegmentKey
+from family_a.build_gtfs import SegmentKey, segment_key_for
+from family_a.calendar_scope import day_type_for_date, time_bucket_for_seconds
 from family_a.interpolate import interpolate_stop_time, stop_distance_along_shape
 
 if TYPE_CHECKING:
@@ -39,14 +41,19 @@ def collect_segment_observations(
     trip_shapes: dict[str, str],
     shapes: dict[str, list[tuple[float, float]]],
     stop_locations: dict[str, tuple[float, float]],
+    agency_tz: str,
+    bucket_minutes: int = 120,
 ) -> tuple[dict[SegmentKey, list[float]], dict[str, int]]:
     """For each trip's matched position series, interpolate every consecutive
     scheduled stop pair's crossing time and derive an observed segment
     travel time.
 
     Returns (segment_times, counts). segment_times maps (route_id,
-    direction_id, from_stop_id, to_stop_id) -> list of observed travel times
-    (seconds). counts reports:
+    direction_id, from_stop_id, to_stop_id, day_type, time_bucket) -> list of
+    observed travel times (seconds). day_type/time_bucket are derived from
+    the segment's own observation time, converted from UTC to agency_tz
+    (see calendar_scope.py) before deriving the local calendar date/time of
+    day. counts reports:
     - trips_processed: trips with a resolvable shape and >=2 scheduled stops
       whose stop pairs were actually attempted.
     - trips_skipped_unresolvable: trips excluded before any stop pair was
@@ -77,6 +84,8 @@ def collect_segment_observations(
 
     if matched.empty:
         return dict(segment_times), counts
+
+    zone = zoneinfo.ZoneInfo(agency_tz)
 
     # (shape_id, stop_id) -> distance_along_shape_m, scoped to this call only
     # (many trips share a shape/stop; avoids stale-cache risk across calls).
@@ -121,7 +130,22 @@ def collect_segment_observations(
                 counts["rejected_seg_time"] += 1
                 continue
 
-            key: SegmentKey = (route_id, direction_id, stop_from, stop_to)
+            local_t_from = t_from.tz_convert(zone)
+            # Known limitation, deliberately deferred (see README): day_type here is the
+            # observation's local CALENDAR date, not GTFS's "service day" - an overnight trip
+            # observed shortly after local midnight gets the next calendar date's day_type,
+            # which can mismatch its own service's day_type (correctly attributed to the
+            # previous service day by calendar.txt/calendar_dates.txt). Not reachable by
+            # matched_lodz.csv's window (never crosses midnight); relevant once FA-6 adds
+            # multi-day/multi-night recordings.
+            day_type = day_type_for_date(local_t_from.date())
+            time_bucket = time_bucket_for_seconds(
+                local_t_from.hour * 3600 + local_t_from.minute * 60 + local_t_from.second,
+                bucket_minutes,
+            )
+            key: SegmentKey = segment_key_for(
+                route_id, direction_id, stop_from, stop_to, day_type, time_bucket
+            )
             segment_times[key].append(seg_time)
             counts["segments_observed"] += 1
 

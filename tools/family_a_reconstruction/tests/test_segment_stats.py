@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from family_a.build_gtfs import StaticIndex
+from family_a.calendar_scope import time_bucket_for_seconds
 from family_a.interpolate import stop_distance_along_shape
 from family_a.segment_stats import (
     aggregate_segments,
@@ -28,16 +29,19 @@ def _t(seconds: int) -> datetime:
     return _T0 + timedelta(seconds=seconds)
 
 
-def _make_static_index(trips, stops) -> StaticIndex:
+def _make_static_index(trips, stops, service_ids=None) -> StaticIndex:
     stop_map = {}
     for trip_id, stop_list in stops.items():
         for seq, stop_id, arr, dep in stop_list:
             stop_map[(trip_id, seq)] = (stop_id, arr, dep)
+    if service_ids is None:
+        service_ids = {tid: "" for tid in trips}
     return StaticIndex(
         trip_route=trips,
         trip_stops={tid: sorted(sl, key=lambda x: x[0]) for tid, sl in stops.items()},
         stop_map=stop_map,
         all_trip_ids=set(trips.keys()),
+        trip_service_id=service_ids,
     )
 
 
@@ -105,14 +109,49 @@ def test_collect_successful_interpolation_appends_segment_time():
         ("t1", _t(100), d_b),
     ])
 
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations)
+    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
 
-    key = ("R1", "0", "A", "B")
+    # _t(0) = 2026-01-01T00:00:00 UTC, a Thursday -> WEEKDAY, bucket 0
+    key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
     assert segment_times[key] == pytest.approx([100.0])
     assert counts["trips_processed"] == 1
     assert counts["segments_observed"] == 1
     assert counts["interpolation_gaps"] == 0
     assert counts["rejected_seg_time"] == 0
+
+
+def test_collect_segment_observations_uses_local_time_not_utc_for_day_type_and_bucket():
+    # Etc/GMT-9 is UTC+9 (Etc zone sign convention is inverted), no DST. A UTC
+    # Saturday 23:00 observation lands on a local Sunday 08:00 - if the
+    # tz_convert step were accidentally skipped, day_type/time_bucket would
+    # be derived from the naive UTC Saturday 23:00 instead.
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    t_from = datetime(2026, 1, 3, 23, 0, 0, tzinfo=timezone.utc)  # Saturday, UTC
+    t_to = t_from + timedelta(seconds=100)
+
+    matched = _matched_df([
+        ("t1", t_from, 0.0),
+        ("t1", t_to, d_b),
+    ])
+
+    segment_times, _counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="Etc/GMT-9"
+    )
+
+    # Local: 2026-01-04 08:00:00, a Sunday.
+    expected_bucket = time_bucket_for_seconds(8 * 3600, 120)
+    key = ("R1", "0", "A", "B", "SUNDAY", expected_bucket)
+    assert segment_times[key] == pytest.approx([100.0])
+
+    naive_utc_bucket = time_bucket_for_seconds(23 * 3600, 120)
+    assert expected_bucket != naive_utc_bucket
+    wrong_key = ("R1", "0", "A", "B", "SATURDAY", naive_utc_bucket)
+    assert wrong_key not in segment_times
 
 
 def test_collect_one_sided_interpolation_failure_is_a_gap():
@@ -127,7 +166,7 @@ def test_collect_one_sided_interpolation_failure_is_a_gap():
         ("t1", _t(10), 1.0),
     ])
 
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations)
+    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
 
     assert segment_times == {}
     assert counts["interpolation_gaps"] == 1
@@ -141,7 +180,7 @@ def test_collect_trip_with_no_resolvable_shape_is_skipped():
     stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
 
     matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(100), 100.0)])
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations)
+    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
 
     assert segment_times == {}
     assert counts["trips_processed"] == 0
@@ -155,7 +194,7 @@ def test_collect_trip_with_fewer_than_two_stops_is_skipped():
     stop_locations = {"A": (0.0, 0.0)}
 
     matched = _matched_df([("t1", _t(0), 0.0)])
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations)
+    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
 
     assert segment_times == {}
     assert counts["trips_processed"] == 0
@@ -169,7 +208,7 @@ def test_collect_missing_stop_location_is_distinct_from_interpolation_gap():
     stop_locations = {"A": (0.0, 0.0)}  # B missing
 
     matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(100), 100.0)])
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations)
+    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
 
     assert segment_times == {}
     assert counts["trips_processed"] == 1  # the trip itself was resolvable and attempted
@@ -190,7 +229,7 @@ def test_collect_rejects_implausible_segment_time():
         ("t1", _t(3 * 3600), d_b),
     ])
 
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations)
+    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
 
     assert segment_times == {}
     assert counts["rejected_seg_time"] == 1
@@ -200,7 +239,7 @@ def test_collect_rejects_implausible_segment_time():
 def test_collect_empty_matched_dataframe():
     idx = _two_stop_static_index()
     matched = _matched_df([])
-    segment_times, counts = collect_segment_observations(matched, idx, {}, {}, {})
+    segment_times, counts = collect_segment_observations(matched, idx, {}, {}, {}, agency_tz="UTC")
     assert segment_times == {}
     assert counts["trips_processed"] == 0
 

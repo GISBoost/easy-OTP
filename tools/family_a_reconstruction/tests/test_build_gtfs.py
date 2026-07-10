@@ -19,12 +19,20 @@ from family_a.build_gtfs import (
     parse_gtfs_time,
     rebuild_stop_times,
     repackage_gtfs,
+    segment_key_for,
 )
+from family_a.calendar_scope import time_bucket_for_seconds
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_CALENDAR_FIELDS = [
+    "service_id", "monday", "tuesday", "wednesday", "thursday", "friday",
+    "saturday", "sunday", "start_date", "end_date",
+]
+_CALENDAR_DATES_FIELDS = ["service_id", "date", "exception_type"]
 
 
 def _make_gtfs_zip(
@@ -32,10 +40,12 @@ def _make_gtfs_zip(
     trip_rows: list[dict],
     stop_times_rows: list[dict],
     extra_files: dict[str, str] | None = None,
+    calendar_rows: list[dict] | None = None,
+    calendar_dates_rows: list[dict] | None = None,
     name: str = "static.zip",
 ) -> str:
     zip_path = tmp_path / name
-    trip_fields = ["trip_id", "route_id", "direction_id"]
+    trip_fields = ["trip_id", "route_id", "direction_id", "service_id"]
     st_fields = ["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"]
 
     with zipfile.ZipFile(zip_path, "w") as zf:
@@ -50,6 +60,20 @@ def _make_gtfs_zip(
         w.writeheader()
         w.writerows(stop_times_rows)
         zf.writestr("stop_times.txt", buf.getvalue())
+
+        if calendar_rows is not None:
+            buf = io.StringIO()
+            w = csv.DictWriter(buf, fieldnames=_CALENDAR_FIELDS)
+            w.writeheader()
+            w.writerows(calendar_rows)
+            zf.writestr("calendar.txt", buf.getvalue())
+
+        if calendar_dates_rows is not None:
+            buf = io.StringIO()
+            w = csv.DictWriter(buf, fieldnames=_CALENDAR_DATES_FIELDS)
+            w.writeheader()
+            w.writerows(calendar_dates_rows)
+            zf.writestr("calendar_dates.txt", buf.getvalue())
 
         if extra_files:
             for extra_name, content in extra_files.items():
@@ -66,16 +90,20 @@ def _read_zip_member(path: str, member: str) -> str:
 def _make_static_index(
     trips: dict[str, tuple[str, str]],
     stops: dict[str, list[tuple]],
+    service_ids: dict[str, str] | None = None,
 ) -> StaticIndex:
     stop_map = {}
     for trip_id, stop_list in stops.items():
         for seq, stop_id, arr, dep in stop_list:
             stop_map[(trip_id, seq)] = (stop_id, arr, dep)
+    if service_ids is None:
+        service_ids = {tid: "" for tid in trips}
     return StaticIndex(
         trip_route=trips,
         trip_stops={tid: sorted(sl, key=lambda x: x[0]) for tid, sl in stops.items()},
         stop_map=stop_map,
         all_trip_ids=set(trips.keys()),
+        trip_service_id=service_ids,
     )
 
 
@@ -113,7 +141,7 @@ def test_parse_format_roundtrip():
 def test_load_static_index_basic(tmp_path):
     path = _make_gtfs_zip(
         tmp_path,
-        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}],
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0", "service_id": "svc1"}],
         stop_times_rows=[
             {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
              "stop_id": "A", "stop_sequence": "1"},
@@ -124,6 +152,7 @@ def test_load_static_index_basic(tmp_path):
     idx = load_static_index(path)
     assert idx.trip_route == {"t1": ("R1", "0")}
     assert idx.all_trip_ids == {"t1"}
+    assert idx.trip_service_id == {"t1": "svc1"}
     assert idx.trip_stops["t1"] == [
         (1, "A", parse_gtfs_time("08:00:00"), parse_gtfs_time("08:00:00")),
         (2, "B", parse_gtfs_time("08:10:00"), parse_gtfs_time("08:11:00")),
@@ -135,6 +164,8 @@ def test_load_static_index_basic(tmp_path):
 # rebuild_stop_times
 # ---------------------------------------------------------------------------
 
+_DEFAULT_DAY_TYPES = {"svc_weekday": {"WEEKDAY"}}
+
 
 def _simple_index() -> StaticIndex:
     # trip t1: A(dep=60) -> B(arr=120, dep=180) -> C(arr=240, dep=240)
@@ -145,12 +176,13 @@ def _simple_index() -> StaticIndex:
             (2, "B", 120, 180),   # arr=120, dep=180
             (3, "C", 240, 240),   # arr=240, dep=240
         ]},
+        service_ids={"t1": "svc_weekday"},
     )
 
 
 def test_rebuild_gap_fallback_uses_scheduled():
     idx = _simple_index()
-    corrections, corrected, gaps = rebuild_stop_times(idx, {})
+    corrections, corrected, gaps = rebuild_stop_times(idx, {}, _DEFAULT_DAY_TYPES)
     assert corrected == 0
     assert gaps == 2  # two segments (A->B, B->C)
     # First stop unchanged
@@ -163,9 +195,11 @@ def test_rebuild_gap_fallback_uses_scheduled():
 
 def test_rebuild_corrected_segment():
     idx = _simple_index()
-    # Observed A->B travel = 90s (30s longer than scheduled 60s)
-    stats = {("R1", "0", "A", "B"): 90.0}
-    corrections, corrected, gaps = rebuild_stop_times(idx, stats)
+    # Observed A->B travel = 90s (30s longer than scheduled 60s). A's scheduled
+    # departure (60s) is bucket 0 at the default 120-min width.
+    bucket = time_bucket_for_seconds(60, 120)
+    stats = {segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): 90.0}
+    corrections, corrected, gaps = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES)
     assert corrected == 1
     assert gaps == 1  # B->C still a gap
     # new_arr[B] = 60 + 90 = 150; dwell = 60; new_dep[B] = 210
@@ -177,8 +211,9 @@ def test_rebuild_corrected_segment():
 def test_rebuild_monotonic_clamp():
     idx = _simple_index()
     # Inject a negative segment stat - clamp must prevent non-monotonic output
-    stats = {("R1", "0", "A", "B"): -999.0}
-    corrections, corrected, gaps = rebuild_stop_times(idx, stats)
+    bucket = time_bucket_for_seconds(60, 120)
+    stats = {segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): -999.0}
+    corrections, corrected, gaps = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES)
     arr_b, dep_b = corrections[("t1", 2)]
     arr_a, dep_a = corrections[("t1", 1)]
     assert arr_b >= dep_a  # arrival at B >= departure from A
@@ -193,9 +228,12 @@ def test_rebuild_gtfs_time_over_24():
             (1, "X", parse_gtfs_time("23:50:00"), parse_gtfs_time("23:55:00")),
             (2, "Y", parse_gtfs_time("24:05:00"), parse_gtfs_time("24:05:00")),
         ]},
+        service_ids={"t_night": "svc_weekday"},
     )
-    stats = {("R2", "0", "X", "Y"): 600.0}
-    corrections, corrected, gaps = rebuild_stop_times(idx, stats)
+    prev_dep = parse_gtfs_time("23:55:00")
+    bucket = time_bucket_for_seconds(prev_dep, 120)
+    stats = {segment_key_for("R2", "0", "X", "Y", "WEEKDAY", bucket): 600.0}
+    corrections, corrected, gaps = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES)
     arr_y, dep_y = corrections[("t_night", 2)]
     assert arr_y == parse_gtfs_time("24:05:00")
     assert format_gtfs_time(arr_y) == "24:05:00"
@@ -203,10 +241,107 @@ def test_rebuild_gtfs_time_over_24():
 
 def test_rebuild_dwell_preserved():
     idx = _simple_index()
-    stats = {("R1", "0", "A", "B"): 90.0}
-    corrections, _corrected, _gaps = rebuild_stop_times(idx, stats)
+    bucket = time_bucket_for_seconds(60, 120)
+    stats = {segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): 90.0}
+    corrections, _corrected, _gaps = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES)
     arr_b, dep_b = corrections[("t1", 2)]
     assert dep_b - arr_b == 60  # scheduled dwell at B preserved
+
+
+def test_segment_key_for_builds_expected_tuple():
+    assert segment_key_for("R1", "0", "A", "B", "WEEKDAY", 3) == ("R1", "0", "A", "B", "WEEKDAY", 3)
+
+
+def test_rebuild_day_type_scoping_denies_wrong_day_type():
+    # Two trips share route/stop pair A->B, one WEEKDAY service, one SUNDAY -
+    # observed data for WEEKDAY only must not leak into the SUNDAY trip. This
+    # is the direct regression test for the Lodz finding (11443_11337, a 3:48
+    # AM trip corrected by an afternoon-only recording).
+    idx = _make_static_index(
+        trips={"t_wd": ("R1", "0"), "t_sun": ("R1", "0")},
+        stops={
+            "t_wd": [(1, "A", 0, 60), (2, "B", 120, 180)],
+            "t_sun": [(1, "A", 0, 60), (2, "B", 120, 180)],
+        },
+        service_ids={"t_wd": "svc_wd", "t_sun": "svc_sun"},
+    )
+    service_day_types = {"svc_wd": {"WEEKDAY"}, "svc_sun": {"SUNDAY"}}
+    bucket = time_bucket_for_seconds(60, 120)
+    stats = {segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): 90.0}
+
+    corrections, corrected, gaps = rebuild_stop_times(idx, stats, service_day_types)
+
+    assert corrected == 1
+    assert gaps == 1
+    assert corrections[("t_wd", 2)] == (150, 210)  # corrected: 60+90=150, dwell 60
+    assert corrections[("t_sun", 2)] == (120, 180)  # stays scheduled
+
+
+def test_rebuild_time_bucket_scoping_denies_wrong_bucket():
+    # Same day_type, two scheduled instances of the same stop pair at
+    # different times of day - only the afternoon bucket has observed data.
+    idx = _make_static_index(
+        trips={"t_morning": ("R1", "0"), "t_afternoon": ("R1", "0")},
+        stops={
+            "t_morning": [(1, "A", 0, 0), (2, "B", 100, 100)],
+            "t_afternoon": [(1, "A", 43200, 43200), (2, "B", 43300, 43300)],
+        },
+        service_ids={"t_morning": "svc_weekday", "t_afternoon": "svc_weekday"},
+    )
+    afternoon_bucket = time_bucket_for_seconds(43200, 120)
+    stats = {segment_key_for("R1", "0", "A", "B", "WEEKDAY", afternoon_bucket): 90.0}
+
+    corrections, corrected, gaps = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES)
+
+    assert corrected == 1
+    assert gaps == 1
+    assert corrections[("t_morning", 2)] == (100, 100)  # stays scheduled
+    arr_afternoon, _dep_afternoon = corrections[("t_afternoon", 2)]
+    assert arr_afternoon == 43200 + 90  # corrected
+
+
+def test_rebuild_unknown_service_id_is_always_gap():
+    # A service_id absent from service_day_types (no known active dates) must
+    # never match segment_stats, no matter how densely the route/stops are
+    # covered - "empty day_types" must mean "always gap", not "matches
+    # everything".
+    idx = _simple_index()
+    idx.trip_service_id["t1"] = "svc_unknown"
+    bucket = time_bucket_for_seconds(60, 120)
+    dense_stats = {
+        segment_key_for("R1", "0", "A", "B", day_type, b): 90.0
+        for day_type in ("WEEKDAY", "SATURDAY", "SUNDAY")
+        for b in range(12)
+    }
+    assert segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket) in dense_stats
+
+    corrections, corrected, gaps = rebuild_stop_times(idx, dense_stats, {})
+
+    assert corrected == 0
+    assert gaps == 2
+    assert corrections[("t1", 2)] == (120, 180)  # stays scheduled
+
+
+def test_rebuild_multi_day_type_service_picks_deterministic_alphabetical_match():
+    # A service that "runs every day" (trip_day_types has all 3 members) with
+    # segment_stats populated for more than one of them must pick the same
+    # candidate every run, not whatever order set iteration happens to
+    # produce - sorted() gives SATURDAY < SUNDAY < WEEKDAY alphabetically.
+    idx = _simple_index()
+    idx.trip_service_id["t1"] = "svc_every_day"
+    bucket = time_bucket_for_seconds(60, 120)
+    stats = {
+        segment_key_for("R1", "0", "A", "B", "SATURDAY", bucket): 11.0,
+        segment_key_for("R1", "0", "A", "B", "SUNDAY", bucket): 22.0,
+        segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): 33.0,
+    }
+    service_day_types = {"svc_every_day": {"WEEKDAY", "SATURDAY", "SUNDAY"}}
+
+    corrections, corrected, _gaps = rebuild_stop_times(idx, stats, service_day_types)
+
+    assert corrected == 1
+    # SATURDAY sorts first -> its value (11.0) must be the one applied.
+    assert corrections[("t1", 2)] == (60 + 11, 60 + 11 + 60)
 
 
 # ---------------------------------------------------------------------------
@@ -306,3 +441,74 @@ def test_repackage_preserves_extra_stop_times_columns(tmp_path):
     assert "pickup_type" in content
     assert "drop_off_type" in content
     assert ",1\r\n" in content or ",1\n" in content  # drop_off_type=1 preserved
+
+
+def test_repackage_streaming_large_row_count_flush_before_close(tmp_path):
+    # Several hundred rows to exceed TextIOWrapper's default internal buffer -
+    # catches a missed text_out.flush() before the `with` block closes fh_out,
+    # which would silently truncate the tail of the file.
+    n_rows = 500
+    stop_times_rows = [
+        {
+            "trip_id": "t1",
+            "arrival_time": format_gtfs_time(60 * i),
+            "departure_time": format_gtfs_time(60 * i),
+            "stop_id": f"S{i}",
+            "stop_sequence": str(i + 1),
+        }
+        for i in range(n_rows)
+    ]
+    src_path = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}],
+        stop_times_rows=stop_times_rows,
+    )
+    out_path = str(tmp_path / "out.zip")
+    repackage_gtfs(src_path, out_path, {})
+
+    content = _read_zip_member(out_path, "stop_times.txt")
+    lines = content.strip("\r\n").split("\r\n")
+    assert len(lines) == n_rows + 1  # header + n_rows
+    last_row = lines[-1]
+    assert last_row.split(",")[3] == f"S{n_rows - 1}"  # last row's stop_id present and correct
+
+
+def test_repackage_streaming_matches_buffered_output_byte_for_byte(tmp_path):
+    trip_rows = [{"trip_id": "t1", "route_id": "R1", "direction_id": "0"}]
+    fields = ["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence",
+              "pickup_type", "drop_off_type"]
+    st_rows = [
+        {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+         "stop_id": "A", "stop_sequence": "1", "pickup_type": "0", "drop_off_type": "1"},
+        {"trip_id": "t1", "arrival_time": "08:10:00", "departure_time": "08:11:00",
+         "stop_id": "B", "stop_sequence": "2", "pickup_type": "1", "drop_off_type": "0"},
+        {"trip_id": "t1", "arrival_time": "08:20:00", "departure_time": "08:20:00",
+         "stop_id": "C", "stop_sequence": "3", "pickup_type": "0", "drop_off_type": "0"},
+    ]
+
+    zip_path = tmp_path / "static.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=["trip_id", "route_id", "direction_id"])
+        w.writeheader()
+        w.writerows(trip_rows)
+        zf.writestr("trips.txt", buf.getvalue())
+
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=fields)
+        w.writeheader()
+        w.writerows(st_rows)
+        zf.writestr("stop_times.txt", buf.getvalue())
+
+    corrections = {("t1", 2): (parse_gtfs_time("08:15:00"), parse_gtfs_time("08:16:00"))}
+    out_path = str(tmp_path / "out.zip")
+    repackage_gtfs(str(zip_path), out_path, corrections)
+
+    expected = (
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence,pickup_type,drop_off_type\r\n"
+        "t1,08:00:00,08:00:00,A,1,0,1\r\n"
+        "t1,08:15:00,08:16:00,B,2,1,0\r\n"
+        "t1,08:20:00,08:20:00,C,3,0,0\r\n"
+    )
+    content = _read_zip_member(out_path, "stop_times.txt")
+    assert content == expected

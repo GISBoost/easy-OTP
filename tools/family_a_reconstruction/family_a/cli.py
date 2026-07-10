@@ -6,7 +6,7 @@ cmd.exe/PowerShell; see each subcommand's own --help for a copy-pasteable exampl
 
     py -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> [--duration-min N] [--interval-sec N]
     py -m family_a.cli match --positions-dir <dir> --static <gtfs.zip> --out <table> [--max-perpendicular-dist-m N]
-    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N]
+    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N]
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from pathlib import Path
 import pandas as pd
 
 from family_a.build_gtfs import load_static_index, rebuild_stop_times, repackage_gtfs
+from family_a.calendar_scope import load_service_day_types, resolve_agency_timezone
 from family_a.matcher import (
     load_stop_locations,
     match_snapshots,
@@ -263,23 +264,31 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
     static_index = load_static_index(args.static)
     stop_locations = load_stop_locations(args.static)
+    agency_tz = resolve_agency_timezone(args.static)
+    service_day_types = load_service_day_types(args.static)
 
     segment_times, collect_counts = collect_segment_observations(
-        matched, static_index, trip_shapes, shapes, stop_locations
+        matched, static_index, trip_shapes, shapes, stop_locations, agency_tz,
+        args.time_bucket_minutes,
     )
     segment_times, dropped_count = filter_min_observations(
         segment_times, args.min_observations_per_segment
     )
     p50_stats, p85_stats = aggregate_segments(segment_times)
 
-    corrections_p50, corrected_count, gap_count = rebuild_stop_times(static_index, p50_stats)
-    corrections_p85, _corrected_p85, _gap_p85 = rebuild_stop_times(static_index, p85_stats)
+    corrections_p50, corrected_count, gap_count = rebuild_stop_times(
+        static_index, p50_stats, service_day_types, args.time_bucket_minutes
+    )
+    corrections_p85, _corrected_p85, _gap_p85 = rebuild_stop_times(
+        static_index, p85_stats, service_day_types, args.time_bucket_minutes
+    )
 
     out_p50 = f"{args.out_prefix}_p50.zip"
     out_p85 = f"{args.out_prefix}_p85.zip"
     repackage_gtfs(args.static, out_p50, corrections_p50)
     repackage_gtfs(args.static, out_p85, corrections_p85)
 
+    print(f"Agency timezone resolved: {agency_tz}")
     print(f"Trips processed: {collect_counts['trips_processed']}")
     print(f"  - skipped (no resolvable shape or fewer than 2 stops): {collect_counts['trips_skipped_unresolvable']}")
     print(f"Segment observations collected: {collect_counts['segments_observed']}")
@@ -376,6 +385,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_int,
         default=2,
         help="Minimum observed travel times required to trust a segment (default: 2)",
+    )
+    p_build.add_argument(
+        "--time-bucket-minutes",
+        type=_positive_int,
+        default=120,
+        help=(
+            "Time-of-day bucket width in minutes for segment correction scoping "
+            "(default: 120, i.e. 2-hour blocks)."
+        ),
     )
     p_build.set_defaults(func=_cmd_build)
 
