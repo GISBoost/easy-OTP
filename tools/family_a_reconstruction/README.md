@@ -112,9 +112,18 @@ py -m family_a.cli match --positions-dir day1_recording day2_recording day3_reco
 Output columns: `trip_id`, `timestamp` (UTC; pandas' default tz-aware format in CSV, e.g.
 `2026-07-05 20:37:26+00:00` — space-separated, not literal ISO-8601 `T`-separated),
 `distance_along_shape_m`, `perpendicular_dist_m`, `recording_date` (FA-6) — the calendar date
-of the recording *session* that observation came from, derived from the **earliest snapshot
-filename in that `--positions-dir`**, never from the directory's own name (a directory named
-e.g. `positions_lodz2` carries no reliable date information — do not rely on it). Written as
+of the recording *session* that observation came from, derived from the **earliest usable
+GTFS-RT `FeedHeader.timestamp` among that `--positions-dir`'s snapshots**, converted to the
+static feed's `agency_timezone` (`agency.txt`, falls back to `Europe/Warsaw` if absent — same
+resolution `build` already uses for `day_type`). This is deliberate, not the recording
+machine's clock or the directory's own name (a directory named e.g. `positions_lodz2` carries
+no reliable date information — do not rely on it either): the feed timestamp is the transit
+agency's own server time, absolute and timezone-independent, so `recording_date` comes out
+correct even when `record` was run from a machine in a different timezone than the agency
+being recorded. If every snapshot in a directory lacks a usable `header.timestamp` (GTFS-RT
+marks it "strongly recommended", not required — some real feeds omit it), `match` falls back
+to the snapshot filename instead and prints a warning naming that directory, since the
+resulting date is then only as good as the recording machine's own clock. Written as
 a plain `YYYY-MM-DD` string in CSV; stored as a `date32` column in Parquet (read back as
 `datetime.date` values via `pd.read_parquet`). Every row from one `--positions-dir` gets the
 same `recording_date`, regardless of that individual observation's own timestamp — this
@@ -131,8 +140,9 @@ archive. This is an inherent limitation of simple nearest-segment matching witho
 trajectory-continuity awareness, not a bug — see `family_a/matcher.py`'s module docstring.
 `build`'s interpolation step does not assume this series is strictly monotonic.
 
-The command prints a summary of directories merged, the recording date range covered, snapshots
-processed, observations matched, and observations rejected broken down by reason
+The command prints a summary of the resolved agency timezone, directories merged, the
+recording date range covered, snapshots processed, observations matched, and observations
+rejected broken down by reason
 (`unknown_shape`, `too_far_from_route`, `no_trip_id`, `corrupt_snapshot`) — all totals summed
 across every `--positions-dir` given.
 
@@ -152,11 +162,11 @@ rem ... merge both sessions at match time ...
 py -m family_a.cli match --positions-dir day1_recording day2_recording --static lodz.zip --out matched_multiday.csv
 ```
 
-`match` derives each directory's `recording_date` from its own snapshot filenames and tags
-every observation from that directory accordingly; `build`'s `collect_segment_observations`
-then groups position series by `(trip_id, recording_date)` rather than by bare `trip_id`, so
-two different days' position series for the same `trip_id` are never concatenated into one
-artificially continuous run.
+`match` derives each directory's `recording_date` from its own snapshots' GTFS-RT feed
+timestamps (see the output-columns note above) and tags every observation from that directory
+accordingly; `build`'s `collect_segment_observations` then groups position series by
+`(trip_id, recording_date)` rather than by bare `trip_id`, so two different days' position
+series for the same `trip_id` are never concatenated into one artificially continuous run.
 
 **The static GTFS must stay valid across every recording day being merged.** `match` and
 `build` both take a single `--static` argument shared by all `--positions-dir`s — there is no

@@ -15,6 +15,7 @@ import argparse
 import sys
 import time
 import zipfile
+import zoneinfo
 from datetime import date, datetime
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from family_a.matcher import (
     load_stop_locations,
     match_snapshots,
     resolve_trip_shapes,
+    snapshot_feed_timestamp,
 )
 from family_a.recorder import (
     SnapshotFetchError,
@@ -240,13 +242,38 @@ def _cmd_match(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    agency_tz = resolve_agency_timezone(args.static)
+    zone = zoneinfo.ZoneInfo(agency_tz)
+
     frames: list[pd.DataFrame] = []
     total_reject_counts: dict[str, int] = {}
     total_snapshots_processed = 0
     recording_dates: list[date] = []
 
     for positions_dir, snapshot_paths in per_dir_snapshots.items():
-        recording_date = earliest_recording_date(snapshot_paths)
+        # Prefer each snapshot's own GTFS-RT FeedHeader.timestamp (absolute,
+        # agency-server UTC) over the snapshot filename (the recording
+        # machine's naive local clock) - a machine recording a feed for a
+        # city in a different timezone from itself would otherwise get the
+        # wrong calendar date with no way to detect or correct it. Falls back
+        # to the filename only when a directory has no usable header
+        # timestamp at all (GTFS-RT marks it "strongly recommended", not
+        # required). This decodes every snapshot a second time (match_snapshots
+        # decodes them again below) - an accepted, unoptimized cost at this
+        # tool's data volumes, consistent with the rest of this module.
+        feed_timestamps = [snapshot_feed_timestamp(p) for p in snapshot_paths]
+        valid_feed_timestamps = [ts for ts in feed_timestamps if ts is not None]
+        if valid_feed_timestamps:
+            recording_date = min(valid_feed_timestamps).astimezone(zone).date()
+        else:
+            recording_date = earliest_recording_date(snapshot_paths)
+            print(
+                f"Warning: no snapshot in {positions_dir} has a usable GTFS-RT feed "
+                "timestamp (header.timestamp unset/0, or the snapshot failed to "
+                "decode); recording_date for this directory is approximate, derived "
+                "from the recording machine's local clock instead of the feed.",
+                file=sys.stderr,
+            )
         recording_dates.append(recording_date)
 
         df = match_snapshots(
@@ -288,6 +315,7 @@ def _cmd_match(args: argparse.Namespace) -> int:
         return 1
 
     total_rejected = sum(total_reject_counts.values())
+    print(f"Agency timezone resolved: {agency_tz}")
     print(f"Directories merged: {len(positions_dirs)}")
     print(f"Recording date range: {min(recording_dates)} to {max(recording_dates)}")
     print(f"Snapshots processed: {total_snapshots_processed}")
@@ -476,8 +504,10 @@ def build_parser() -> argparse.ArgumentParser:
             "One or more FA-1 archive dirs containing snapshot_*.pb - space-separate for a "
             "multi-day merge (--positions-dir day1 day2 day3), or repeat the flag "
             "(--positions-dir day1 --positions-dir day2 day3); both accumulate. Each "
-            "directory's recording_date is derived from its own snapshot filenames, never "
-            "from the directory name."
+            "directory's recording_date is derived from its own snapshots' GTFS-RT feed "
+            "timestamp (converted to the static feed's agency_timezone), never from the "
+            "directory name or the recording machine's clock; falls back to snapshot "
+            "filenames (with a warning) only if a directory has no usable feed timestamp."
         ),
     )
     p_match.add_argument("--static", required=True, help="Static GTFS zip path")

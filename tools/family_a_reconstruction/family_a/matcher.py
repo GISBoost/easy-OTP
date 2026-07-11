@@ -310,6 +310,29 @@ def _decode_snapshot(data: bytes):
     return fm
 
 
+def snapshot_feed_timestamp(path: Path) -> datetime | None:
+    """Decode a snapshot and return its FeedHeader.timestamp as a UTC datetime.
+
+    This is the feed-generation time set by the transit agency's own server -
+    unlike the snapshot filename (the recording machine's naive local clock,
+    see recorder.parse_snapshot_filename), this value is absolute and
+    timezone-independent, so it is safe to convert through agency_tz
+    regardless of where `record` was run (FA-6 fix: recording_date must not
+    assume the recording machine and the agency share a timezone).
+
+    Returns None if the snapshot fails to decode, or if header.timestamp is
+    0/unset - GTFS-RT's spec marks it "strongly recommended", not required,
+    and some real feeds omit it (proto3 leaves the field at its 0 default).
+    """
+    try:
+        feed = _decode_snapshot(path.read_bytes())
+    except Exception:  # noqa: BLE001 - corrupt/unreadable snapshot
+        return None
+    if not feed.header.timestamp:
+        return None
+    return datetime.fromtimestamp(feed.header.timestamp, tz=timezone.utc)
+
+
 def match_snapshots(
     snapshot_paths: list[Path],
     trip_shapes: dict[str, str],

@@ -214,7 +214,7 @@ def test_cmd_record_keyboard_interrupt_still_writes_manifest(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _make_gtfs_zip(tmp_path):
+def _make_gtfs_zip(tmp_path, *, agency_timezone=None):
     path = tmp_path / "gtfs.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("trips.txt", "trip_id,route_id,shape_id\ntrip1,routeA,shape1\n")
@@ -224,12 +224,29 @@ def _make_gtfs_zip(tmp_path):
             "shape1,0.0,0.0,0\n"
             "shape1,0.01,0.0,1\n",
         )
+        if agency_timezone is not None:
+            zf.writestr(
+                "agency.txt",
+                "agency_id,agency_name,agency_url,agency_timezone\n"
+                f"a1,Test Agency,http://example.com,{agency_timezone}\n",
+            )
     return path
 
 
-def _write_snapshot(tmp_path, *, filename="snapshot_20260101-000000.pb", trip_id="trip1", timestamp=1_700_000_000, entity_id="e1"):
+def _write_snapshot(
+    tmp_path,
+    *,
+    filename="snapshot_20260101-000000.pb",
+    trip_id="trip1",
+    timestamp=1_700_000_000,
+    entity_id="e1",
+    feed_timestamp=None,
+):
+    header_kwargs = {"gtfs_realtime_version": "2.0"}
+    if feed_timestamp is not None:
+        header_kwargs["timestamp"] = feed_timestamp
     feed = gtfs_realtime_pb2.FeedMessage(
-        header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
+        header=gtfs_realtime_pb2.FeedHeader(**header_kwargs),
         entity=[
             gtfs_realtime_pb2.FeedEntity(
                 id=entity_id,
@@ -515,6 +532,115 @@ def test_cmd_match_recording_date_from_earliest_snapshot_not_directory_name(tmp_
     assert result == 0
     content = out_path.read_text(encoding="utf-8")
     assert "2026-06-15" in content
+
+
+def test_cmd_match_recording_date_uses_feed_timestamp_not_filename_across_timezones(tmp_path, capsys):
+    """FA-6 fix regression: recording_date must come from the GTFS-RT feed's own
+    FeedHeader.timestamp (absolute UTC, converted through agency_timezone), not the
+    recording machine's naive-local snapshot filename - a machine recording a feed for
+    an agency in a different timezone from itself would otherwise get the wrong
+    calendar date with no way to detect it. A same-zone test would not catch this bug:
+    the feed timestamp and the filename must be chosen so they land on DIFFERENT
+    calendar dates once the feed timestamp is converted to agency_timezone.
+    """
+    gtfs = _make_gtfs_zip(tmp_path, agency_timezone="Pacific/Auckland")
+    positions_dir = tmp_path / "positions"
+    positions_dir.mkdir()
+
+    # 2026-01-01 23:00:00 UTC is already 2026-01-02 (Auckland is UTC+13 in January,
+    # southern-hemisphere DST) - but the snapshot's own filename naively claims
+    # 2026-01-01, as if written by a machine on a different clock/timezone entirely.
+    feed_ts = int(datetime(2026, 1, 1, 23, 0, 0, tzinfo=timezone.utc).timestamp())
+    _write_snapshot(
+        positions_dir, filename="snapshot_20260101-000000.pb", feed_timestamp=feed_ts
+    )
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(tmp_path, positions_dir=[str(positions_dir)], static=str(gtfs), out=str(out_path))
+    result = _cmd_match(args)
+
+    assert result == 0
+    content = out_path.read_text(encoding="utf-8")
+    assert "2026-01-02" in content
+    assert "2026-01-01" not in content
+
+    captured = capsys.readouterr()
+    assert "Agency timezone resolved: Pacific/Auckland" in captured.out
+    assert "Recording date range: 2026-01-02 to 2026-01-02" in captured.out
+    # The feed timestamp was usable, so the filename-fallback warning must not fire.
+    assert "recording_date for this directory is approximate" not in captured.err
+
+
+def test_cmd_match_recording_date_falls_back_to_filename_when_no_feed_timestamp(tmp_path, capsys):
+    gtfs = _make_gtfs_zip(tmp_path)
+    positions_dir = tmp_path / "positions"
+    positions_dir.mkdir()
+    # No feed_timestamp given -> header.timestamp stays at its proto3 default (0/unset).
+    _write_snapshot(positions_dir, filename="snapshot_20260615-120000.pb")
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(tmp_path, positions_dir=[str(positions_dir)], static=str(gtfs), out=str(out_path))
+    result = _cmd_match(args)
+
+    assert result == 0
+    content = out_path.read_text(encoding="utf-8")
+    assert "2026-06-15" in content
+
+    captured = capsys.readouterr()
+    assert str(positions_dir) in captured.err
+    assert "recording_date for this directory is approximate" in captured.err
+
+
+def test_cmd_match_entire_directory_corrupt_falls_back_and_still_reports_corrupt_snapshot_count(
+    tmp_path, capsys
+):
+    """Milestone-reviewer follow-up: a directory where every snapshot fails to decode
+    exercises two independent mechanisms at once - snapshot_feed_timestamp returning
+    None for every file (-> filename fallback + warning) and match_snapshots' own
+    corrupt_snapshot reject counting - both must fire correctly together, not just in
+    isolation.
+    """
+    gtfs = _make_gtfs_zip(tmp_path)
+    positions_dir = tmp_path / "positions"
+    positions_dir.mkdir()
+    (positions_dir / "snapshot_20260701-080000.pb").write_bytes(b"\xff\xfenot-a-feed")
+    (positions_dir / "snapshot_20260701-080100.pb").write_bytes(b"\xff\xfestill-not-a-feed")
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(tmp_path, positions_dir=[str(positions_dir)], static=str(gtfs), out=str(out_path))
+    result = _cmd_match(args)
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert str(positions_dir) in captured.err
+    assert "recording_date for this directory is approximate" in captured.err
+    assert "Recording date range: 2026-07-01 to 2026-07-01" in captured.out
+    assert "  - corrupt_snapshot: 2" in captured.out
+    assert "Observations matched: 0" in captured.out
+
+
+def test_cmd_match_recording_date_prefers_feed_timestamp_when_only_some_snapshots_have_one(tmp_path, capsys):
+    gtfs = _make_gtfs_zip(tmp_path)
+    positions_dir = tmp_path / "positions"
+    positions_dir.mkdir()
+    feed_ts = int(datetime(2026, 3, 10, 5, 0, 0, tzinfo=timezone.utc).timestamp())
+    _write_snapshot(
+        positions_dir, filename="snapshot_20260101-000000.pb", entity_id="e1", feed_timestamp=feed_ts
+    )
+    # A second snapshot with no usable feed timestamp must not force the fallback -
+    # the directory has at least one valid feed timestamp, so that one wins.
+    _write_snapshot(positions_dir, filename="snapshot_20260101-000100.pb", entity_id="e2")
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(tmp_path, positions_dir=[str(positions_dir)], static=str(gtfs), out=str(out_path))
+    result = _cmd_match(args)
+
+    assert result == 0
+    content = out_path.read_text(encoding="utf-8")
+    assert "2026-03-10" in content
+
+    captured = capsys.readouterr()
+    assert "recording_date for this directory is approximate" not in captured.err
 
 
 def test_cmd_match_unparseable_snapshot_filename_in_dir_returns_1(tmp_path, capsys):

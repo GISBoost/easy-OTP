@@ -17,6 +17,7 @@ from family_a.matcher import (
     load_trip_shape_index,
     match_snapshots,
     project_point_to_polyline,
+    snapshot_feed_timestamp,
 )
 
 # A straight north-south line, ~0.01 deg lat apart (~1.1km per segment) at the equator.
@@ -380,3 +381,35 @@ def test_match_snapshots_empty_input_returns_empty_dataframe_with_columns():
         "distance_along_shape_m",
         "perpendicular_dist_m",
     ]
+
+
+# ---------------------------------------------------------------------------
+# snapshot_feed_timestamp (FA-6 fix)
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_feed_timestamp_reads_header_timestamp(tmp_path):
+    feed = gtfs_realtime_pb2.FeedMessage(
+        header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0", timestamp=1_700_000_000),
+    )
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed.SerializeToString())
+
+    result = snapshot_feed_timestamp(path)
+
+    assert result == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
+
+
+def test_snapshot_feed_timestamp_returns_none_when_unset(tmp_path):
+    # header.timestamp left at its proto3 default (0) - some real feeds omit it.
+    feed = gtfs_realtime_pb2.FeedMessage(
+        header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
+    )
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed.SerializeToString())
+
+    assert snapshot_feed_timestamp(path) is None
+
+
+def test_snapshot_feed_timestamp_returns_none_for_corrupt_snapshot(tmp_path):
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", b"\xff\xfenot-a-feed")
+
+    assert snapshot_feed_timestamp(path) is None

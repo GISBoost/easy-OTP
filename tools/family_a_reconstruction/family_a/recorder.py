@@ -117,11 +117,20 @@ def parse_snapshot_filename(name: str) -> datetime | None:
 
 
 def earliest_recording_date(snapshot_paths: Iterable[Path]) -> date:
-    """Local calendar date of the earliest snapshot among *snapshot_paths*.
+    """Local calendar date of the earliest snapshot among *snapshot_paths*,
+    read from the snapshot filenames.
 
-    Used by ``match`` (FA-6) to derive a directory's ``recording_date`` from
-    its own contents, never from the directory's name (a directory named
-    e.g. ``positions_lodz2`` carries no reliable date information).
+    ``match`` (FA-6) prefers deriving a directory's ``recording_date`` from
+    each snapshot's own GTFS-RT ``FeedHeader.timestamp`` instead (see
+    ``matcher.snapshot_feed_timestamp``) — that value is the transit agency's
+    own absolute UTC server time, safe to convert through ``agency_tz``
+    regardless of where ``record`` was run. This filename-based function is
+    used only as a fallback, when a directory's snapshots have no usable
+    header timestamp at all; unlike the feed timestamp, a filename is the
+    *recording machine's* naive local clock, so this fallback's result is
+    only as reliable as that machine's own clock and timezone. Never derives
+    from the directory's name either (a directory named e.g.
+    ``positions_lodz2`` carries no reliable date information).
 
     Raises :exc:`ValueError` if none of the filenames parse — callers turn
     this into a clean CLI error rather than a raw traceback.
