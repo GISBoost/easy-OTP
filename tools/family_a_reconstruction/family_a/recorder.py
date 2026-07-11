@@ -20,12 +20,15 @@ misleading dead API surface.
 No QGIS / GDAL imports. Run tests: pytest tests/test_recorder.py -v
 """
 
+from __future__ import annotations
+
 import json
 import ssl
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from typing import Iterable
 
 import certifi
 
@@ -85,6 +88,49 @@ def snapshot_filename(dt: datetime) -> str:
     data loss when a recording spans midnight or runs on multiple days.
     """
     return dt.strftime("snapshot_%Y%m%d-%H%M%S.pb")
+
+
+def parse_snapshot_filename(name: str) -> datetime | None:
+    """Parse a ``snapshot_YYYYmmdd-HHMMSS.pb`` filename back into the naive
+    local datetime that :func:`snapshot_filename` encoded it from. Inverse of
+    ``snapshot_filename`` — kept beside it so the format is defined once.
+
+    Returns ``None`` (not an exception) for any name not matching the
+    pattern, so a caller scanning a directory can skip stray/malformed names
+    instead of catching a parse exception per file.
+
+    TIMEZONE NOTE (FA-6): the returned datetime is NAIVE local wall-clock
+    time (the recording machine's ``datetime.now()`` at poll time) — NOT
+    UTC. Do not run it through zoneinfo/agency-timezone conversion before
+    reading off a calendar date; it is already local. This differs
+    deliberately from ``segment_stats.py``'s ``day_type_for_date``, which
+    starts from a UTC matched-observation timestamp and must convert.
+    """
+    stem = name[:-3] if name.endswith(".pb") else name
+    prefix = "snapshot_"
+    if not stem.startswith(prefix):
+        return None
+    try:
+        return datetime.strptime(stem[len(prefix):], "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+
+
+def earliest_recording_date(snapshot_paths: Iterable[Path]) -> date:
+    """Local calendar date of the earliest snapshot among *snapshot_paths*.
+
+    Used by ``match`` (FA-6) to derive a directory's ``recording_date`` from
+    its own contents, never from the directory's name (a directory named
+    e.g. ``positions_lodz2`` carries no reliable date information).
+
+    Raises :exc:`ValueError` if none of the filenames parse — callers turn
+    this into a clean CLI error rather than a raw traceback.
+    """
+    parsed = [parse_snapshot_filename(p.name) for p in snapshot_paths]
+    valid = [dt for dt in parsed if dt is not None]
+    if not valid:
+        raise ValueError("no snapshot_YYYYmmdd-HHMMSS.pb filenames could be parsed for a date")
+    return min(valid).date()
 
 
 def write_snapshot(directory: Path, data: bytes, dt: datetime) -> Path:

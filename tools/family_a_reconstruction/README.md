@@ -27,7 +27,7 @@ keeps the original scheduled time.
 All three subcommands are implemented and documented below:
 
 - `record` — implemented (FA-1).
-- `match` — implemented (FA-2).
+- `match` — implemented (FA-2), multi-directory merge (FA-6).
 - `build` — implemented (FA-3).
 - Full end-to-end worked example and CLI polish — this document (FA-4).
 
@@ -53,9 +53,14 @@ py -m family_a.cli record --url https://mkuran.pl/gtfs/warsaw/vehicles.pb --out-
 - `--out-dir` (required) — directory to write snapshots into (created if missing).
 - `--duration-min` (default `60`) — total recording duration in minutes. Must be a positive
   integer; `0` or negative values are rejected at startup (a non-positive interval would
-  otherwise turn the inter-poll sleep into a no-op and hammer the remote feed).
+  otherwise turn the inter-poll sleep into a no-op and hammer the remote feed). **Hard capped
+  at 1500 (25h)** — a value above that is rejected at startup with a readable error, rather
+  than silently clamped. This is a deliberate limit, not an oversight: for multi-day coverage,
+  do not extend a single recording past the cap — run `record` once per day (manually or via
+  Windows Task Scheduler / cron; this tool does not implement scheduling itself) into a fresh
+  `--out-dir` each time, then merge the separate sessions at `match` time (see below).
 - `--interval-sec` (default `60`) — polling interval in seconds. Same positive-integer
-  requirement as `--duration-min`.
+  requirement as `--duration-min` (but no upper cap).
 
 Output: one `snapshot_YYYYmmdd-HHMMSS.pb` file per successful poll, plus `recording.json`
 describing the session (URL, interval, start/stop times, snapshot/failure counts, total
@@ -80,9 +85,19 @@ shapes, producing a `(trip_id, timestamp, distance_along_shape_m)` series — th
 py -m family_a.cli match --positions-dir .\out --static warsaw.zip --out matched.csv
 ```
 
-- `--positions-dir` (required) — an FA-1 archive directory (`snapshot_*.pb` files). If it
-  contains no `snapshot_*.pb` files, the command exits with a clear error instead of
-  producing an empty output table.
+Multi-day example (merges several separate single-day `record` sessions into one table —
+see "Recording across multiple days" below):
+
+```bat
+py -m family_a.cli match --positions-dir day1_recording day2_recording day3_recording --static warsaw.zip --out matched_multiday.csv
+```
+
+- `--positions-dir` (required, **repeatable** — FA-6) — one or more FA-1 archive directories
+  (`snapshot_*.pb` files), space-separated. Each directory is processed independently and the
+  results concatenated. If any directory contains no `snapshot_*.pb` files, or contains a
+  filename that doesn't match `snapshot_YYYYmmdd-HHMMSS.pb`, the whole command exits with a
+  clear error naming that specific directory — before any matching is attempted on the other
+  directories, and without writing a partial `--out` file.
 - `--static` (required) — static GTFS `.zip` path. Must be a valid zip containing at least
   `trips.txt`; a missing file, a non-zip file, or a zip lacking `trips.txt` all exit with a
   clear error naming the problem, instead of a raw traceback.
@@ -96,7 +111,15 @@ py -m family_a.cli match --positions-dir .\out --static warsaw.zip --out matched
 
 Output columns: `trip_id`, `timestamp` (UTC; pandas' default tz-aware format in CSV, e.g.
 `2026-07-05 20:37:26+00:00` — space-separated, not literal ISO-8601 `T`-separated),
-`distance_along_shape_m`, `perpendicular_dist_m`.
+`distance_along_shape_m`, `perpendicular_dist_m`, `recording_date` (FA-6) — the calendar date
+of the recording *session* that observation came from, derived from the **earliest snapshot
+filename in that `--positions-dir`**, never from the directory's own name (a directory named
+e.g. `positions_lodz2` carries no reliable date information — do not rely on it). Written as
+a plain `YYYY-MM-DD` string in CSV; stored as a `date32` column in Parquet (read back as
+`datetime.date` values via `pd.read_parquet`). Every row from one `--positions-dir` gets the
+same `recording_date`, regardless of that individual observation's own timestamp — this
+identifies which recording *session* a row came from, distinct from `day_type` (FA-5), which
+is derived per-observation.
 
 **Known limitation:** `distance_along_shape_m` is not guaranteed to be strictly increasing
 over time for a given trip. When a route passes close to itself (a loop, a nearby parallel
@@ -108,9 +131,46 @@ archive. This is an inherent limitation of simple nearest-segment matching witho
 trajectory-continuity awareness, not a bug — see `family_a/matcher.py`'s module docstring.
 `build`'s interpolation step does not assume this series is strictly monotonic.
 
-The command prints a summary of snapshots processed, observations matched, and observations
-rejected broken down by reason (`unknown_shape`, `too_far_from_route`, `no_trip_id`,
-`corrupt_snapshot`).
+The command prints a summary of directories merged, the recording date range covered, snapshots
+processed, observations matched, and observations rejected broken down by reason
+(`unknown_shape`, `too_far_from_route`, `no_trip_id`, `corrupt_snapshot`) — all totals summed
+across every `--positions-dir` given.
+
+### Recording across multiple days
+
+GTFS-RT's `trip_id` is not date-qualified — the same `trip_id` recurs on every service day the
+trip runs. To improve statistical robustness (P50/P85) against a one-off anomaly on any single
+recording day (an accident, a diversion, an event), record several separate, single-day
+sessions rather than one continuous multi-day recording (`record`'s `--duration-min` is hard
+capped at 1500 minutes / 25h for exactly this reason — see Usage — record above):
+
+```bat
+py -m family_a.cli record --url https://mkuran.pl/gtfs/lodz/vehicles.pb --out-dir day1_recording --duration-min 240
+rem ... next day ...
+py -m family_a.cli record --url https://mkuran.pl/gtfs/lodz/vehicles.pb --out-dir day2_recording --duration-min 240
+rem ... merge both sessions at match time ...
+py -m family_a.cli match --positions-dir day1_recording day2_recording --static lodz.zip --out matched_multiday.csv
+```
+
+`match` derives each directory's `recording_date` from its own snapshot filenames and tags
+every observation from that directory accordingly; `build`'s `collect_segment_observations`
+then groups position series by `(trip_id, recording_date)` rather than by bare `trip_id`, so
+two different days' position series for the same `trip_id` are never concatenated into one
+artificially continuous run.
+
+**The static GTFS must stay valid across every recording day being merged.** `match` and
+`build` both take a single `--static` argument shared by all `--positions-dir`s — there is no
+per-directory static feed. Some agencies periodically republish their static GTFS with a new
+`trip_id` generation (observed directly on Łódź's open-data feed: `trip_id`s recorded on one
+day used prefix `11443`–`11445`, and three days later — after the agency republished — the
+live RT feed's `trip_id`s had shifted to `11450`–`11455`, present in the *new* static feed's
+`feed_info.txt` as `feed_version`, but entirely absent from the old one). When that happens
+between two recording sessions, no single `--static` zip has valid `trip_id`s for both days —
+attempting the merge anyway does not error, it just silently rejects every observation from
+whichever day doesn't match as `unknown_shape` (check the printed `unknown_shape` reject count
+before trusting a merge's results). Re-download the static feed close to each recording
+session, and days whose validity windows don't overlap a single static generation need to be
+`build` separately rather than merged.
 
 **Fallback when `shapes.txt` is missing:** some GTFS feeds omit `shapes.txt` entirely. In that
 case `match` falls back to a straight-line shape built from each trip's own stop sequence
@@ -171,8 +231,11 @@ than a naive route/stop-only key would. Two residual limitations, both deliberat
   the *previous* service day) a real vehicle observation shortly after local midnight gets
   `day_type` from the *next* calendar date instead — a mismatch against that trip's actual
   service day. `matched_lodz.csv`'s recording window (15:44–19:46 local) never crosses
-  midnight, so this has not been observed in practice yet, but it is a known gap to address
-  before FA-6's multi-day/multi-night stitching, where it becomes reachable.
+  midnight, so this has not been observed in practice yet. This remains a known gap even after
+  FA-6: FA-6's `(trip_id, recording_date)` grouping (see "Recording across multiple days" above)
+  prevents two different days' position series from being merged into one artificial run, but
+  it does not fix this separate day_type-vs-service-day nuance for trips that individually
+  cross midnight.
 
 Mitigate a short or sparse recording by recording longer sessions (several hours or a full
 service day, ideally repeated across day types) and by comparing the printed "Segments

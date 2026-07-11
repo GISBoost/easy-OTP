@@ -5,7 +5,7 @@ line - the "\" bash-style continuation shown in older revisions of this docstrin
 cmd.exe/PowerShell; see each subcommand's own --help for a copy-pasteable example):
 
     py -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> [--duration-min N] [--interval-sec N]
-    py -m family_a.cli match --positions-dir <dir> --static <gtfs.zip> --out <table> [--max-perpendicular-dist-m N]
+    py -m family_a.cli match --positions-dir <dir> [<dir> ...] --static <gtfs.zip> --out <table> [--max-perpendicular-dist-m N]
     py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N]
 """
 
@@ -15,7 +15,7 @@ import argparse
 import sys
 import time
 import zipfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -29,7 +29,9 @@ from family_a.matcher import (
 )
 from family_a.recorder import (
     SnapshotFetchError,
+    earliest_recording_date,
     fetch_snapshot,
+    parse_snapshot_filename,
     snapshot_filename,
     write_manifest,
     write_snapshot,
@@ -117,6 +119,24 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
+def _duration_minutes(value: str) -> int:
+    """argparse type: positive integer, capped at 1500 minutes (25h).
+
+    Consistent with the plugin's RT3-1 cap (docs/prd/PR_easy-OTP_v07.md, RT3-1) - enough
+    margin for overnight trips crossing midnight, while ruling out multi-day continuous
+    recordings by construction. Family A's intended multi-day workflow (FA-6) is several
+    separate one-day sessions merged at match time, not one long recording.
+    """
+    ivalue = _positive_int(value)
+    if ivalue > 1500:
+        raise argparse.ArgumentTypeError(
+            f"must be at most 1500 minutes (25h) - got {value}. For multi-day coverage, run "
+            "several separate 'record' sessions and merge them with 'match "
+            "--positions-dir ... --positions-dir ...' (see README)."
+        )
+    return ivalue
+
+
 def _validate_static_gtfs(path: str, required_files: tuple[str, ...]) -> str | None:
     """Return an error message if *path* is not a usable static GTFS zip, else None.
 
@@ -166,11 +186,46 @@ def _validate_static_gtfs_for_match(path: str) -> str | None:
 
 
 def _cmd_match(args: argparse.Namespace) -> int:
-    positions_dir = Path(args.positions_dir)
-    snapshot_paths = sorted(positions_dir.glob("snapshot_*.pb"))
-    if not snapshot_paths:
-        print(f"No snapshot_*.pb files found in {positions_dir}", file=sys.stderr)
-        return 1
+    positions_dirs = [Path(p) for p in args.positions_dir]
+
+    # Reject the same directory given twice up front - per_dir_snapshots below
+    # is keyed by Path, so a duplicate would otherwise be silently processed
+    # only once while the summary's "Directories merged" count (taken from
+    # positions_dirs, before dedup) still reported the original, higher
+    # count - an inconsistency, not just redundant work. Compared via
+    # resolve() so "day1" and ".\day1" are recognised as the same directory.
+    seen_resolved: dict[Path, Path] = {}
+    for positions_dir in positions_dirs:
+        resolved = positions_dir.resolve()
+        if resolved in seen_resolved:
+            print(
+                f"--positions-dir given the same directory twice: {seen_resolved[resolved]} "
+                f"and {positions_dir} both resolve to {resolved}. Each --positions-dir must "
+                "be a distinct recording session.",
+                file=sys.stderr,
+            )
+            return 1
+        seen_resolved[resolved] = positions_dir
+
+    # Validate every directory up front (cheap - just a glob + filename parse)
+    # before running any (possibly slow) matching, so a typo'd/empty directory
+    # anywhere in a multi-directory call fails immediately with no partial
+    # output and no wasted work on earlier directories (FA-6).
+    per_dir_snapshots: dict[Path, list[Path]] = {}
+    for positions_dir in positions_dirs:
+        snapshot_paths = sorted(positions_dir.glob("snapshot_*.pb"))
+        if not snapshot_paths:
+            print(f"No snapshot_*.pb files found in {positions_dir}", file=sys.stderr)
+            return 1
+        for snapshot_path in snapshot_paths:
+            if parse_snapshot_filename(snapshot_path.name) is None:
+                print(
+                    f"{positions_dir} contains a snapshot filename that does not match "
+                    f"snapshot_YYYYmmdd-HHMMSS.pb: {snapshot_path.name}",
+                    file=sys.stderr,
+                )
+                return 1
+        per_dir_snapshots[positions_dir] = snapshot_paths
 
     static_error = _validate_static_gtfs_for_match(args.static)
     if static_error:
@@ -185,9 +240,38 @@ def _cmd_match(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    df = match_snapshots(
-        snapshot_paths, trip_shapes, shapes, max_perpendicular_dist_m=args.max_perpendicular_dist_m
-    )
+    frames: list[pd.DataFrame] = []
+    total_reject_counts: dict[str, int] = {}
+    total_snapshots_processed = 0
+    recording_dates: list[date] = []
+
+    for positions_dir, snapshot_paths in per_dir_snapshots.items():
+        recording_date = earliest_recording_date(snapshot_paths)
+        recording_dates.append(recording_date)
+
+        df = match_snapshots(
+            snapshot_paths, trip_shapes, shapes, max_perpendicular_dist_m=args.max_perpendicular_dist_m
+        )
+        # Scalar broadcast: recording_date identifies which recording SESSION
+        # a row came from, not a per-observation calendar date - unlike
+        # day_type (FA-5), which is derived per-observation from its own
+        # timestamp for a different purpose.
+        df["recording_date"] = recording_date
+
+        for reason, count in df.attrs.get("reject_counts", {}).items():
+            total_reject_counts[reason] = total_reject_counts.get(reason, 0) + count
+        total_snapshots_processed += df.attrs.get("snapshots_processed", len(snapshot_paths))
+        frames.append(df)
+
+    # pd.concat does not preserve .attrs, hence the manual summing above.
+    df = pd.concat(frames, ignore_index=True)
+    if not df.empty:
+        # Concatenating an empty per-directory frame (whose "timestamp" stays
+        # object dtype, per matcher.py's own empty-input guard) with a
+        # non-empty one can degrade the combined column's dtype - normalize
+        # once on the concatenated frame rather than relying on per-directory
+        # dtype survival.
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
 
     out_path = Path(args.out)
     try:
@@ -203,13 +287,14 @@ def _cmd_match(args: argparse.Namespace) -> int:
         )
         return 1
 
-    rejects = df.attrs.get("reject_counts", {})
-    total_rejected = sum(rejects.values())
-    print(f"Snapshots processed: {df.attrs.get('snapshots_processed', len(snapshot_paths))}")
+    total_rejected = sum(total_reject_counts.values())
+    print(f"Directories merged: {len(positions_dirs)}")
+    print(f"Recording date range: {min(recording_dates)} to {max(recording_dates)}")
+    print(f"Snapshots processed: {total_snapshots_processed}")
     print(f"Observations matched: {len(df)}")
     print(f"Observations rejected: {total_rejected}")
     for reason in ("unknown_shape", "too_far_from_route", "no_trip_id", "corrupt_snapshot"):
-        print(f"  - {reason}: {rejects.get(reason, 0)}")
+        print(f"  - {reason}: {total_reject_counts.get(reason, 0)}")
     print(f"Fallback shapes used (shapes.txt missing): {'yes' if fallback_used else 'no'}")
     print(f"Output written to: {out_path}")
     return 0
@@ -233,6 +318,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
         print(f"--matched file not found: {matched_path}", file=sys.stderr)
         return 1
 
+    # recording_date (FA-6) is not required here and is not enumerated below -
+    # this check only lists hard requirements, it does not reject extra
+    # columns. A recording_date column (if present) survives the CSV/Parquet
+    # round-trip in a form collect_segment_observations can group by
+    # directly (str after CSV, datetime.date after Parquet) with no
+    # reparsing needed here.
     missing_cols = [
         col for col in ("trip_id", "timestamp", "distance_along_shape_m") if col not in matched.columns
     ]
@@ -309,6 +400,25 @@ def _cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
+class _AccumulateDirs(argparse.Action):
+    """Accumulate --positions-dir values across repeated flag occurrences, on
+    top of nargs="+"'s own accumulation of multiple values within a single
+    occurrence - so both '--positions-dir a b' and
+    '--positions-dir a --positions-dir b' produce ["a", "b"].
+
+    Plain nargs="+" with argparse's default 'store' action instead OVERWRITES
+    the whole value on a second occurrence of the flag - '--positions-dir a
+    --positions-dir b' would silently end up with only ["b"], silently
+    dropping "a" with no error. This is exactly the style shown in FA-6's own
+    acceptance criteria (docs/prd/PR_easy-OTP_v07.md), so it must not be a
+    silent trap.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        existing = getattr(namespace, self.dest, None) or []
+        setattr(namespace, self.dest, existing + list(values))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="family_a",
@@ -322,13 +432,21 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Example:\n"
             "  py -m family_a.cli record --url https://mkuran.pl/gtfs/warsaw/vehicles.pb "
-            "--out-dir recordings/ --duration-min 90 --interval-sec 30"
+            "--out-dir recordings/ --duration-min 90 --interval-sec 30\n\n"
+            "Recording duration is capped at 1500 minutes (25h) per session. For multi-day\n"
+            "coverage, run 'record' once per day into a separate --out-dir, then merge with\n"
+            "'match --positions-dir day1 day2 ...' (see README)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_record.add_argument("--url", required=True, help="VehiclePositions .pb feed URL")
     p_record.add_argument("--out-dir", required=True, help="Directory to write snapshots into")
-    p_record.add_argument("--duration-min", type=_positive_int, default=60, help="Recording duration in minutes")
+    p_record.add_argument(
+        "--duration-min",
+        type=_duration_minutes,
+        default=60,
+        help="Recording duration in minutes (max 1500 = 25h)",
+    )
     p_record.add_argument("--interval-sec", type=_positive_int, default=60, help="Polling interval in seconds")
     p_record.set_defaults(func=_cmd_record)
 
@@ -338,12 +456,29 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Example:\n"
             "  py -m family_a.cli match --positions-dir recordings/ --static gtfs.zip "
-            "--out matched.csv"
+            "--out matched.csv\n\n"
+            "Multi-day example (merges several single-day recordings into one table):\n"
+            "  py -m family_a.cli match --positions-dir day1_recording day2_recording "
+            "day3_recording --static gtfs.zip --out matched_multiday.csv\n\n"
+            "--positions-dir may also be repeated instead of space-separated - both "
+            "accumulate into the same list, e.g.:\n"
+            "  py -m family_a.cli match --positions-dir day1_recording --positions-dir "
+            "day2_recording --static gtfs.zip --out matched_multiday.csv"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_match.add_argument(
-        "--positions-dir", required=True, help="FA-1 archive dir containing snapshot_*.pb"
+        "--positions-dir",
+        required=True,
+        nargs="+",
+        action=_AccumulateDirs,
+        help=(
+            "One or more FA-1 archive dirs containing snapshot_*.pb - space-separate for a "
+            "multi-day merge (--positions-dir day1 day2 day3), or repeat the flag "
+            "(--positions-dir day1 --positions-dir day2 day3); both accumulate. Each "
+            "directory's recording_date is derived from its own snapshot filenames, never "
+            "from the directory name."
+        ),
     )
     p_match.add_argument("--static", required=True, help="Static GTFS zip path")
     p_match.add_argument(

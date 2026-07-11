@@ -5,7 +5,7 @@ Run: pytest tests/test_segment_stats.py -v
 """
 
 import statistics
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -45,8 +45,18 @@ def _make_static_index(trips, stops, service_ids=None) -> StaticIndex:
     )
 
 
-def _matched_df(rows: list[tuple[str, datetime, float]]) -> pd.DataFrame:
-    df = pd.DataFrame(rows, columns=["trip_id", "timestamp", "distance_along_shape_m"])
+def _matched_df(rows: list[tuple]) -> pd.DataFrame:
+    """Build a matched-style DataFrame. Rows are 3-tuples
+    (trip_id, timestamp, distance_along_shape_m) for the pre-FA-6 shape (no
+    recording_date column), or 4-tuples with a trailing recording_date
+    (date) to exercise FA-6's (trip_id, recording_date) grouping. All rows
+    in one call must be the same length.
+    """
+    has_recording_date = bool(rows) and len(rows[0]) == 4
+    columns = ["trip_id", "timestamp", "distance_along_shape_m"]
+    if has_recording_date:
+        columns.append("recording_date")
+    df = pd.DataFrame(rows, columns=columns)
     df["perpendicular_dist_m"] = 0.0
     return df
 
@@ -242,6 +252,90 @@ def test_collect_empty_matched_dataframe():
     segment_times, counts = collect_segment_observations(matched, idx, {}, {}, {}, agency_tz="UTC")
     assert segment_times == {}
     assert counts["trips_processed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# collect_segment_observations - recording_date grouping (FA-6)
+# ---------------------------------------------------------------------------
+
+
+def test_collect_same_recording_date_still_merges_correctly():
+    """Control case: two observations with an identical recording_date
+    interpolate as one series, exactly like the pre-FA-6 behaviour - the
+    grouping key change must not affect a single-day recording.
+    """
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0, date(2026, 1, 1)),
+        ("t1", _t(100), d_b, date(2026, 1, 1)),
+    ])
+
+    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+
+    key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
+    assert segment_times[key] == pytest.approx([100.0])
+    assert counts["segments_observed"] == 1
+
+
+def test_collect_prevents_cross_day_bracketing_with_close_timestamps():
+    """Core FA-6 regression test: same trip_id observed on two different
+    recording_dates only 50 seconds apart by raw timestamp (deliberately NOT
+    >2h apart, so _MAX_PLAUSIBLE_SEG_TIME_S cannot catch this by accident -
+    the regression must be prevented by the grouping key itself). Under the
+    pre-FA-6 bare-trip_id grouping this pair would bracket stop B's distance
+    and silently produce a bogus ~50s segment mixing two unrelated days.
+
+    Grouping by (trip_id, recording_date) means each day is processed as its
+    own independent attempt at the trip's one stop pair (A->B) - each day's
+    single-point series can't bracket either stop, so each day contributes
+    its own interpolation gap (2 total), not one combined gap.
+    """
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0, date(2026, 1, 1)),
+        ("t1", _t(50), d_b, date(2026, 1, 2)),
+    ])
+
+    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+
+    assert segment_times == {}
+    assert counts["segments_observed"] == 0
+    assert counts["rejected_seg_time"] == 0
+    assert counts["interpolation_gaps"] == 2
+
+
+def test_collect_without_recording_date_column_groups_by_trip_id_only():
+    """Backward-compat case: a matched table with no recording_date column at
+    all (as produced by a pre-FA-6 single-directory match run) must still
+    group by bare trip_id and interpolate successfully, reproducing this
+    function's pre-FA-6 behaviour exactly.
+    """
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(50), d_b),
+    ])
+    assert "recording_date" not in matched.columns
+
+    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+
+    assert counts["segments_observed"] == 1
+    assert counts["interpolation_gaps"] == 0
 
 
 # ---------------------------------------------------------------------------

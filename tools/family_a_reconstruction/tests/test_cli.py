@@ -6,14 +6,16 @@ mocked so the record loop runs instantly). Run: pytest tests/test_cli.py -v
 
 import json
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
+
+import argparse
 
 import pytest
 from google.transit import gtfs_realtime_pb2
 
-from family_a.cli import _cmd_build, _cmd_match, _cmd_record, build_parser
+from family_a.cli import _cmd_build, _cmd_match, _cmd_record, _duration_minutes, build_parser
 from family_a.recorder import SnapshotFetchError
 
 
@@ -46,6 +48,37 @@ def test_match_defaults():
     )
     assert args.func is _cmd_match
     assert args.max_perpendicular_dist_m == 100.0
+    assert args.positions_dir == ["pos"]
+
+
+def test_match_positions_dir_accepts_multiple_values():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["match", "--positions-dir", "day1", "day2", "--static", "gtfs.zip", "--out", "out.csv"]
+    )
+    assert args.positions_dir == ["day1", "day2"]
+
+
+def test_match_positions_dir_accumulates_across_repeated_flag():
+    """Plain nargs="+" with argparse's default 'store' action would silently
+    OVERWRITE on a second --positions-dir occurrence, dropping the first
+    directory with no error - the exact repeated-flag style shown in FA-6's
+    own acceptance criteria must accumulate instead.
+    """
+    parser = build_parser()
+    args = parser.parse_args(
+        ["match", "--positions-dir", "day1", "--positions-dir", "day2", "--static", "gtfs.zip", "--out", "out.csv"]
+    )
+    assert args.positions_dir == ["day1", "day2"]
+
+
+def test_match_positions_dir_accumulates_mixed_repeated_and_multi_value():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["match", "--positions-dir", "day1", "--positions-dir", "day2", "day3",
+         "--static", "gtfs.zip", "--out", "out.csv"]
+    )
+    assert args.positions_dir == ["day1", "day2", "day3"]
 
 
 @pytest.mark.parametrize("flag", ["--duration-min", "--interval-sec"])
@@ -53,6 +86,46 @@ def test_non_positive_values_rejected(flag):
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["record", "--url", "http://x", "--out-dir", "out", flag, "0"])
+
+
+# ---------------------------------------------------------------------------
+# _duration_minutes (FA-6)
+# ---------------------------------------------------------------------------
+
+
+def test_duration_minutes_direct_boundary_1500_ok():
+    assert _duration_minutes("1500") == 1500
+
+
+def test_duration_minutes_direct_1501_rejected():
+    with pytest.raises(argparse.ArgumentTypeError):
+        _duration_minutes("1501")
+
+
+def test_duration_minutes_direct_zero_rejected():
+    with pytest.raises(argparse.ArgumentTypeError):
+        _duration_minutes("0")
+
+
+def test_record_duration_min_over_cap_rejected_readable_message(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["record", "--url", "http://x", "--out-dir", "out", "--duration-min", "1501"])
+    captured = capsys.readouterr()
+    assert "1500" in captured.err
+    assert "match" in captured.err
+
+
+def test_record_duration_min_1600_full_parser_nonzero_exit():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["record", "--url", "http://x", "--out-dir", "out", "--duration-min", "1600"])
+
+
+def test_record_duration_min_1500_accepted():
+    parser = build_parser()
+    args = parser.parse_args(["record", "--url", "http://x", "--out-dir", "out", "--duration-min", "1500"])
+    assert args.duration_min == 1500
 
 
 def test_build_min_observations_per_segment_rejects_non_positive():
@@ -154,28 +227,28 @@ def _make_gtfs_zip(tmp_path):
     return path
 
 
-def _write_snapshot(tmp_path):
+def _write_snapshot(tmp_path, *, filename="snapshot_20260101-000000.pb", trip_id="trip1", timestamp=1_700_000_000, entity_id="e1"):
     feed = gtfs_realtime_pb2.FeedMessage(
         header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
         entity=[
             gtfs_realtime_pb2.FeedEntity(
-                id="e1",
+                id=entity_id,
                 vehicle=gtfs_realtime_pb2.VehiclePosition(
-                    trip=gtfs_realtime_pb2.TripDescriptor(trip_id="trip1"),
+                    trip=gtfs_realtime_pb2.TripDescriptor(trip_id=trip_id),
                     position=gtfs_realtime_pb2.Position(latitude=0.005, longitude=0.0),
-                    timestamp=1_700_000_000,
+                    timestamp=timestamp,
                 ),
             )
         ],
     )
-    path = tmp_path / "snapshot_20260101-000000.pb"
+    path = tmp_path / filename
     path.write_bytes(feed.SerializeToString())
     return path
 
 
 def _make_match_args(tmp_path, **overrides):
     class _NS:
-        positions_dir = str(tmp_path)
+        positions_dir = [str(tmp_path)]
         static = None
         out = None
         max_perpendicular_dist_m = 100.0
@@ -198,10 +271,15 @@ def test_cmd_match_end_to_end_writes_csv(tmp_path, capsys):
     assert out_path.exists()
     content = out_path.read_text(encoding="utf-8")
     assert "trip1" in content
+    header = content.splitlines()[0]
+    assert "recording_date" in header
+    assert "2026-01-01" in content
 
     captured = capsys.readouterr()
     assert "Snapshots processed" in captured.out
     assert "Observations matched" in captured.out
+    assert "Directories merged: 1" in captured.out
+    assert "Recording date range: 2026-01-01 to 2026-01-01" in captured.out
 
 
 def test_cmd_match_no_snapshots_found_returns_1(tmp_path, capsys):
@@ -334,6 +412,174 @@ def test_cmd_match_parquet_without_pyarrow_returns_1(tmp_path, capsys, monkeypat
 
 
 # ---------------------------------------------------------------------------
+# _cmd_match multi-directory merge (FA-6)
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_match_merges_two_directories_with_recording_date(tmp_path, capsys):
+    gtfs = _make_gtfs_zip(tmp_path)
+    day1_dir = tmp_path / "day1"
+    day2_dir = tmp_path / "day2"
+    day1_dir.mkdir()
+    day2_dir.mkdir()
+    _write_snapshot(day1_dir, filename="snapshot_20260101-000000.pb", entity_id="e1")
+    _write_snapshot(day2_dir, filename="snapshot_20260102-000000.pb", entity_id="e2")
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(
+        tmp_path, positions_dir=[str(day1_dir), str(day2_dir)], static=str(gtfs), out=str(out_path)
+    )
+    result = _cmd_match(args)
+
+    assert result == 0
+    content = out_path.read_text(encoding="utf-8")
+    assert "2026-01-01" in content
+    assert "2026-01-02" in content
+    # 2 total matched observations (one snapshot per day, each with one vehicle).
+    assert len(content.splitlines()) == 3  # header + 2 rows
+
+    captured = capsys.readouterr()
+    assert "Directories merged: 2" in captured.out
+    assert "Recording date range: 2026-01-01 to 2026-01-02" in captured.out
+    assert "Observations matched: 2" in captured.out
+
+
+def test_cmd_match_reject_counts_summed_across_directories(tmp_path, capsys):
+    gtfs = _make_gtfs_zip(tmp_path)
+    day1_dir = tmp_path / "day1"
+    day2_dir = tmp_path / "day2"
+    day1_dir.mkdir()
+    day2_dir.mkdir()
+    # day1: a valid observation for trip1.
+    _write_snapshot(day1_dir, filename="snapshot_20260101-000000.pb", trip_id="trip1", entity_id="e1")
+    # day2: a vehicle with no trip_id at all -> counted as no_trip_id reject.
+    feed = gtfs_realtime_pb2.FeedMessage(
+        header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
+        entity=[
+            gtfs_realtime_pb2.FeedEntity(
+                id="e2",
+                vehicle=gtfs_realtime_pb2.VehiclePosition(
+                    position=gtfs_realtime_pb2.Position(latitude=0.005, longitude=0.0),
+                    timestamp=1_700_000_000,
+                ),
+            )
+        ],
+    )
+    (day2_dir / "snapshot_20260102-000000.pb").write_bytes(feed.SerializeToString())
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(
+        tmp_path, positions_dir=[str(day1_dir), str(day2_dir)], static=str(gtfs), out=str(out_path)
+    )
+    result = _cmd_match(args)
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "Observations rejected: 1" in captured.out
+    assert "  - no_trip_id: 1" in captured.out
+
+
+def test_cmd_match_empty_directory_in_multi_dir_call_returns_1_named(tmp_path, capsys):
+    gtfs = _make_gtfs_zip(tmp_path)
+    day1_dir = tmp_path / "day1"
+    day2_dir = tmp_path / "day2_empty"
+    day1_dir.mkdir()
+    day2_dir.mkdir()
+    _write_snapshot(day1_dir, filename="snapshot_20260101-000000.pb")
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(
+        tmp_path, positions_dir=[str(day1_dir), str(day2_dir)], static=str(gtfs), out=str(out_path)
+    )
+    result = _cmd_match(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert str(day2_dir) in captured.err
+    assert "No snapshot_*.pb files found" in captured.err
+    assert not out_path.exists()
+
+
+def test_cmd_match_recording_date_from_earliest_snapshot_not_directory_name(tmp_path, capsys):
+    gtfs = _make_gtfs_zip(tmp_path)
+    misleading_dir = tmp_path / "positions_lodz2"
+    misleading_dir.mkdir()
+    _write_snapshot(misleading_dir, filename="snapshot_20260615-120000.pb")
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(
+        tmp_path, positions_dir=[str(misleading_dir)], static=str(gtfs), out=str(out_path)
+    )
+    result = _cmd_match(args)
+
+    assert result == 0
+    content = out_path.read_text(encoding="utf-8")
+    assert "2026-06-15" in content
+
+
+def test_cmd_match_unparseable_snapshot_filename_in_dir_returns_1(tmp_path, capsys):
+    gtfs = _make_gtfs_zip(tmp_path)
+    bad_dir = tmp_path / "day1"
+    bad_dir.mkdir()
+    _write_snapshot(bad_dir, filename="snapshot_bogus.pb")
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(tmp_path, positions_dir=[str(bad_dir)], static=str(gtfs), out=str(out_path))
+    result = _cmd_match(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert str(bad_dir) in captured.err
+    assert "snapshot_bogus.pb" in captured.err
+    assert not out_path.exists()
+
+
+def test_cmd_match_duplicate_positions_dir_returns_1(tmp_path, capsys):
+    """Giving the same directory twice must fail loudly, not silently
+    process it once while still reporting the original (higher) directory
+    count in the summary.
+    """
+    gtfs = _make_gtfs_zip(tmp_path)
+    day_dir = tmp_path / "day1"
+    day_dir.mkdir()
+    _write_snapshot(day_dir, filename="snapshot_20260101-000000.pb")
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(
+        tmp_path, positions_dir=[str(day_dir), str(day_dir)], static=str(gtfs), out=str(out_path)
+    )
+    result = _cmd_match(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert str(day_dir) in captured.err
+    assert "same directory twice" in captured.err
+    assert not out_path.exists()
+
+
+def test_cmd_match_duplicate_positions_dir_detected_via_different_relative_paths(tmp_path, capsys):
+    """Same directory referenced by two different (but equivalent) path
+    strings must still be caught - dedup compares resolved paths, not raw
+    strings.
+    """
+    gtfs = _make_gtfs_zip(tmp_path)
+    day_dir = tmp_path / "day1"
+    day_dir.mkdir()
+    _write_snapshot(day_dir, filename="snapshot_20260101-000000.pb")
+    out_path = tmp_path / "matched.csv"
+
+    equivalent_path = str(day_dir / ".." / "day1")
+    args = _make_match_args(
+        tmp_path, positions_dir=[str(day_dir), equivalent_path], static=str(gtfs), out=str(out_path)
+    )
+    result = _cmd_match(args)
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "same directory twice" in captured.err
+
+
+# ---------------------------------------------------------------------------
 # _cmd_build (FA-3)
 # ---------------------------------------------------------------------------
 
@@ -427,6 +673,97 @@ def test_cmd_build_end_to_end_writes_both_zips(tmp_path, capsys):
     assert "Segments corrected: 1" in captured.out
     assert "P50 output written to" in captured.out
     assert "P85 output written to" in captured.out
+
+
+def test_cmd_build_reads_matched_csv_produced_by_cmd_match_with_recording_date(tmp_path, capsys):
+    """FA-6 end-to-end regression: recording_date survives _cmd_match's CSV
+    write as a plain string, and _cmd_build's collect_segment_observations
+    call groups by (trip_id, recording_date) using that string value without
+    raising - test_segment_stats.py's unit tests feed collect_segment_observations
+    pre-built datetime.date objects directly, which does not exercise this
+    CSV round-trip. Same 07:00 UTC / 08:00 local Europe/Warsaw alignment as
+    test_cmd_build_end_to_end_writes_both_zips, so this exercises an actual
+    correction, not just a gap.
+
+    Uses its own static zip (not the shared _make_build_static_zip) with a
+    shape extending past stop B, so the second live-recorded position has
+    real distance margin beyond B - a shape ending exactly at B makes the
+    live position's own map-matched distance and stop_distance_along_shape's
+    independently-computed distance for B differ by float noise, which can
+    break interpolate_stop_time's bracket by a hair (observed while writing
+    this test) - an artifact of this test's own construction, not a defect
+    in the reviewed code.
+    """
+    gtfs_path = tmp_path / "gtfs_build_fa6.zip"
+    with zipfile.ZipFile(gtfs_path, "w") as zf:
+        zf.writestr(
+            "trips.txt",
+            "trip_id,route_id,direction_id,shape_id,service_id\nt1,R1,0,shape1,svc1\n",
+        )
+        zf.writestr("stops.txt", "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.01,0.0\n")
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
+            "t1,08:00:00,08:00:00,A,1\n"
+            "t1,08:10:00,08:10:00,B,2\n",
+        )
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+            "shape1,0.0,0.0,0\n"
+            "shape1,0.01,0.0,1\n"
+            "shape1,0.02,0.0,2\n",
+        )
+        zf.writestr(
+            "calendar.txt",
+            "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,"
+            "start_date,end_date\n"
+            "svc1,1,1,1,1,1,0,0,20260101,20261231\n",
+        )
+
+    def _feed(trip_id, lat, lon, ts):
+        return gtfs_realtime_pb2.FeedMessage(
+            header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
+            entity=[
+                gtfs_realtime_pb2.FeedEntity(
+                    id="e1",
+                    vehicle=gtfs_realtime_pb2.VehiclePosition(
+                        trip=gtfs_realtime_pb2.TripDescriptor(trip_id=trip_id),
+                        position=gtfs_realtime_pb2.Position(latitude=lat, longitude=lon),
+                        timestamp=ts,
+                    ),
+                )
+            ],
+        )
+
+    positions_dir = tmp_path / "recording"
+    positions_dir.mkdir()
+    ts1 = int(datetime(2026, 1, 1, 7, 0, 0, tzinfo=timezone.utc).timestamp())
+    ts2 = int(datetime(2026, 1, 1, 7, 0, 50, tzinfo=timezone.utc).timestamp())
+    (positions_dir / "snapshot_20260101-070000.pb").write_bytes(
+        _feed("t1", 0.0, 0.0, ts1).SerializeToString()
+    )
+    (positions_dir / "snapshot_20260101-070050.pb").write_bytes(
+        _feed("t1", 0.015, 0.0, ts2).SerializeToString()  # past B, well within margin
+    )
+
+    matched_path = tmp_path / "matched_via_match.csv"
+    match_args = _make_match_args(
+        tmp_path, positions_dir=[str(positions_dir)], static=str(gtfs_path), out=str(matched_path)
+    )
+    assert _cmd_match(match_args) == 0
+    header = matched_path.read_text(encoding="utf-8").splitlines()[0]
+    assert "recording_date" in header
+
+    out_prefix = str(tmp_path / "out_via_match")
+    build_args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs_path), out_prefix=out_prefix
+    )
+    result = _cmd_build(build_args)
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "Segments corrected: 1" in captured.out
 
 
 def test_cmd_build_reports_gap_when_no_observations(tmp_path, capsys):

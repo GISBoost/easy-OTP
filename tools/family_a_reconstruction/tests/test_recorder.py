@@ -8,15 +8,18 @@ import json
 import re
 import ssl
 import urllib.error
-from datetime import datetime
+from datetime import date, datetime
 from io import BytesIO
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from family_a.recorder import (
     SnapshotFetchError,
+    earliest_recording_date,
     fetch_snapshot,
+    parse_snapshot_filename,
     snapshot_filename,
     write_manifest,
     write_snapshot,
@@ -123,6 +126,40 @@ def test_snapshot_filename_midnight_boundary():
     dt2 = datetime(2026, 6, 22, 0, 0, 0)
     # Date is included — cross-midnight filenames never collide.
     assert snapshot_filename(dt1) != snapshot_filename(dt2)
+
+
+# ---------------------------------------------------------------------------
+# parse_snapshot_filename / earliest_recording_date (FA-6)
+# ---------------------------------------------------------------------------
+
+def test_parse_snapshot_filename_roundtrips_snapshot_filename():
+    for dt in (
+        datetime(2026, 1, 1, 0, 0, 0),
+        datetime(2026, 6, 21, 8, 30, 15),
+        datetime(2026, 12, 31, 23, 59, 59),
+    ):
+        assert parse_snapshot_filename(snapshot_filename(dt)) == dt
+
+
+def test_parse_snapshot_filename_rejects_malformed_name():
+    assert parse_snapshot_filename("snapshot_bogus.pb") is None
+    assert parse_snapshot_filename("not_a_snapshot_at_all.txt") is None
+    assert parse_snapshot_filename("snapshot_20260101.pb") is None
+
+
+def test_earliest_recording_date_picks_earliest_across_unsorted_input():
+    paths = [
+        Path("snapshot_20260103-000000.pb"),
+        Path("snapshot_20260101-120000.pb"),
+        Path("snapshot_20260102-060000.pb"),
+    ]
+    assert earliest_recording_date(paths) == date(2026, 1, 1)
+
+
+def test_earliest_recording_date_raises_on_no_parseable_names():
+    paths = [Path("snapshot_bogus.pb"), Path("other_file.pb")]
+    with pytest.raises(ValueError):
+        earliest_recording_date(paths)
 
 
 # ---------------------------------------------------------------------------

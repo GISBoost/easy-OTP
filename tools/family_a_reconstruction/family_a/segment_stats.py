@@ -53,7 +53,24 @@ def collect_segment_observations(
     observed travel times (seconds). day_type/time_bucket are derived from
     the segment's own observation time, converted from UTC to agency_tz
     (see calendar_scope.py) before deriving the local calendar date/time of
-    day. counts reports:
+    day.
+
+    Groups matched's position series by (trip_id, recording_date) when a
+    recording_date column is present (FA-6) - this prevents two physically
+    distinct runs of the same trip_id on different days (GTFS-RT's trip_id
+    is not date-qualified) from being concatenated into one chronologically
+    sorted series, which could make interpolate_stop_time's consecutive-pair
+    scan bracket a stop distance across the day boundary and produce a
+    bogus segment time.
+
+    Backward compatible: a matched table written before FA-6 (no
+    recording_date column) falls back to grouping by trip_id alone,
+    reproducing this function's pre-FA-6 behaviour exactly - this is
+    intentional, not a defect, and only matters for tables produced by a
+    single-directory match run predating FA-6 (every match run under FA-6
+    always produces the column).
+
+    counts reports:
     - trips_processed: trips with a resolvable shape and >=2 scheduled stops
       whose stop pairs were actually attempted.
     - trips_skipped_unresolvable: trips excluded before any stop pair was
@@ -91,7 +108,10 @@ def collect_segment_observations(
     # (many trips share a shape/stop; avoids stale-cache risk across calls).
     distance_cache: dict[tuple[str, str], float] = {}
 
-    for trip_id, group in matched.groupby("trip_id", sort=False):
+    group_cols = ["trip_id", "recording_date"] if "recording_date" in matched.columns else ["trip_id"]
+
+    for group_key, group in matched.groupby(group_cols, sort=False):
+        trip_id = group_key[0]  # group_cols is always a list -> always a tuple key
         stops = static_index.trip_stops.get(trip_id)
         if not stops or len(stops) < 2:
             counts["trips_skipped_unresolvable"] += 1
@@ -135,9 +155,9 @@ def collect_segment_observations(
             # observation's local CALENDAR date, not GTFS's "service day" - an overnight trip
             # observed shortly after local midnight gets the next calendar date's day_type,
             # which can mismatch its own service's day_type (correctly attributed to the
-            # previous service day by calendar.txt/calendar_dates.txt). Not reachable by
-            # matched_lodz.csv's window (never crosses midnight); relevant once FA-6 adds
-            # multi-day/multi-night recordings.
+            # previous service day by calendar.txt/calendar_dates.txt). FA-6's
+            # (trip_id, recording_date) grouping above prevents cross-day series mixing, but
+            # does not fix this separate day_type-vs-service-day nuance.
             day_type = day_type_for_date(local_t_from.date())
             time_bucket = time_bucket_for_seconds(
                 local_t_from.hour * 3600 + local_t_from.minute * 60 + local_t_from.second,
