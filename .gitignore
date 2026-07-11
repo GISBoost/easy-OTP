@@ -3,6 +3,9 @@
 *.zip
 *.gtfs
 *.gpkg
+*.gpkg-wal
+*.gpkg-shm
+*.csv
 
 # --- OTP runtime artifacts ---
 *.jar
@@ -10,12 +13,18 @@ Graph.obj
 graphs/
 router-config.json
 build-config.json
+*.log
 
 # --- GTFS-RT artifacts / rt_diagnose tooling (never versioned) ---
 *.pb
 rt_archive/
 recording.json
 tools/rt_diagnose/.venv/
+
+# --- Family A reconstruction tooling (own venv, never versioned) ---
+tools/family_a_reconstruction/.venv/
+tools/family_a_reconstruction/*.csv
+tools/family_a_reconstruction/*.parquet
 
 # --- i18n developer tooling (build scripts, LLM translation helpers) ---
 tools/i18n/
@@ -72,3 +81,7 @@ CLAUDE.md
 
 # --- Build artifacts ---
 easy_otp-package.zip
+
+# --- tools/analysis generated outputs (data, not code — see CLAUDE.md .gitignore policy) ---
+tools/analysis/*.png
+tools/analysis/output/

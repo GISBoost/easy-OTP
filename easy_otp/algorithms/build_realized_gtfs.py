@@ -31,6 +31,7 @@ from qgis.core import (
     QgsProcessingException,
     QgsProcessingOutputString,
     QgsProcessingParameterBoolean,
+    QgsProcessingParameterEnum,
     QgsProcessingParameterFile,
     QgsProcessingParameterString,
 )
@@ -38,12 +39,85 @@ from qgis.core import (
 from ..core.dependencies import ensure_gtfsrt_bindings, install_gtfsrt_bindings
 from ..core.gtfsrt_realizer import (
     aggregate_segments,
+    check_snapshot_time_span,
     check_trip_overlap,
     collect_segment_times,
-    load_static_index,
+    deduplicate_snapshots,
+    load_static_indices,
     rebuild_stop_times,
     repackage_gtfs,
+    sample_feed_capabilities,
+    sample_message_shape,
 )
+
+_MATCHING_MODE_OPTIONS = ["AUTO", "TRIP_ID", "ROUTE_STOP_FALLBACK"]
+_SEGMENT_SOURCE_MODE_OPTIONS = ["AUTO", "PER_MESSAGE", "CROSS_SNAPSHOT"]
+
+# AUTO-resolution thresholds — deliberately explicit, revisitable choices (see
+# shortHelpString). 0.05 matches the pre-existing trip-id overlap warning threshold.
+_TRIP_ID_OVERLAP_THRESHOLD = 0.05
+_FALLBACK_CAPABILITY_THRESHOLD = 0.5
+# Provisional — needs confirmation on a real Poznań archive (RT3-6, #18); revisit if
+# a known next-stop-only feed narrowly misses this cutoff.
+_SINGLE_STOP_MEDIAN_THRESHOLD = 1
+
+
+def resolve_matching_mode(overlap: float, capability: dict, requested_mode: str) -> str:
+    """Resolve AUTO to a concrete matching mode; pass an explicit mode through unchanged.
+
+    AUTO resolution: TRIP_ID if trip_id overlap >= 5%; else ROUTE_STOP_FALLBACK if the
+    capability sample shows route_id_overlap, stop_id_presence_ratio, stop_id_overlap,
+    and absolute_time_ratio ALL >= 50% — route_id_overlap must be checked too, since
+    collect_segment_times' ROUTE_STOP_FALLBACK branch silently skips any TripUpdate
+    whose route_id isn't in the static feed; without this check AUTO could select a
+    mode that then drops most entities with no fail-fast signal, recreating the
+    silent-empty-result problem this milestone exists to fix. Else raises ValueError
+    naming both modes and the measured ratios — a fail-fast message.
+    """
+    if requested_mode != "AUTO":
+        return requested_mode
+
+    if overlap >= _TRIP_ID_OVERLAP_THRESHOLD:
+        return "TRIP_ID"
+
+    if (
+        capability.get("route_id_overlap", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+        and capability.get("stop_id_presence_ratio", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+        and capability.get("stop_id_overlap", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+        and capability.get("absolute_time_ratio", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+    ):
+        return "ROUTE_STOP_FALLBACK"
+
+    raise ValueError(
+        f"Neither TRIP_ID (trip_id overlap {overlap:.0%}) nor ROUTE_STOP_FALLBACK "
+        f"(route_id overlap {capability.get('route_id_overlap', 0.0):.0%}, stop_id "
+        f"presence {capability.get('stop_id_presence_ratio', 0.0):.0%}, stop_id overlap "
+        f"{capability.get('stop_id_overlap', 0.0):.0%}, absolute time "
+        f"{capability.get('absolute_time_ratio', 0.0):.0%}) is usable for this feed. "
+        "See docs/reference/RT_test-feeds-by-city.md for known-working feeds."
+    )
+
+
+def resolve_segment_source_mode(shape: dict, requested_mode: str) -> str:
+    """Resolve AUTO to PER_MESSAGE or CROSS_SNAPSHOT; pass an explicit mode through unchanged.
+
+    AUTO resolution: CROSS_SNAPSHOT if the message-shape sample's
+    median_stop_updates_per_trip is <= 1 (a next-stop-only feed, e.g. Poznań —
+    RT3-6, #18); else PER_MESSAGE. <= 1 (not == 1) is a deliberate widening of
+    the PRD's proposed "median == 1" cutoff, to also cover an empty/unreadable
+    sample (median 0) with the safer of the two modes for that edge case —
+    CROSS_SNAPSHOT can never produce more segments than PER_MESSAGE would on a
+    genuinely empty sample, since Pass 1 records zero anchors either way.
+    Unlike resolve_matching_mode, this never raises — PER_MESSAGE is always a
+    safe default when the sample doesn't clearly indicate a next-stop-only feed.
+    """
+    if requested_mode != "AUTO":
+        return requested_mode
+
+    if shape.get("median_stop_updates_per_trip", 0) <= _SINGLE_STOP_MEDIAN_THRESHOLD:
+        return "CROSS_SNAPSHOT"
+
+    return "PER_MESSAGE"
 
 
 def _ask_on_main_thread(title: str, text: str) -> int:
@@ -80,8 +154,13 @@ def _ask_on_main_thread(title: str, text: str) -> int:
 class BuildRealizedGtfs(QgsProcessingAlgorithm):
     SNAPSHOT_DIR = "SNAPSHOT_DIR"
     STATIC_GTFS = "STATIC_GTFS"
+    STATIC_GTFS_EXTRA = "STATIC_GTFS_EXTRA"
     OUTPUT_PREFIX = "OUTPUT_PREFIX"
     WRITE_P85 = "WRITE_P85"
+    DEDUPLICATE_FROZEN_SNAPSHOTS = "DEDUPLICATE_FROZEN_SNAPSHOTS"
+    RECONCILE_LAST_SNAPSHOT = "RECONCILE_LAST_SNAPSHOT"
+    MATCHING_MODE = "MATCHING_MODE"
+    SEGMENT_SOURCE_MODE = "SEGMENT_SOURCE_MODE"
     OUTPUT_P50 = "OUTPUT_P50"
     OUTPUT_P85 = "OUTPUT_P85"
 
@@ -115,7 +194,95 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "IMPORTANT — same-day static required:\n"
             "If the archive's trip_ids embed the service date (e.g. Gdańsk), the static "
             "GTFS must be downloaded the same day as the archive. A wrong-day static will "
-            "yield near-zero overlap and the output will be uncorrected.\n\n"
+            "yield near-zero overlap and the output will be uncorrected. This requirement "
+            "also applies to every file in STATIC_GTFS_EXTRA — all extra files must be "
+            "the same service date as STATIC_GTFS and the RT archive.\n\n"
+            "Multi-file static feeds (STATIC_GTFS_EXTRA):\n"
+            "Some cities publish per-mode static feeds against one combined realtime feed "
+            "— e.g. Kraków (ZTP) publishes GTFS_KRK_T.zip (tram) and GTFS_KRK_A.zip (bus) "
+            "separately, but one combined TripUpdates.pb for both modes. Set STATIC_GTFS "
+            "to one of the two (e.g. the tram feed) and STATIC_GTFS_EXTRA to a folder "
+            "containing the other (e.g. the bus feed) so both modes' trip_ids are "
+            "recognized when computing trip-id overlap and segment statistics. If a "
+            "trip_id happens to appear in more than one file, the first file's "
+            "(STATIC_GTFS's) version is kept and a warning is reported.\n\n"
+            "Trip matching mode (MATCHING_MODE):\n"
+            "By default (AUTO), trips are matched to the static feed by trip_id, exactly "
+            "as before RT3-5. If trip_id overlap is below 5% but the archive's "
+            "capability sample shows the feed carries usable route_id, stop_id, and "
+            "absolute-time fields (route_id overlap, stop_id presence, stop_id overlap "
+            "with the static feed, and absolute-time ratio ALL at least 50% — "
+            "thresholds chosen as a reasonable starting point, revisit if a known-good "
+            "feed narrowly misses them), AUTO falls back to matching by route_id + "
+            "stop_id instead. This handles feeds (e.g. Poznań, Kraków) whose trip_id "
+            "namespace is permanently disjoint from the static feed's — a different, "
+            "larger problem than a wrong-day static feed. If neither join is usable, "
+            "the algorithm fails fast with a message reporting the measured ratios, "
+            "instead of silently producing an uncorrected result. ROUTE_STOP_FALLBACK "
+            "matching cannot distinguish direction_id (direction is unknowable without "
+            "a matched trip), only counts stop-time pairs with an absolute observed "
+            "time (not a bare delay offset), and does not drop CANCELED trips from the "
+            "output (canceled_trip_ids are collected via the RT-side trip_id, which by "
+            "construction never matches a static trip_id in this mode). TRIP_ID and "
+            "ROUTE_STOP_FALLBACK can also be forced explicitly (e.g. to compare both on "
+            "the same archive); the four capability ratios are always logged, and a "
+            "warning is shown if a forced mode looks unlikely to work well.\n\n"
+            "Segment source mode (SEGMENT_SOURCE_MODE):\n"
+            "By default (AUTO), segments are computed from adjacent StopTimeUpdate "
+            "pairs within a single TripUpdate message (PER_MESSAGE) — this is the "
+            "unchanged pre-0.7 behavior for every already-verified feed (e.g. Gdańsk, "
+            "Szczecin, the Polish rail feed). Some feeds (e.g. Poznań) instead publish "
+            "next-stop-only TripUpdates, carrying exactly one StopTimeUpdate per trip "
+            "per message — for these, PER_MESSAGE's adjacent-pair loop never has a "
+            "second stop to pair with, yielding zero segments even at high trip_id "
+            "overlap (RT3-6, #18). When the archive's message-shape sample shows a "
+            "median of <= 1 StopTimeUpdate per TripUpdate (a provisional threshold, "
+            "pending confirmation on a real Poznań archive), AUTO instead selects "
+            "CROSS_SNAPSHOT: per trip_id, observations of each stop are stitched "
+            "across the whole archive (the chronologically latest snapshot's "
+            "observation of a given stop wins), and segments are computed only "
+            "between strictly consecutive stop_sequence values. A stop_sequence gap "
+            "(an intermediate stop never observed between polls) is skipped and "
+            "counted, never interpolated — a polling interval too coarse relative to "
+            "stop spacing will still produce sparse coverage, just fewer outright "
+            "gaps than before. RECONCILE_LAST_SNAPSHOT has no additional effect when "
+            "SEGMENT_SOURCE_MODE resolves to CROSS_SNAPSHOT: the equivalent "
+            "reconciliation already happens per-stop while collecting. "
+            "SEGMENT_SOURCE_MODE and MATCHING_MODE are independent axes — "
+            "CROSS_SNAPSHOT composes with either TRIP_ID (uses the static schedule "
+            "base exactly like PER_MESSAGE, no absolute-time requirement) or "
+            "ROUTE_STOP_FALLBACK (inherits its absolute-time requirement). Both "
+            "modes can also be forced explicitly.\n\n"
+            "This algorithm assumes the archive covers a single service day. If the "
+            "snapshot archive spans more than ~25 hours, a warning is logged (not "
+            "blocking) noting that results may mix unrelated days.\n\n"
+            "Frozen-feed deduplication (DEDUPLICATE_FROZEN_SNAPSHOTS):\n"
+            "When an upstream feed freezes mid-recording — e.g. Poland's national rail "
+            "aggregate feed (mkuran.pl) is documented to stop updating for over an "
+            "hour, once or twice a day — RecordGtfsRt (RT-2) still writes one "
+            "identical snapshot file per poll throughout the freeze. Left uncorrected, "
+            "that period would be counted once per snapshot in the P50/P85 pool, "
+            "skewing the aggregate toward whatever travel time happened to be "
+            "observed the instant the feed froze. When enabled (default: on), "
+            "consecutive snapshots whose raw bytes exactly match the immediately "
+            "preceding kept snapshot are dropped before aggregation, so a frozen "
+            "period contributes at most once. This does not affect the archive "
+            "time-span warning above, which is always computed from the full, "
+            "undeduplicated snapshot list.\n\n"
+            "Prediction reconciliation (RECONCILE_LAST_SNAPSHOT):\n"
+            "Each TripUpdate snapshot re-predicts a trip's future stop times as the trip "
+            "progresses, so the same trip-segment is observed repeatedly across "
+            "snapshots — predictions made closer to the actual event (shorter lead time) "
+            "are more accurate. When enabled (default: on), only the observation from "
+            "the chronologically last snapshot with a complete pair of stop-time events "
+            "is kept per (trip_id, from_stop_sequence, to_stop_sequence); earlier, less "
+            "mature predictions for the same trip-segment are discarded before P50/P85 "
+            "aggregation. This is an intentional behavior change: P50/P85 values may "
+            "shift slightly compared to archives processed before this feature — this is "
+            "not a regression. Disable it to restore pre-0.7 behavior (every snapshot's "
+            "observation counted), which is useful for very short test recordings where "
+            "reducing each trip-segment to a single observation would leave too few data "
+            "points for a meaningful P85.\n\n"
             "Dependency:\n"
             "This algorithm requires google.protobuf and gtfs-realtime-bindings. "
             "If missing, the error message includes install instructions. "
@@ -126,7 +293,22 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             "operations.\n"
             "- P50 ≈ typical conditions; P85 ≈ reliability bound (travel-time variability).\n"
             "- Aggregation is by stop-pair segment across all trips/days, not per trip_id.\n"
+            "- With RECONCILE_LAST_SNAPSHOT enabled, each trip-segment contributes "
+            "exactly one observation regardless of how many snapshots covered it; "
+            "disabling it weights repeated/evolving predictions of the same "
+            "trip-segment equally.\n"
             "- Gaps (unobserved segments) fall back to scheduled travel time.\n"
+            "- ROUTE_STOP_FALLBACK matching (auto-selected or forced) loses "
+            "direction_id distinction and requires an absolute observed time per "
+            "stop event; pairs lacking either are skipped rather than counted.\n"
+            "- In ROUTE_STOP_FALLBACK mode, CANCELED-trip dropping does not apply: "
+            "canceled_trip_ids are collected using the RT-side trip_id, which by "
+            "construction does not match any static trip_id in this mode, so CANCELED "
+            "RT trips remain in the output feed (unlike TRIP_ID mode).\n"
+            "- CROSS_SNAPSHOT stitches per-stop observations across snapshots; a "
+            "stop_sequence gap (a missed poll) is skipped and counted, never "
+            "interpolated — polling must be frequent enough relative to stop spacing "
+            "for good coverage.\n"
             "- Output is a reproducible static GTFS feed; it is not a record of any "
             "single actual day.\n\n"
             "See docs/RT-3_realized-gtfs-notes.md for full methodology and references."
@@ -151,6 +333,18 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
+            QgsProcessingParameterFile(
+                self.STATIC_GTFS_EXTRA,
+                self.tr(
+                    "Additional static GTFS files (optional, folder of .zip files "
+                    "matching the same service date — e.g. Kraków: put the bus feed "
+                    "here if STATIC_GTFS above is the tram feed, or vice versa)"
+                ),
+                behavior=QgsProcessingParameterFile.Folder,
+                optional=True,
+            )
+        )
+        self.addParameter(
             QgsProcessingParameterString(
                 self.OUTPUT_PREFIX,
                 self.tr(
@@ -164,6 +358,50 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 self.WRITE_P85,
                 self.tr("Also write P85 (85th-percentile) realized feed"),
                 defaultValue=True,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.DEDUPLICATE_FROZEN_SNAPSHOTS,
+                self.tr(
+                    "Deduplicate consecutive identical snapshots before aggregation "
+                    "(collapses frozen-feed periods so they don't bias P50/P85)"
+                ),
+                defaultValue=True,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.RECONCILE_LAST_SNAPSHOT,
+                self.tr(
+                    "Keep only the latest-snapshot observation per trip-segment "
+                    "(reduces repeated/evolving RT predictions to one "
+                    "lead-time-accurate value)"
+                ),
+                defaultValue=True,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.MATCHING_MODE,
+                self.tr(
+                    "Trip matching mode (AUTO: use TRIP_ID if trip_id overlap >= 5%, "
+                    "else ROUTE_STOP_FALLBACK if the feed supports it, else fail)"
+                ),
+                options=_MATCHING_MODE_OPTIONS,
+                defaultValue=0,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.SEGMENT_SOURCE_MODE,
+                self.tr(
+                    "Segment source mode (AUTO: use CROSS_SNAPSHOT if the archive's "
+                    "TripUpdates carry a median of <= 1 StopTimeUpdate each, else "
+                    "PER_MESSAGE)"
+                ),
+                options=_SEGMENT_SOURCE_MODE_OPTIONS,
+                defaultValue=0,
             )
         )
         self.addOutput(
@@ -217,10 +455,25 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             self.parameterAsFile(parameters, self.SNAPSHOT_DIR, context)
         )
         static_gtfs = self.parameterAsFile(parameters, self.STATIC_GTFS, context)
+        static_gtfs_extra = self.parameterAsFile(
+            parameters, self.STATIC_GTFS_EXTRA, context
+        )
         output_prefix = self.parameterAsString(
             parameters, self.OUTPUT_PREFIX, context
         ).strip()
         write_p85 = self.parameterAsBool(parameters, self.WRITE_P85, context)
+        deduplicate_frozen = self.parameterAsBool(
+            parameters, self.DEDUPLICATE_FROZEN_SNAPSHOTS, context
+        )
+        reconcile_last_snapshot = self.parameterAsBool(
+            parameters, self.RECONCILE_LAST_SNAPSHOT, context
+        )
+        matching_mode_idx = self.parameterAsEnum(parameters, self.MATCHING_MODE, context)
+        requested_matching_mode = _MATCHING_MODE_OPTIONS[matching_mode_idx]
+        segment_source_mode_idx = self.parameterAsEnum(
+            parameters, self.SEGMENT_SOURCE_MODE, context
+        )
+        requested_segment_source_mode = _SEGMENT_SOURCE_MODE_OPTIONS[segment_source_mode_idx]
         canceled_policy = "skip"
 
         if not output_prefix:
@@ -244,14 +497,44 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         ))
         feedback.setProgress(2)
 
-        # --- Step 4: load static index ---
-        feedback.pushInfo(self.tr(f"Loading static GTFS: {static_gtfs}"))
+        # --- Step 3b: deduplicate frozen-feed runs (before static load / pre-flight) ---
+        raw_snapshot_paths = snapshot_paths  # undeduplicated, for the time-span check below
+        if deduplicate_frozen:
+            snapshot_paths, dropped_count = deduplicate_snapshots(snapshot_paths)
+            feedback.pushInfo(self.tr(
+                f"Deduplication: dropped {dropped_count} snapshot(s) identical to the "
+                f"immediately preceding kept snapshot ({len(snapshot_paths)} of "
+                f"{len(raw_snapshot_paths)} retained)."
+            ))
+
+        # --- Step 4: load static index (primary + optional extra files) ---
+        static_paths = [static_gtfs]
+        if static_gtfs_extra:
+            extra_zips = sorted(Path(static_gtfs_extra).glob("*.zip"))
+            static_paths.extend(str(p) for p in extra_zips)
+
+        if len(static_paths) > 1:
+            feedback.pushInfo(self.tr(
+                f"Loading static GTFS: {static_gtfs} + {len(static_paths) - 1} extra "
+                f"file(s) from {static_gtfs_extra}"
+            ))
+        else:
+            feedback.pushInfo(self.tr(f"Loading static GTFS: {static_gtfs}"))
+
         try:
-            static_index = load_static_index(static_gtfs)
+            static_index, collision_count = load_static_indices(static_paths)
         except Exception as exc:
             raise QgsProcessingException(
                 self.tr(f"Failed to read static GTFS: {exc}")
             ) from exc
+
+        if collision_count:
+            feedback.pushWarning(self.tr(
+                f"{collision_count} trip_id(s) appeared in more than one static "
+                "file; for each, the version from whichever file listed earliest "
+                f"({static_gtfs}, then STATIC_GTFS_EXTRA files in alphabetical "
+                "order) was kept."
+            ))
 
         feedback.pushInfo(self.tr(
             f"Static index loaded: {len(static_index.all_trip_ids):,} trips, "
@@ -260,6 +543,9 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         feedback.setProgress(5)
 
         # --- Step 5: pre-flight overlap check ---
+        # Uses the (deduplicated) snapshot_paths, not raw_snapshot_paths: sampling the
+        # first 5 kept snapshots is more representative than sampling 5 copies of the
+        # same instant if the archive happens to open on a frozen period.
         feedback.pushInfo(self.tr("Checking trip_id overlap (archive vs static)…"))
         try:
             overlap = check_trip_overlap(snapshot_paths, static_index)
@@ -278,8 +564,98 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
                 "  • The static GTFS is from a different service date than the archive "
                 "(feeds whose trip_ids embed the date, e.g. Gdańsk).\n"
                 "  • The static GTFS is from a different city or agency.\n"
-                "The output will be produced but most segments will be uncorrected "
-                "(gaps falling back to scheduled times)."
+                "  • The feed's trip_id namespace is permanently disjoint from the "
+                "static feed's (e.g. Poznań, Kraków) — see the capability sample "
+                "below for whether ROUTE_STOP_FALLBACK matching can be used instead."
+            ))
+
+        feedback.pushInfo(self.tr(
+            "Sampling feed capabilities (route_id / stop_id / absolute-time support)…"
+        ))
+        try:
+            capability = sample_feed_capabilities(snapshot_paths, static_index)
+        except Exception as exc:  # noqa: BLE001
+            capability = {}
+            feedback.pushWarning(self.tr(f"Capability sample failed: {exc}"))
+
+        feedback.pushInfo(self.tr(
+            "Capability sample — route_id overlap: {0:.0%}  |  stop_id presence: "
+            "{1:.0%}  |  stop_id overlap: {2:.0%}  |  absolute time: {3:.0%}"
+        ).format(
+            capability.get("route_id_overlap", 0.0),
+            capability.get("stop_id_presence_ratio", 0.0),
+            capability.get("stop_id_overlap", 0.0),
+            capability.get("absolute_time_ratio", 0.0),
+        ))
+
+        try:
+            matching_mode = resolve_matching_mode(overlap, capability, requested_matching_mode)
+        except ValueError as exc:
+            raise QgsProcessingException(self.tr(str(exc))) from exc
+
+        feedback.pushInfo(self.tr(f"Matching mode: {matching_mode}"))
+        if matching_mode == "ROUTE_STOP_FALLBACK":
+            feedback.pushWarning(self.tr(
+                "ROUTE_STOP_FALLBACK matching is in use: segments are joined on "
+                "route_id + stop_id instead of trip_id, so direction_id cannot be "
+                "distinguished (an intentional, documented limitation), and only "
+                "stop-time pairs with absolute observed times are counted."
+            ))
+        elif requested_matching_mode != "AUTO":
+            # User forced a mode — don't block it, but warn if the sample suggests it
+            # is unlikely to produce usable segments.
+            if matching_mode == "TRIP_ID" and overlap < _TRIP_ID_OVERLAP_THRESHOLD:
+                feedback.pushWarning(self.tr(
+                    f"TRIP_ID matching was forced, but trip_id overlap is only "
+                    f"{overlap:.0%} — most segments will likely be uncorrected."
+                ))
+            elif matching_mode == "ROUTE_STOP_FALLBACK" and not (
+                capability.get("route_id_overlap", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+                and capability.get("stop_id_presence_ratio", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+                and capability.get("stop_id_overlap", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+                and capability.get("absolute_time_ratio", 0.0) >= _FALLBACK_CAPABILITY_THRESHOLD
+            ):
+                feedback.pushWarning(self.tr(
+                    "ROUTE_STOP_FALLBACK matching was forced, but the capability "
+                    "sample suggests this feed may not support it well — most "
+                    "segments will likely be skipped."
+                ))
+
+        feedback.pushInfo(self.tr(
+            "Sampling message shape (StopTimeUpdate count per TripUpdate)…"
+        ))
+        try:
+            shape = sample_message_shape(snapshot_paths)
+        except Exception as exc:  # noqa: BLE001
+            shape = {}
+            feedback.pushWarning(self.tr(f"Message-shape sample failed: {exc}"))
+
+        feedback.pushInfo(self.tr(
+            "Message shape sample — median StopTimeUpdate/TripUpdate: {0}  |  "
+            "single-stop TripUpdates: {1:.0%}"
+        ).format(
+            shape.get("median_stop_updates_per_trip", 0),
+            shape.get("single_stop_fraction", 0.0),
+        ))
+
+        segment_source_mode = resolve_segment_source_mode(
+            shape, requested_segment_source_mode
+        )
+        feedback.pushInfo(self.tr(f"Segment source mode: {segment_source_mode}"))
+
+        if segment_source_mode == "CROSS_SNAPSHOT" and reconcile_last_snapshot:
+            feedback.pushInfo(self.tr(
+                "RECONCILE_LAST_SNAPSHOT has no additional effect when "
+                "SEGMENT_SOURCE_MODE resolves to CROSS_SNAPSHOT: per-stop "
+                "reconciliation (latest snapshot wins) already happens "
+                "unconditionally while collecting."
+            ))
+
+        span_sec = check_snapshot_time_span(raw_snapshot_paths)
+        if span_sec > 25 * 3600:
+            feedback.pushWarning(self.tr(
+                f"Archive spans more than one service day ({span_sec / 3600:.1f}h) — "
+                "results may mix unrelated days."
             ))
 
         if feedback.isCanceled():
@@ -299,20 +675,29 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
         partial_outputs: list[str] = []
         _completed = False
         try:
-            segment_times, canceled_trip_ids = collect_segment_times(
+            segment_times, canceled_trip_ids, fallback_time_skipped = collect_segment_times(
                 snapshot_paths,
                 static_index,
                 canceled_policy=canceled_policy,
                 progress_cb=_progress,
                 cancel_check=_cancel,
+                reconcile_last_snapshot=reconcile_last_snapshot,
+                matching_mode=matching_mode,
+                segment_source_mode=segment_source_mode,
             )
 
             if feedback.isCanceled():
                 return {self.OUTPUT_P50: "", self.OUTPUT_P85: ""}
 
+            skip_label = (
+                self.tr("skipped (sequence gaps / no absolute time)")
+                if segment_source_mode == "CROSS_SNAPSHOT"
+                else self.tr("skipped (no absolute time)")
+            )
             feedback.pushInfo(self.tr(
                 f"Segments observed: {len(segment_times):,}  |  "
-                f"CANCELED trips: {len(canceled_trip_ids)}"
+                f"CANCELED trips: {len(canceled_trip_ids)}  |  "
+                f"{skip_label}: {fallback_time_skipped:,}"
             ))
             feedback.setProgress(65)
 
@@ -326,7 +711,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             # --- Step 8a: rebuild stop times for P50 ---
             feedback.pushInfo(self.tr("Rebuilding stop_times for P50 feed…"))
             p50_corrections, p50_corrected, p50_gaps = rebuild_stop_times(
-                static_index, p50_stats, drop_trip_ids
+                static_index, p50_stats, drop_trip_ids, matching_mode=matching_mode
             )
             feedback.setProgress(75)
 
@@ -335,7 +720,7 @@ class BuildRealizedGtfs(QgsProcessingAlgorithm):
             if write_p85:
                 feedback.pushInfo(self.tr("Rebuilding stop_times for P85 feed…"))
                 p85_corrections, p85_corrected, p85_gaps = rebuild_stop_times(
-                    static_index, p85_stats, drop_trip_ids
+                    static_index, p85_stats, drop_trip_ids, matching_mode=matching_mode
                 )
             feedback.setProgress(80)
 

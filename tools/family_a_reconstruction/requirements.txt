@@ -1,0 +1,5 @@
+numpy
+pandas
+gtfs-realtime-bindings
+certifi
+tzdata

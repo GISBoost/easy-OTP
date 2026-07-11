@@ -32,6 +32,7 @@ from ..core.gtfsrt_recorder import (
     archive_folder_name,
     fetch_snapshot,
     snapshot_filename,
+    snapshot_hash,
     write_manifest,
     write_snapshot,
 )
@@ -43,6 +44,7 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
     OUTPUT_DIR = "OUTPUT_DIR"
     DURATION_MIN = "DURATION_MIN"
     SAMPLING_INTERVAL_SEC = "SAMPLING_INTERVAL_SEC"
+    FREEZE_WARNING_THRESHOLD = "FREEZE_WARNING_THRESHOLD"
 
     def tr(self, string: str) -> str:
         return QCoreApplication.translate(type(self).__name__, string)
@@ -69,6 +71,20 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
             "static GTFS.\n\n"
             "A full service day (06:00–22:00) at 60 s interval yields ~960 "
             "snapshots (~28 MB for a typical TripUpdates feed).\n\n"
+            "Recording duration is capped at 1500 minutes (25 h) per session — one "
+            "service day plus margin for overnight trips crossing midnight. This keeps "
+            "each archive tied to a single service day so BuildRealizedGtfs (RT-3) isn't "
+            "fed a multi-day archive that would silently mix unrelated days.\n\n"
+            "Frozen-feed detection:\n"
+            "Some real-world GTFS-RT feeds occasionally stop updating without erroring "
+            "— the HTTP poll still succeeds (HTTP 200) but returns byte-identical "
+            "content. Poland's national rail aggregate feed (mkuran.pl) is documented "
+            "to freeze like this for over an hour, once or twice a day. If "
+            "FREEZE_WARNING_THRESHOLD (advanced, default 5) consecutive polls return "
+            "identical bytes, a warning is logged once per frozen period; recording "
+            "continues uninterrupted. The manifest's unchanged_streak_max field "
+            "records the longest such run observed in the session, for later "
+            "cross-reference against BuildRealizedGtfs's deduplication log.\n\n"
             "Only TripUpdates feeds are supported.  Cities with VehiclePositions-only "
             "feeds (e.g. Warsaw, Wrocław) cannot use this tool."
         )
@@ -109,6 +125,7 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=60,
                 minValue=1,
+                maxValue=1500,
             )
         )
         self._add_advanced(
@@ -119,6 +136,18 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
                 defaultValue=60,
                 minValue=15,
                 maxValue=600,
+            )
+        )
+        self._add_advanced(
+            QgsProcessingParameterNumber(
+                self.FREEZE_WARNING_THRESHOLD,
+                self.tr(
+                    "Warn after this many consecutive identical polls "
+                    "(frozen-feed detection)"
+                ),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=5,
+                minValue=2,
             )
         )
         self.addOutput(
@@ -134,6 +163,9 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
         output_dir = Path(self.parameterAsFile(parameters, self.OUTPUT_DIR, context))
         duration_min = self.parameterAsInt(parameters, self.DURATION_MIN, context)
         interval_sec = self.parameterAsInt(parameters, self.SAMPLING_INTERVAL_SEC, context)
+        freeze_threshold = self.parameterAsInt(
+            parameters, self.FREEZE_WARNING_THRESHOLD, context
+        )
 
         if not url:
             raise QgsProcessingException(self.tr("GTFS-RT URL is required."))
@@ -153,6 +185,10 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
         failed_count = 0
         total_bytes = 0
         _cancelled = False
+        prev_hash = None
+        streak = 0
+        unchanged_streak_max = 0
+        warned_this_streak = False
 
         feedback.pushInfo(
             self.tr(
@@ -184,6 +220,25 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
                             f"[{ok_count}] {snapshot_filename(now)} ({len(data):,} B)"
                         )
                     )
+
+                    h = snapshot_hash(data)
+                    if prev_hash is None or h != prev_hash:
+                        streak = 1
+                        warned_this_streak = False
+                    else:
+                        streak += 1
+                    prev_hash = h
+                    unchanged_streak_max = max(unchanged_streak_max, streak)
+
+                    if streak >= freeze_threshold and not warned_this_streak:
+                        feedback.pushWarning(
+                            self.tr(
+                                f"Feed unchanged for {streak} consecutive polls "
+                                f"(~{(streak - 1) * interval_sec} s) — possible frozen "
+                                "upstream feed. Recording continues."
+                            )
+                        )
+                        warned_this_streak = True
                 except (SnapshotFetchError, OSError) as exc:
                     failed_count += 1
                     feedback.pushWarning(
@@ -217,6 +272,7 @@ class RecordGtfsRt(QgsProcessingAlgorithm):
                 ok_count,
                 failed_count,
                 total_bytes,
+                unchanged_streak_max,
             )
 
         if _cancelled:

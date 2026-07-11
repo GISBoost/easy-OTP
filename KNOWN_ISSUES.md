@@ -100,6 +100,8 @@ Diagnostic (2026-06-20, time-matched fresh downloads):
 
 **Workaround:** none for RT-1. Forward path for these cities is RT-2 `RecordGtfsRt` + RT-3 `BuildRealizedGtfs` (v0.5) — record a day's `.pb` snapshots and synthesize a realized static GTFS whose ids match by construction. The output layer is correctly marked `RT-NOT-APPLIED_` so it cannot be mistaken for a realtime result.
 
+**Update (RT3-5, pending human verification):** `BuildRealizedGtfs` now has a `MATCHING_MODE` parameter with a `ROUTE_STOP_FALLBACK` mode — when trip_id overlap is too low to use, it instead joins on `route_id` + `stop_id`, gated by an empirical capability sample of the archive (`AUTO` picks it automatically when the sample looks usable). This narrows this issue for feeds like Poznań/Kraków whose trip_id namespace is permanently disjoint from the static feed's. It does **not** fully resolve Poznań yet — that feed also has a separate, independent defect (single-`StopTimeUpdate`-per-`TripUpdate`, see #18) that RT3-5 cannot fix; full correction there is pending RT3-6.
+
 ## 11. Date-embedded trip\_ids (Gdańsk) require same-day static GTFS re-download
 
 **Severity:** medium (RT silently applies nothing if static is stale). · **Tracker:** [#11](../../issues/11)
@@ -172,6 +174,33 @@ Two related sub-issues:
 2. **Silent via-point snapping** — OTP snaps each query point to the nearest graph vertex. A via-point placed slightly off a path (park interior, building footprint, mid-block without a nearby vertex) is silently moved to that vertex, which may be tens or hundreds of metres away. The route succeeds but passes through the wrong location without any warning. This is distinct from the hard NPE failure (fixed in v0.6.1 fix); here OTP succeeds but with a shifted position.
 
 **Workaround:** Use QGIS vertex snapping (Snapping Toolbar) when digitizing via-points, placing them exactly on OSM path vertices. If a segment detours unexpectedly, move the nearest via-point to a clearly walkable OSM vertex and re-run.
+
+## 18. `BuildRealizedGtfs`: single-stop RT feeds yield zero segments (Poznań)
+
+**Severity:** high (RT-3 produces no correction at all for affected cities). · **Tracker:** [#18](../../issues/18) · **Status:** Fixed (RT3-6), pending human verification of the final 0.6.x sign-off before the 0.7.0 release.
+
+`BuildRealizedGtfs` reported `Segments observed: 0` on a real Poznań archive in both
+`RECONCILE_LAST_SNAPSHOT` modes, despite 98% trip_id overlap against the static feed.
+Root cause (confirmed by decoding raw snapshots): every `TripUpdate` in the Poznań feed
+carries exactly **one** `StopTimeUpdate` (next-stop-only predictions), so
+`collect_segment_times`'s adjacent-pair loop never has two stops to compute a segment
+time from — independent of trip_id matching. This is a different root cause from
+[#10](../../issues/10) (trip_id do match here). Gdańsk's feed carries 1–28
+`StopTimeUpdate`s per trip, which is why it is unaffected.
+
+**Workaround (pre-RT3-6):** none. `RunTemporalAccessibility` on the resulting feed fell
+back to scheduled times everywhere (output was still valid, just not RT-corrected).
+
+**Status:** confirmed **not** fixable by RT3-5's route/stop fallback matching — the
+problem was the feed shape (no adjacent stop pair per snapshot), not id matching. Fixed
+by **RT3-6** — cross-snapshot stitching per trip_id, via a new, independent
+`SEGMENT_SOURCE_MODE` axis (`AUTO`/`PER_MESSAGE`/`CROSS_SNAPSHOT`) orthogonal to
+`MATCHING_MODE` (RT3-5). `PER_MESSAGE` (today's pre-RT3-6 code path) is unchanged for
+already-verified feeds (Gdańsk, Szczecin, rail); `CROSS_SNAPSHOT` is auto-selected when
+the archive's message-shape sample shows a median of <= 1 `StopTimeUpdate` per
+`TripUpdate`. Manually verified in QGIS on the same Poznań archive that produced
+`Segments observed: 0` — see `docs/prd/PR_easy-OTP_v07.md` §RT3-6 and milestone 0.6.7 in
+`docs/prompts/easy-OTP_v07_prompts_for-claude-code.md`.
 
 ---
 
