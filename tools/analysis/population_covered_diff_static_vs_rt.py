@@ -47,14 +47,14 @@ from qgis.PyQt.QtCore import QDateTime, QTime
 # population_by_isochrone_time_compare.py — reuse those values here).
 
 ISOCHRONE_LAYER_STATIC_NAME = "isochrones-static"
-ISOCHRONE_LAYER_RT_NAME = "isochrones-rt"
+ISOCHRONE_LAYER_RT_NAME = "isochrones-rt-fa5"
 
 TIME_FIELD = "time"                  # per-row time field on both layers
 CUTOFF_FIELD = "cutoff_min"          # set to None if only one cutoff / not present
 POP_COVERED_FIELD = "population_covered"  # already computed on both layers — not recomputed here
 
-OUTPUT_DETAIL_CSV_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\population_covered_diff_detail.csv"
-OUTPUT_SUMMARY_CSV_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\population_covered_diff_summary.csv"
+OUTPUT_DETAIL_CSV_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\population_covered_diff_detail-fa5.csv"
+OUTPUT_SUMMARY_CSV_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\population_covered_diff_summary-fa5.csv"
 
 # ------------------------------------------------------------------------
 

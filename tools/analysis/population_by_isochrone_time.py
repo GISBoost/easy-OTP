@@ -45,7 +45,7 @@ from qgis.core import (
     QgsSpatialIndex,
     QgsWkbTypes,
 )
-from qgis.PyQt.QtCore import QCoreApplication, QVariant
+from qgis.PyQt.QtCore import QCoreApplication, QDateTime, QTime, QVariant
 
 # ------------------------------- CONFIG -------------------------------
 
@@ -57,32 +57,51 @@ TIME_FIELD = "time"           # per-row time field on the isochrone layer
 CUTOFF_FIELD = "cutoff_min"   # per-row cutoff field (set to None if only one cutoff / not present)
 OUTPUT_FIELD = "population_covered"
 
+CHART_START_HOUR = None            # first hour shown on the chart (0-23); set to None to disable
+CHART_END_HOUR = None              # last hour shown on the chart (0-23); set to None to disable
+CHART_TICK_INTERVAL_MINUTES = 60   # spacing between x-axis ticks, in minutes
+CHART_COLOR_CYCLE = None           # list of colour strings, one per cutoff line; None = matplotlib's default cycle
+
 OUTPUT_PNG_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\population_by_isochrone_time-6-7.png"
 
 # ------------------------------------------------------------------------
 
 
-def _time_sort_key(value):
-    """Best-effort chronological sort key for whatever QGIS hands back for TIME_FIELD."""
+def _time_to_minutes(value) -> float:
+    """Convert whatever QGIS/PyQt hands back for TIME_FIELD into minutes-since-midnight.
+
+    Handles QDateTime and QTime (what PyQGIS actually returns for
+    DateTime/Time attribute values — this is what the old script's string
+    formatting choked on, printing the raw QDateTime/QTime repr instead of
+    HH:MM), plus plain python datetime/time/str as a fallback. Raises rather
+    than silently falling back to str(), so a genuinely unrecognised field
+    type fails loudly instead of producing a garbled chart axis.
+    """
+    if isinstance(value, QDateTime):
+        t = value.time()
+        return t.hour() * 60 + t.minute() + t.second() / 60.0
+    if isinstance(value, QTime):
+        return value.hour() * 60 + value.minute() + value.second() / 60.0
     if isinstance(value, dt.datetime):
-        return value.time()
+        return value.hour * 60 + value.minute + value.second / 60.0
     if isinstance(value, dt.time):
-        return value
+        return value.hour * 60 + value.minute + value.second / 60.0
     if isinstance(value, str):
         for fmt in ("%H:%M:%S", "%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
             try:
-                return dt.datetime.strptime(value, fmt).time()
+                parsed = dt.datetime.strptime(value, fmt)
+                return parsed.hour * 60 + parsed.minute + parsed.second / 60.0
             except ValueError:
                 continue
-    return value
+    raise ValueError(
+        f"Cannot interpret TIME_FIELD value {value!r} (type {type(value).__name__}) "
+        "as a time. Check that TIME_FIELD points to the right field on the layer."
+    )
 
 
-def _time_label(value):
-    if isinstance(value, dt.datetime):
-        return value.strftime("%H:%M")
-    if isinstance(value, dt.time):
-        return value.strftime("%H:%M")
-    return str(value)
+def _minutes_to_hhmm(minutes: float) -> str:
+    total = int(round(minutes)) % (24 * 60)
+    return f"{total // 60:02d}:{total % 60:02d}"
 
 
 def main():
@@ -196,28 +215,53 @@ def _plot_results(results):
     import matplotlib
     matplotlib.use("Agg")  # headless — QGIS embeds its own Qt event loop
     import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
 
-    results = sorted(results, key=lambda row: (_time_sort_key(row[0]), row[1] if row[1] is not None else 0))
+    start_minute = CHART_START_HOUR * 60 if CHART_START_HOUR is not None else None
+    end_minute = CHART_END_HOUR * 60 if CHART_END_HOUR is not None else None
+
+    filtered = []
+    for time_value, cutoff_value, pop in results:
+        minutes = _time_to_minutes(time_value)
+        if start_minute is not None and minutes < start_minute:
+            continue
+        if end_minute is not None and minutes > end_minute:
+            continue
+        filtered.append((minutes, cutoff_value, pop))
+
+    if not filtered:
+        print(
+            f"\nNo isochrone time steps fall inside the configured chart window "
+            f"({CHART_START_HOUR}:00-{CHART_END_HOUR}:00). Skipping chart."
+        )
+        return
+
+    filtered.sort(key=lambda row: (row[0], row[1] if row[1] is not None else 0))
 
     series = {}
-    for time_value, cutoff_value, pop in results:
-        series.setdefault(cutoff_value, []).append((time_value, pop))
+    for minutes, cutoff_value, pop in filtered:
+        series.setdefault(cutoff_value, []).append((minutes, pop))
+
+    color_cycle = CHART_COLOR_CYCLE or plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     fig, ax = plt.subplots(figsize=(12, 6))
-    n_points = 0
-    for cutoff_value, points in sorted(series.items(), key=lambda kv: (kv[0] is None, kv[0])):
-        labels = [_time_label(t) for t, _ in points]
+    for i, (cutoff_value, points) in enumerate(sorted(series.items(), key=lambda kv: (kv[0] is None, kv[0]))):
+        xs = [t for t, _ in points]
         values = [p for _, p in points]
-        n_points = max(n_points, len(labels))
         label = f"{cutoff_value} min" if cutoff_value is not None else "population_covered"
-        ax.plot(labels, values, marker="o", markersize=3, label=label)
+        ax.plot(xs, values, marker="o", markersize=3, label=label, color=color_cycle[i % len(color_cycle)])
 
     ax.set_xlabel("Time")
     ax.set_ylabel("Population covered")
     ax.set_title("Population covered by isochrone, per time step")
-    step = max(1, n_points // 24)
-    for i, tick in enumerate(ax.get_xticklabels()):
-        tick.set_visible(i % step == 0)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, pos: _minutes_to_hhmm(x)))
+    ax.xaxis.set_major_locator(mticker.MultipleLocator(CHART_TICK_INTERVAL_MINUTES))
+    if start_minute is not None and end_minute is not None:
+        ax.set_xlim(start_minute, end_minute)
+    elif start_minute is not None:
+        ax.set_xlim(start_minute, None)
+    elif end_minute is not None:
+        ax.set_xlim(None, end_minute)
     plt.xticks(rotation=45, ha="right")
     if len(series) > 1:
         ax.legend(title="Cutoff")

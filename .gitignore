@@ -3,6 +3,9 @@
 *.zip
 *.gtfs
 *.gpkg
+*.gpkg-wal
+*.gpkg-shm
+*.csv
 
 # --- OTP runtime artifacts ---
 *.jar
@@ -78,3 +81,7 @@ CLAUDE.md
 
 # --- Build artifacts ---
 easy_otp-package.zip
+
+# --- tools/analysis generated outputs (data, not code — see CLAUDE.md .gitignore policy) ---
+tools/analysis/*.png
+tools/analysis/output/

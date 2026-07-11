@@ -32,14 +32,19 @@ from qgis.PyQt.QtCore import QDateTime, QTime
 # Fill in the two layer names (same ones used in the compare / diff scripts).
 
 ISOCHRONE_LAYER_STATIC_NAME = "isochrones-static"
-ISOCHRONE_LAYER_RT_NAME = "isochrones-rt"
+ISOCHRONE_LAYER_RT_NAME = "isochrones-rt-fa6"
 
 TIME_FIELD = "time"                        # per-row time field on both layers
 CUTOFF_FIELD = "cutoff_min"                # set to None if only one cutoff / not present
 POP_COVERED_FIELD = "population_covered"   # already computed on both layers — not recomputed here
 
+CHART_START_HOUR = 13            # first hour shown on the chart (0-23); set to None to disable
+CHART_END_HOUR = 17              # last hour shown on the chart (0-23); set to None to disable
+CHART_TICK_INTERVAL_MINUTES = 15   # spacing between x-axis ticks, in minutes
+CHART_COLOR_CYCLE = ["red", "blue"]           # list of colour strings, one per plotted line (static then RT, per cutoff, in that order); None = matplotlib's default cycle
+
 CHART_TITLE = "Population covered by isochrone: GTFS-static vs GTFS-RT"
-OUTPUT_PNG_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\population_by_isochrone_time_plot.png"
+OUTPUT_PNG_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\output\population_by_isochrone_time_plot-fa6-13-17.png"
 
 # ------------------------------------------------------------------------
 
@@ -140,10 +145,22 @@ def _plot_comparison(results_static, results_rt):
     import matplotlib.pyplot as plt
     import matplotlib.ticker as mticker
 
+    start_minute = CHART_START_HOUR * 60 if CHART_START_HOUR is not None else None
+    end_minute = CHART_END_HOUR * 60 if CHART_END_HOUR is not None else None
+
+    def _in_window(minutes):
+        if start_minute is not None and minutes < start_minute:
+            return False
+        if end_minute is not None and minutes > end_minute:
+            return False
+        return True
+
     def _to_series(results):
         by_cutoff = {}
         for time_value, cutoff_value, pop in results:
             minutes = _time_to_minutes(time_value)
+            if not _in_window(minutes):
+                continue
             by_cutoff.setdefault(cutoff_value, []).append((minutes, pop))
         for pts in by_cutoff.values():
             pts.sort(key=lambda p: p[0])
@@ -152,35 +169,53 @@ def _plot_comparison(results_static, results_rt):
     static_series = _to_series(results_static)
     rt_series = _to_series(results_rt)
 
+    if not static_series and not rt_series:
+        print(
+            f"\nNo isochrone time steps fall inside the configured chart window "
+            f"({CHART_START_HOUR}:00-{CHART_END_HOUR}:00). Skipping chart."
+        )
+        return
+
     cutoffs = sorted(
         {*static_series.keys(), *rt_series.keys()},
         key=lambda c: (c is None, c),
     )
-    color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    color_cycle = CHART_COLOR_CYCLE or plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     fig, ax = plt.subplots(figsize=(12, 6))
-    for i, cutoff_value in enumerate(cutoffs):
-        color = color_cycle[i % len(color_cycle)]
+    color_index = 0
+    for cutoff_value in cutoffs:
         cutoff_label = f" ({cutoff_value} min)" if cutoff_value is not None else ""
 
         if cutoff_value in static_series:
             xs, ys = zip(*static_series[cutoff_value])
             ax.plot(
-                xs, ys, color="red", linestyle="-", marker="o", markersize=3,
+                xs, ys, color=color_cycle[color_index % len(color_cycle)], linestyle="None", marker="o", markersize=3,
                 label=f"GTFS-static{cutoff_label}",
             )
+            color_index += 1
         if cutoff_value in rt_series:
-            xs, ys = zip(*rt_series[cutoff_value])
+            xs_rt, ys_rt = zip(*rt_series[cutoff_value])
             ax.plot(
-                xs, ys, color="blue", linestyle="--", marker="s", markersize=3,
+                xs_rt, ys_rt, color=color_cycle[color_index % len(color_cycle)], linestyle="None", marker="s", markersize=3,
                 label=f"GTFS-RT{cutoff_label}",
             )
+            color_index += 1
+        if cutoff_value in static_series and cutoff_value in rt_series:
+            for (x, y_static), (_, y_rt) in zip(static_series[cutoff_value], rt_series[cutoff_value]):
+                ax.vlines(x, y_static, y_rt, color="grey", linewidth=0.2, alpha=0.5)
 
     ax.set_xlabel("Time")
     ax.set_ylabel("Population covered")
     ax.set_title(CHART_TITLE)
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, pos: _minutes_to_hhmm(x)))
-    ax.xaxis.set_major_locator(mticker.MultipleLocator(15))  # one tick per hour
+    ax.xaxis.set_major_locator(mticker.MultipleLocator(CHART_TICK_INTERVAL_MINUTES))
+    if start_minute is not None and end_minute is not None:
+        ax.set_xlim(start_minute, end_minute)
+    elif start_minute is not None:
+        ax.set_xlim(start_minute, None)
+    elif end_minute is not None:
+        ax.set_xlim(None, end_minute)
     plt.xticks(rotation=45, ha="right")
     ax.grid(True, alpha=0.3)
     ax.legend()
