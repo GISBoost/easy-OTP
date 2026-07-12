@@ -70,6 +70,8 @@ Thumbs.db
 # --- Spike / research files (never commit credentials or raw API dumps) ---
 api-key.txt
 transitland-response.json
+*.key
+*.pub
 
 # --- Development-only files (not part of the plugin distribution) ---
 # Note: docs/ holds local-only specs/prompts; README images live in assets/.
