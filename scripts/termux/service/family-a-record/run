@@ -1,0 +1,4 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Standard F-Droid Termux $HOME/$PREFIX; confirm against `echo $HOME` on the
+# target phone if this Termux install differs.
+exec /data/data/com.termux/files/home/easy-gtfs-rt-termux/record_supervised.sh
