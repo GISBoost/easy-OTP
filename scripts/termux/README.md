@@ -137,6 +137,15 @@ service actually runs; `record_custom.sh`/`sweep_and_upload.sh` just need re-cop
 - **`family_a/cli.py` always imports `numpy`/`pandas`**, even for the plain `record` subcommand -
   the phone needs the full `requirements.txt`, not just recorder-only dependencies. This is a
   deliberate decision (not touching shared `cli.py` for one track) - see PRD section 3.
+- **`GH_TOKEN` (the fine-grained PAT in `~/.easy-gtfs-rt-termux.env`) expires** - fine-grained
+  PATs have a mandatory expiry (commonly set to 90 days at creation). Only `sweep_and_upload.sh`
+  uses it. When it expires, uploads start failing with HTTP 401/403, logged as a `WARNING:` line
+  (not a crash - the script has no `set -e`), so there's no direct alert. The first visible sign
+  is TX-6's healthcheck starting to send a WhatsApp "no raw recording found" alert every evening,
+  since the raw release never gets created. Renew at
+  [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens),
+  same scope (`Contents: Read and write` on `GISBoost/easy-GTFS-RT` only), then update the
+  `GH_TOKEN` line in `~/.easy-gtfs-rt-termux.env` on the phone.
 
 ## Note on documentation location
 
