@@ -1,4 +1,4 @@
-# Termux phone-recording server (easy-GTFS-RT, TX-1..TX-6)
+# Termux phone-recording server (easy-GTFS-RT, TX-1..TX-7)
 
 Turns Michal's Android phone into an always-on GTFS-RT VehiclePositions recorder for the Lodz
 feed, feeding the same `family_a` pipeline used by the GitHub-Actions-only track (FA-*) and the
@@ -22,11 +22,16 @@ Phone (Termux)                                   GitHub (GISBoost/easy-GTFS-RT)
 22:00  recording window ends
 22:10  sweep_and_upload.sh (cron) zips today's
        positions_<date>_* dirs, uploads to a
-       "positions-raw-<date>" pre-release  ---->
-                                                   22:15  family_a_build_and_notify_from_phone.yml
-                                                          downloads raw data, builds corrected
-                                                          GTFS, publishes "lodz-realized-<date>
-                                                          -phone" release, WhatsApp notify
+       "positions-raw-<date>" pre-release, then
+       fires a repository_dispatch event  ----->
+                                                   (seconds later) family_a_build_and_notify_from
+                                                          _phone.yml downloads raw data, builds
+                                                          corrected GTFS, publishes
+                                                          "lodz-realized-<date>-phone" release,
+                                                          WhatsApp notify (TX-7)
+                                                   22:15  schedule fallback (only does real work
+                                                          if the dispatch above never fired or
+                                                          failed - otherwise a fast no-op)
 reboot (any time) start-services.sh (Termux:Boot)
        brings the recording service back up
        automatically, no manual app-open needed
@@ -36,8 +41,8 @@ record_custom.sh (run manually, any time) - ad-hoc
        independent of the 06:00-22:00 window
 ```
 
-Milestone numbering (`TX-1`..`TX-6`) and full acceptance criteria: PRD section 5. TX-4 and TX-6
-live in the `easy-GTFS-RT` repo (`.github/workflows/`), not here.
+Milestone numbering (`TX-1`..`TX-7`) and full acceptance criteria: PRD section 5. TX-4, TX-6, and
+TX-7's workflow half live in the `easy-GTFS-RT` repo (`.github/workflows/`), not here.
 
 ## File map
 
@@ -47,7 +52,7 @@ live in the `easy-GTFS-RT` repo (`.github/workflows/`), not here.
 | `record_supervised.sh` | TX-2 | continuously, supervised by `termux-services` | Self-healing loop: sleeps until 06:00, records the *remaining* window, restarts if killed |
 | `service/family-a-record/run` | TX-2 | invoked by `runit` | The `termux-services` entry point that execs `record_supervised.sh` |
 | `boot/start-services.sh` | TX-2 (boot-survival addendum) | invoked by Termux:Boot after every reboot | Starts `runsvdir` so recording resumes without opening the Termux app manually |
-| `sweep_and_upload.sh` | TX-3 | daily at 22:10, via `cronie` | Uploads unsent recordings as a raw GitHub pre-release |
+| `sweep_and_upload.sh` | TX-3 (+TX-7) | daily at 22:10, via `cronie` | Uploads unsent recordings as a raw GitHub pre-release, then fires a `repository_dispatch` event to start the build immediately (TX-7) |
 | `record_custom.sh` | TX-5 | manually, on demand | `record_custom.sh <duration_min> <interval_sec> <suffix>` - one-off recording outside the normal window |
 
 ## One-time phone setup (how this was built)
@@ -132,17 +137,26 @@ service actually runs; `record_custom.sh`/`sweep_and_upload.sh` just need re-cop
 - **GitHub Actions `schedule:` cron has no DST awareness.** TX-4's build workflow
   (`easy-GTFS-RT/.github/workflows/family_a_build_and_notify_from_phone.yml`) needs its cron value
   manually flipped between summer (CEST, UTC+2) and winter (CET, UTC+1) - currently
-  `"15 20 * * *"` (22:15 CEST). TX-6's healthcheck (`family_a_phone_healthcheck.yml`) has the same
-  caveat for its 21:00 check.
+  `"15 20 * * *"` (22:15 CEST). Since TX-7, this only affects the **fallback** path - the primary
+  trigger (`repository_dispatch`, fired by `sweep_and_upload.sh`) doesn't depend on this cron at
+  all - but still needs flipping so the fallback stays correct for the rare case it's actually
+  needed. TX-6's healthcheck (`family_a_phone_healthcheck.yml`) has the same caveat for its 21:00
+  check, independent of this.
+- **The `repository_dispatch` `event_type` string (`"phone-sweep-complete"`) is an exact,
+  case-sensitive contract** between `sweep_and_upload.sh` and the workflow's
+  `on.repository_dispatch.types` list - a typo on either side means the event is silently dropped
+  by GitHub with no error anywhere, not even in the Actions log (the build just quietly falls back
+  to the 22:15 schedule instead). Keep both in sync if either ever changes.
 - **`family_a/cli.py` always imports `numpy`/`pandas`**, even for the plain `record` subcommand -
   the phone needs the full `requirements.txt`, not just recorder-only dependencies. This is a
   deliberate decision (not touching shared `cli.py` for one track) - see PRD section 3.
 - **`GH_TOKEN` (the fine-grained PAT in `~/.easy-gtfs-rt-termux.env`) expires** - fine-grained
   PATs have a mandatory expiry (commonly set to 90 days at creation). Only `sweep_and_upload.sh`
-  uses it. When it expires, uploads start failing with HTTP 401/403, logged as a `WARNING:` line
-  (not a crash - the script has no `set -e`), so there's no direct alert. The first visible sign
-  is TX-6's healthcheck starting to send a WhatsApp "no raw recording found" alert every evening,
-  since the raw release never gets created. Renew at
+  uses it - since TX-7, that includes both the upload calls **and** the `repository_dispatch`
+  call, so an expired token silently disables the fast-build path too, not just uploads. Failures
+  are logged as a `WARNING:` line (not a crash - the script has no `set -e`), so there's no direct
+  alert. The first visible sign is TX-6's healthcheck starting to send a WhatsApp "no raw
+  recording found" alert every evening, since the raw release never gets created. Renew at
   [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens),
   same scope (`Contents: Read and write` on `GISBoost/easy-GTFS-RT` only), then update the
   `GH_TOKEN` line in `~/.easy-gtfs-rt-termux.env` on the phone.
