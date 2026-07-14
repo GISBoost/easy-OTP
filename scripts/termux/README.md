@@ -1,59 +1,86 @@
-# Termux phone-recording server (easy-GTFS-RT, TX-1..TX-7)
+# Termux phone-recording server (easy-GTFS-RT, TX-1..TX-8)
 
-Turns Michal's Android phone into an always-on GTFS-RT VehiclePositions recorder for the Lodz
-feed, feeding the same `family_a` pipeline used by the GitHub-Actions-only track (FA-*) and the
-Oracle Cloud VM track (OR-*). This is the Termux ("TX-") track: phone-side recording +
-GitHub-side build/publish/monitoring. Full design rationale lives in
+Turns Michal's Android phone into an always-on GTFS-RT VehiclePositions recorder, feeding the
+same `family_a` pipeline used by the GitHub-Actions-only track (FA-*) and the Oracle Cloud VM
+track (OR-*). This is the Termux ("TX-") track: phone-side recording + GitHub-side
+build/publish/monitoring. Since TX-8, one phone can record **multiple cities in parallel**, each
+its own supervised process. Full design rationale lives in
 `docs/prd/PR_easy-OTP_termux-migration.md` and the milestone-by-milestone prompts in
 `docs/prompts/termux-migration_prompts_for-claude-code.md` (both local-only, see note at the
 bottom).
+
+## Multi-city config (TX-8)
+
+Every city being recorded needs two matching entries, kept in sync by hand - **the city id string
+must be identical (case-sensitive) in both places**:
+
+1. **On the phone**: `~/easy-gtfs-rt-termux/cities/<city_id>.env`, holding that city's
+   `VEHICLE_POSITIONS_URL`. `GH_TOKEN` stays shared, in the top-level
+   `~/.easy-gtfs-rt-termux.env` (one token covers all cities in the repo).
+2. **In `easy-GTFS-RT`**: a `<city_id>` key in `config/cities.json` (`display_name` +
+   `static_gtfs_url`) - this is what the build workflow and healthcheck use to know which cities
+   to build/check.
+
+A city id that exists in one place but not the other fails loudly (an unmapped city in a
+`repository_dispatch` payload makes the build workflow's `resolve_targets` job error out
+immediately) rather than silently doing nothing - see "Adding a new city" below for the full,
+tested-safe order of operations.
 
 ## Pipeline overview
 
 ```
 Phone (Termux)                                   GitHub (GISBoost/easy-GTFS-RT)
 ---------------                                   -------------------------------
-06:00  record_supervised.sh wakes up, starts
-       recording (self-healing: runit restarts
-       it if Android kills the process)
-                                                   21:00  TX-6 healthcheck: alerts via
-                                                          WhatsApp if today's raw release
-                                                          is still missing
-22:00  recording window ends
-22:10  sweep_and_upload.sh (cron) zips today's
-       positions_<date>_* dirs, uploads to a
-       "positions-raw-<date>" pre-release, then
-       fires a repository_dispatch event  ----->
-                                                   (seconds later) family_a_build_and_notify_from
-                                                          _phone.yml downloads raw data, builds
-                                                          corrected GTFS, publishes
-                                                          "lodz-realized-<date>-phone" release,
-                                                          WhatsApp notify (TX-7)
-                                                   22:15  schedule fallback (only does real work
-                                                          if the dispatch above never fired or
-                                                          failed - otherwise a fast no-op)
+06:00  each family-a-record-<city> service
+       wakes up, starts recording that city
+       (self-healing: runit restarts it if
+       Android kills the process)
+                                                   21:00  healthcheck: alerts via WhatsApp
+                                                          listing any city whose raw
+                                                          release is still missing today
+22:00  recording window ends, all cities
+22:10  sweep_and_upload.sh (cron) loops every
+       configured city: zips its
+       positions_<city>_<date>_* dirs, uploads
+       to a "positions-raw-<city>-<date>"
+       pre-release, then fires a
+       repository_dispatch event carrying
+       that city's id           ----->
+                                                   (seconds later, per city) family_a_build_and
+                                                          _notify_from_phone.yml downloads that
+                                                          city's raw data, builds corrected
+                                                          GTFS, publishes
+                                                          "<city>-realized-<date>-phone" release,
+                                                          WhatsApp notify
+                                                   22:15  schedule fallback - expands to every
+                                                          configured city; each city's own
+                                                          idempotency guard makes an
+                                                          already-built one a fast no-op
 reboot (any time) start-services.sh (Termux:Boot)
-       brings the recording service back up
-       automatically, no manual app-open needed
+       brings every city's recording service
+       back up automatically, no manual
+       app-open needed
 
-record_custom.sh (run manually, any time) - ad-hoc
-       recording of arbitrary duration/interval,
+record_custom.sh <city> ... (run manually, any
+       time) - ad-hoc recording of arbitrary
+       duration/interval for one city,
        independent of the 06:00-22:00 window
 ```
 
-Milestone numbering (`TX-1`..`TX-7`) and full acceptance criteria: PRD section 5. TX-4, TX-6, and
-TX-7's workflow half live in the `easy-GTFS-RT` repo (`.github/workflows/`), not here.
+Milestone numbering (`TX-1`..`TX-8`) and full acceptance criteria: PRD section 5. TX-4, the
+healthcheck, and TX-7/TX-8's workflow half live in the `easy-GTFS-RT` repo
+(`.github/workflows/`, `config/cities.json`), not here.
 
 ## File map
 
 | File | Milestone | Runs | Purpose |
 |---|---|---|---|
 | `termux_provision.sh` | TX-1 | once, manually | Installs packages, builds numpy/pandas from source, clones `easy-OTP`, sets up the venv |
-| `record_supervised.sh` | TX-2 | continuously, supervised by `termux-services` | Self-healing loop: sleeps until 06:00, records the *remaining* window, restarts if killed |
-| `service/family-a-record/run` | TX-2 | invoked by `runit` | The `termux-services` entry point that execs `record_supervised.sh` |
-| `boot/start-services.sh` | TX-2 (boot-survival addendum) | invoked by Termux:Boot after every reboot | Starts `runsvdir` so recording resumes without opening the Termux app manually |
-| `sweep_and_upload.sh` | TX-3 (+TX-7) | daily at 22:10, via `cronie` | Uploads unsent recordings as a raw GitHub pre-release, then fires a `repository_dispatch` event to start the build immediately (TX-7) |
-| `record_custom.sh` | TX-5 | manually, on demand | `record_custom.sh <duration_min> <interval_sec> <suffix>` - one-off recording outside the normal window |
+| `record_supervised.sh <city>` | TX-2 (+TX-8) | continuously, one instance per city, supervised by `termux-services` | Self-healing loop: sleeps until 06:00, records the *remaining* window for that city, restarts if killed |
+| `service/family-a-record-lodz/run` | TX-2 (+TX-8) | invoked by `runit` | The `termux-services` entry point that execs `record_supervised.sh lodz` - one such service dir per city |
+| `boot/start-services.sh` | TX-2 (boot-survival addendum) | invoked by Termux:Boot after every reboot | Starts `runsvdir` so every city's recording resumes without opening the Termux app manually |
+| `sweep_and_upload.sh` | TX-3 (+TX-7, +TX-8) | daily at 22:10, via `cronie` | Per configured city: uploads unsent recordings as a raw GitHub pre-release, then fires a `repository_dispatch` event (carrying that city's id) to start its build immediately |
+| `record_custom.sh <city>` | TX-5 (+TX-8) | manually, on demand | `record_custom.sh <city_id> <duration_min> <interval_sec> <suffix>` - one-off recording outside the normal window |
 
 ## One-time phone setup (how this was built)
 
@@ -70,7 +97,7 @@ TX-7's workflow half live in the `easy-GTFS-RT` repo (`.github/workflows/`), not
    bash termux_provision.sh
    ```
    This is the slow step - numpy/pandas have no prebuilt wheels for Android's Bionic libc and
-   must compile from source.
+   must compile from source. It also creates the empty `~/easy-gtfs-rt-termux/cities/` directory.
 6. Verify: `source ~/easy-gtfs-rt-termux/venv/bin/activate && cd ~/easy-OTP/tools/family_a_reconstruction && python -m family_a.cli --help` must run without an import error.
 7. Create a fine-grained GitHub PAT (Contents: Read and write, scoped only to
    `GISBoost/easy-GTFS-RT`), then create the secrets file **by hand** (never via the agent):
@@ -80,15 +107,26 @@ TX-7's workflow half live in the `easy-GTFS-RT` repo (`.github/workflows/`), not
    ```
    ```
    export GH_TOKEN="github_pat_..."
-   export LODZ_VEHICLE_POSITIONS_URL="https://otwarte.miasto.lodz.pl/wp-content/uploads/2025/06/vehicle_positions.bin"
    ```
-8. Set up the `termux-services` entry: copy `service/family-a-record/run` to
-   `$PREFIX/var/service/family-a-record/run` on the phone, `chmod +x`, then `sv-enable family-a-record`.
-   Confirm: `sv status family-a-record` shows `run:`.
-9. Copy `boot/start-services.sh` to `~/.termux/boot/start-services.sh`, `chmod +x`. Test with an
-   actual phone reboot (not Force Stop - that doesn't trigger Termux:Boot at all), then check
-   `cat ~/easy-gtfs-rt-termux/logs/boot.log` without opening Termux first.
-10. Enable `cronie`'s daemon and add the TX-3 sweep schedule - **do not skip this even though
+8. For each city to record, create its own config file (per-city, not shared):
+   ```
+   nano ~/easy-gtfs-rt-termux/cities/lodz.env
+   chmod 600 ~/easy-gtfs-rt-termux/cities/lodz.env
+   ```
+   ```
+   export VEHICLE_POSITIONS_URL="https://otwarte.miasto.lodz.pl/wp-content/uploads/2025/06/vehicle_positions.bin"
+   ```
+   This must also exist as a `lodz` key in `easy-GTFS-RT`'s `config/cities.json` (already shipped)
+   - see "Adding a new city" below for adding any city beyond the first.
+9. Set up the `termux-services` entry, one per city: copy `service/family-a-record-lodz/run` to
+   `$PREFIX/var/service/family-a-record-lodz/run` on the phone, `chmod +x`, then
+   `sv-enable family-a-record-lodz`. Confirm: `sv status family-a-record-lodz` shows `run:`.
+10. Copy `boot/start-services.sh` to `~/.termux/boot/start-services.sh`, `chmod +x`. Test with an
+    actual phone reboot (not Force Stop - that doesn't trigger Termux:Boot at all), then check
+    `cat ~/easy-gtfs-rt-termux/logs/boot.log` without opening Termux first. This step covers every
+    city's service automatically (it just starts `runsvdir`, which supervises whatever's
+    registered) - no per-city boot-script change needed.
+11. Enable `cronie`'s daemon and add the TX-3 sweep schedule - **do not skip this even though
     `termux_provision.sh` installs the `cronie` package**; installing the package does not enable
     the service or create the crontab entry:
     ```
@@ -97,11 +135,30 @@ TX-7's workflow half live in the `easy-GTFS-RT` repo (`.github/workflows/`), not
     ```
     Confirm: `sv status crond` shows `run:` and `crontab -l` shows the line above. Once enabled,
     `crond` is picked up automatically by `boot/start-services.sh` on future reboots too, same as
-    `family-a-record` - no separate boot-script change needed for it.
+    the recording services - no separate boot-script change needed for it. This one crontab entry
+    covers every city - `sweep_and_upload.sh` loops all of them itself.
 
-`GH_TOKEN`/`LODZ_VEHICLE_POSITIONS_URL`/`LODZ_STATIC_GTFS_URL` GitHub-side equivalents
-(`CALLMEBOT_PHONE`, `CALLMEBOT_APIKEY`, repo vars) already exist in `GISBoost/easy-GTFS-RT` from
-the FA-7/8/9 track - nothing new to configure there for TX-4/TX-6.
+`GH_TOKEN`'s GitHub-side equivalents (`CALLMEBOT_PHONE`, `CALLMEBOT_APIKEY`) already exist in
+`GISBoost/easy-GTFS-RT` from the FA-7/8/9 track - nothing new to configure there. Per-city static
+GTFS URLs live in that repo's `config/cities.json` (versioned, not a Settings variable).
+
+## Adding a new city
+
+No code changes needed - this is a config + phone-setup only. **Do this in order**, and validate
+step 1 before touching the phone (a `repository_dispatch` naming a city not yet in
+`config/cities.json` fails loudly, by design):
+
+1. In `easy-GTFS-RT`: add a `<city_id>` key to `config/cities.json` (`display_name`,
+   `static_gtfs_url`), PR + merge to `main`. Required first - triggers only evaluate the workflow
+   file (and the `config/cities.json` it reads) from the default branch.
+2. On the phone: create `~/easy-gtfs-rt-termux/cities/<city_id>.env` with that city's
+   `VEHICLE_POSITIONS_URL` (step 8 above), `chmod 600`.
+3. Copy `service/family-a-record-lodz/` to `service/family-a-record-<city_id>/` (in this repo, or
+   directly on the phone under `$PREFIX/var/service/`), edit the one `exec ... record_supervised.sh
+   <city_id>` line to the new city id, `chmod +x run`, `sv-enable family-a-record-<city_id>`.
+   Confirm `sv status family-a-record-<city_id>` shows `run:`.
+4. Nothing else - `sweep_and_upload.sh` picks up the new `cities/<city_id>.env` automatically on
+   its next run, and the build workflow already handles any city in `config/cities.json`.
 
 ## Day-to-day commands (via SSH)
 
@@ -110,27 +167,30 @@ Android user id, stable across sessions but may change after a Termux reinstall)
 only starts once you open the Termux app - it is not (yet) wrapped as a boot-persistent service.
 
 ```
-sv status family-a-record                                   # run: = recording up, down: = not
-ls ~/easy-gtfs-rt-termux/positions_$(date +%F)_*/ | wc -l    # snapshot count, should grow ~1/min
-tail -f ~/easy-gtfs-rt-termux/logs/record_$(date +%F).log    # live log (Ctrl+C to detach, doesn't kill it)
-grep -c "failed" ~/easy-gtfs-rt-termux/logs/record_$(date +%F).log   # failed polls today
-cat ~/easy-gtfs-rt-termux/logs/boot.log                      # did Termux:Boot fire on last reboot?
+sv status family-a-record-lodz                                      # run: = recording up, down: = not
+ls ~/easy-gtfs-rt-termux/positions_lodz_$(date +%F)_*/ | wc -l       # snapshot count, should grow ~1/min
+tail -f ~/easy-gtfs-rt-termux/logs/record_lodz_$(date +%F).log       # live log (Ctrl+C to detach, doesn't kill it)
+grep -c "failed" ~/easy-gtfs-rt-termux/logs/record_lodz_$(date +%F).log   # failed polls today
+cat ~/easy-gtfs-rt-termux/logs/boot.log                              # did Termux:Boot fire on last reboot?
 ```
+(swap `lodz` for any other configured city id.)
 
 Ad-hoc recording outside the 06:00-22:00 window:
 ```
-bash record_custom.sh 60 60 test    # 60 min, 60s interval, output dir suffix "test"
+bash record_custom.sh lodz 60 60 test    # city "lodz", 60 min, 60s interval, output dir suffix "test"
 ```
 
 After copying an updated script from the repo to the phone (e.g. via `~/storage/shared/documents/`):
 ```
-sv down family-a-record
+sv down family-a-record-lodz
 cp ~/storage/shared/documents/record_supervised.sh ~/easy-gtfs-rt-termux/record_supervised.sh
 chmod +x ~/easy-gtfs-rt-termux/record_supervised.sh
-sv up family-a-record
+sv up family-a-record-lodz
 ```
-(same pattern for any other script - `sv down`/`up` only needed for files the `family-a-record`
-service actually runs; `record_custom.sh`/`sweep_and_upload.sh` just need re-copying + `chmod +x`.)
+(`record_supervised.sh` is shared code across all cities' services - updating it once affects
+every `family-a-record-<city>` service, since each just calls it with a different argument. `sv
+down`/`up` only needed for files a `family-a-record-<city>` service actually runs;
+`record_custom.sh`/`sweep_and_upload.sh` just need re-copying + `chmod +x`.)
 
 ## Known gotchas
 
@@ -148,15 +208,27 @@ service actually runs; `record_custom.sh`/`sweep_and_upload.sh` just need re-cop
   2026-07-13: `crond` sat `down` and `crontab -l` was empty despite `termux_provision.sh` having
   installed `cronie` - the daily 22:10 sweep had never actually run automatically, ever, only
   whenever someone ran `sweep_and_upload.sh` by hand. `sv-enable crond` + a real crontab entry
-  (setup step 10 above) are both required separately.
-- **GitHub Actions `schedule:` cron has no DST awareness.** TX-4's build workflow
+  (setup step 11 above) are both required separately.
+- **All cities' `record_supervised.sh` processes share one `~/easy-OTP` checkout** (TX-8) - each
+  does its own `git pull --ff-only` at startup, so several services restarting at once (e.g. every
+  service coming up together at boot) can race for git's lock. The existing warning-and-continue
+  fallback (falls back to whatever's already checked out) already covers this; not otherwise
+  handled specially, and not expected to matter in practice since a stale-by-a-few-seconds
+  checkout is harmless here.
+- **The city id string is an exact, case-sensitive contract** (TX-8) across three places: the
+  phone's `cities/<city_id>.env` filename, its `family-a-record-<city_id>` service dir suffix, and
+  the `config/cities.json` key in `easy-GTFS-RT`. A mismatch means that city's
+  `repository_dispatch` payload names a key the build workflow can't find - it fails loudly in the
+  `resolve_targets` job (by design), it does not silently skip the city.
+- **GitHub Actions `schedule:` cron has no DST awareness.** The build workflow
   (`easy-GTFS-RT/.github/workflows/family_a_build_and_notify_from_phone.yml`) needs its cron value
   manually flipped between summer (CEST, UTC+2) and winter (CET, UTC+1) - currently
   `"15 20 * * *"` (22:15 CEST). Since TX-7, this only affects the **fallback** path - the primary
   trigger (`repository_dispatch`, fired by `sweep_and_upload.sh`) doesn't depend on this cron at
   all - but still needs flipping so the fallback stays correct for the rare case it's actually
-  needed. TX-6's healthcheck (`family_a_phone_healthcheck.yml`) has the same caveat for its 21:00
-  check, independent of this.
+  needed (since TX-8, the fallback fires for *every* configured city, not just one). The
+  healthcheck workflow (`family_a_phone_healthcheck.yml`) has the same caveat for its 21:00 check,
+  independent of this.
 - **The `repository_dispatch` `event_type` string (`"phone-sweep-complete"`) is an exact,
   case-sensitive contract** between `sweep_and_upload.sh` and the workflow's
   `on.repository_dispatch.types` list - a typo on either side means the event is silently dropped
@@ -168,10 +240,11 @@ service actually runs; `record_custom.sh`/`sweep_and_upload.sh` just need re-cop
 - **`GH_TOKEN` (the fine-grained PAT in `~/.easy-gtfs-rt-termux.env`) expires** - fine-grained
   PATs have a mandatory expiry (commonly set to 90 days at creation). Only `sweep_and_upload.sh`
   uses it - since TX-7, that includes both the upload calls **and** the `repository_dispatch`
-  call, so an expired token silently disables the fast-build path too, not just uploads. Failures
-  are logged as a `WARNING:` line (not a crash - the script has no `set -e`), so there's no direct
-  alert. The first visible sign is TX-6's healthcheck starting to send a WhatsApp "no raw
-  recording found" alert every evening, since the raw release never gets created. Renew at
+  call, for every city, so an expired token silently disables the fast-build path for all of them
+  at once, not just uploads. Failures are logged as a `WARNING:` line (not a crash - the script
+  has no `set -e`), so there's no direct alert. The first visible sign is the healthcheck workflow
+  starting to send a WhatsApp "no raw recording found" alert every evening, listing every affected
+  city, since the raw release never gets created. Renew at
   [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens),
   same scope (`Contents: Read and write` on `GISBoost/easy-GTFS-RT` only), then update the
   `GH_TOKEN` line in `~/.easy-gtfs-rt-termux.env` on the phone.

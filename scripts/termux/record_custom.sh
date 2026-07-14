@@ -7,27 +7,29 @@ set -euo pipefail
 # recording of arbitrary duration/interval/suffix without waiting for
 # record_supervised.sh's (TX-2) fixed 6:00-22:00 window.
 
-if [ "$#" -ne 3 ]; then
-  echo "Usage: record_custom.sh <duration_minutes> <interval_seconds> <suffix>" >&2
+if [ "$#" -ne 4 ]; then
+  echo "Usage: record_custom.sh <city_id> <duration_minutes> <interval_seconds> <suffix>" >&2
   exit 1
 fi
 
-DURATION_MIN="$1"
-INTERVAL_SEC="$2"
-SUFFIX="$3"
+CITY="$1"
+DURATION_MIN="$2"
+INTERVAL_SEC="$3"
+SUFFIX="$4"
 
 source "$HOME/.easy-gtfs-rt-termux.env"
+source "$HOME/easy-gtfs-rt-termux/cities/${CITY}.env"
 source "$HOME/easy-gtfs-rt-termux/venv/bin/activate"
 termux-wake-lock
 
 RECORDING_DATE="$(TZ=Europe/Warsaw date +%F)"
-OUT_DIR="$HOME/easy-gtfs-rt-termux/positions_${RECORDING_DATE}_${SUFFIX}"
+OUT_DIR="$HOME/easy-gtfs-rt-termux/positions_${CITY}_${RECORDING_DATE}_${SUFFIX}"
 
 cd "$HOME/easy-OTP" && git pull --ff-only
 cd "$HOME/easy-OTP/tools/family_a_reconstruction"
 
 python -m family_a.cli record \
-  --url "$LODZ_VEHICLE_POSITIONS_URL" \
+  --url "$VEHICLE_POSITIONS_URL" \
   --out-dir "$OUT_DIR" \
   --duration-min "$DURATION_MIN" \
   --interval-sec "$INTERVAL_SEC"
