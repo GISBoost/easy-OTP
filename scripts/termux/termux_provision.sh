@@ -45,7 +45,9 @@ LDFLAGS="-lpython${PYVER}" pip install --no-build-isolation --no-cache-dir panda
 pip install -r "$TOOL_DIR/requirements.txt"
 
 mkdir -p "$HOME/easy-gtfs-rt-termux/logs"
+mkdir -p "$HOME/easy-gtfs-rt-termux/cities"
 
 echo "Provisioning done. Detected Python version: ${PYVER}. Activate with: source $VENV_DIR/bin/activate"
 echo "Next: create ~/.easy-gtfs-rt-termux.env by hand (see the plan doc, step TX-1)."
+echo "Then create one ~/easy-gtfs-rt-termux/cities/<city_id>.env per city to record (TX-8, see scripts/termux/README.md)."
 echo "Then verify: cd $TOOL_DIR && python -m family_a.cli --help"
