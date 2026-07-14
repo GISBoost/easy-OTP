@@ -83,6 +83,16 @@ live in the `easy-GTFS-RT` repo (`.github/workflows/`), not here.
 9. Copy `boot/start-services.sh` to `~/.termux/boot/start-services.sh`, `chmod +x`. Test with an
    actual phone reboot (not Force Stop - that doesn't trigger Termux:Boot at all), then check
    `cat ~/easy-gtfs-rt-termux/logs/boot.log` without opening Termux first.
+10. Enable `cronie`'s daemon and add the TX-3 sweep schedule - **do not skip this even though
+    `termux_provision.sh` installs the `cronie` package**; installing the package does not enable
+    the service or create the crontab entry:
+    ```
+    sv-enable crond
+    (crontab -l 2>/dev/null; echo "10 22 * * * /data/data/com.termux/files/usr/bin/bash /data/data/com.termux/files/home/easy-gtfs-rt-termux/sweep_and_upload.sh >> /data/data/com.termux/files/home/easy-gtfs-rt-termux/logs/sweep.log 2>&1") | crontab -
+    ```
+    Confirm: `sv status crond` shows `run:` and `crontab -l` shows the line above. Once enabled,
+    `crond` is picked up automatically by `boot/start-services.sh` on future reboots too, same as
+    `family-a-record` - no separate boot-script change needed for it.
 
 `GH_TOKEN`/`LODZ_VEHICLE_POSITIONS_URL`/`LODZ_STATIC_GTFS_URL` GitHub-side equivalents
 (`CALLMEBOT_PHONE`, `CALLMEBOT_APIKEY`, repo vars) already exist in `GISBoost/easy-GTFS-RT` from
@@ -129,6 +139,11 @@ service actually runs; `record_custom.sh`/`sweep_and_upload.sh` just need re-cop
   `boot/start-services.sh` starts `runsvdir` directly instead of calling `sv-enable`.
 - **Force Stop does not simulate a reboot.** It doesn't trigger Termux:Boot's broadcast receiver -
   only an actual device restart does. Don't use it to test boot behavior.
+- **Installing the `cronie` package does not enable or schedule anything.** Discovered on-device
+  2026-07-13: `crond` sat `down` and `crontab -l` was empty despite `termux_provision.sh` having
+  installed `cronie` - the daily 22:10 sweep had never actually run automatically, ever, only
+  whenever someone ran `sweep_and_upload.sh` by hand. `sv-enable crond` + a real crontab entry
+  (setup step 10 above) are both required separately.
 - **GitHub Actions `schedule:` cron has no DST awareness.** TX-4's build workflow
   (`easy-GTFS-RT/.github/workflows/family_a_build_and_notify_from_phone.yml`) needs its cron value
   manually flipped between summer (CEST, UTC+2) and winter (CET, UTC+1) - currently
