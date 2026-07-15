@@ -44,15 +44,12 @@ not a re-run of the discovery spike. All verified `auth=none` (no API key needed
 | `sofia` | `https://gtfs.sofiatraffic.bg/api/v1/vehicle-positions` |
 | `bucharest` | `https://gtfs.tpbi.ro/api/gtfs-rt/vehiclePositions` |
 | `lisbon` | `https://gateway.carris.pt/gateway/gtfs/api/v2.11/GTFS/realtime/vehiclepositions` |
-| `amsterdam` | `http://gtfs.ovapi.nl/nl/vehiclePositions.pb` |
 
 Notes from the spike:
 - **Prague (Golemio)** has historically required a free `X-Access-Token` for some endpoints; this
   one returned HTTP 200 with no key in the 2026-07-15 spike test - re-check if it starts failing.
 - **Rome**'s static GTFS is cron-updated on a Drupal site and can go stale; check `Last-Modified`
   before relying on a given day's static feed for matching.
-- **Amsterdam (OVapi)** covers all of the Netherlands, not just Amsterdam - its static feed is
-  national, not city-scoped.
 - **Lisbon** is the Carris city-core feed specifically, distinct from Carris Metropolitana (the
   wider metro-area operator) - don't confuse the two if searching for alternates later.
 
