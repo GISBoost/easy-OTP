@@ -2,8 +2,16 @@
 GTFS feed and its Family A "realized" reconstruction.
 
 Standalone ANALYSIS tooling. NOT part of the easy-OTP plugin and not imported
-by it. Pure stdlib (zipfile + csv + statistics) - no QGIS needed, run it with
-plain `py gtfs_static_vs_realized_diff.py` from any Python 3 interpreter.
+by it. Pure stdlib (zipfile + csv + statistics) for the diff itself; the
+chart step additionally needs `matplotlib` (see `tools/analysis/requirements.txt`
+- deliberately NOT added to `tools/family_a_reconstruction/requirements.txt`,
+which is also installed on the Termux phone via TX-1; matplotlib has no
+prebuilt wheels for Android's Bionic libc and is only ever needed where the
+chart is rendered, i.e. a GitHub Actions runner or your own machine, never the
+phone). No QGIS needed either way.
+
+CLI, run with e.g.:
+    py gtfs_static_vs_realized_diff.py --static warsaw.zip --realized warsaw_realized_p50.zip --out-prefix out/warsaw_2026-07-15_p50
 
 --- The "no delays in static" problem, and how this script resolves it -----
 Static GTFS has no delay field - a scheduled departure_time is just a plan.
@@ -33,68 +41,49 @@ really ran on schedule at that stop" or "the recording never observed that
 segment, so the original scheduled time was kept unchanged (a gap)". This
 script cannot tell those two apart from the GTFS files alone - only
 `family_a.cli build`'s own console output (its "Segments corrected" vs
-"Segments dropped" counts, printed when you generated REALIZED_GTFS_ZIP_PATH)
-can. Keep that context in mind when reading a 0.00 delay in the detail CSV.
+"Segments dropped" counts) can. Keep that context in mind when reading a
+0.00 delay in the detail CSV. The chart step drops delay==0 rows for exactly
+this reason (see plot_mean_delay's docstring); the detail/summary CSVs do not.
 
 `family_a.cli build` writes two variants, `<prefix>_p50.zip` (median observed
 segment time) and `<prefix>_p85.zip` (85th percentile / pessimistic) - point
-REALIZED_GTFS_ZIP_PATH at whichever one you want to analyze; run the script
-again with the other path (and a different OUTPUT_*_PATH) to compare both.
+--realized at whichever one you want to analyze; run again with the other
+path (and a different --out-prefix) to compare both.
 
-Input:
-  - STATIC_GTFS_ZIP_PATH: the original static GTFS .zip.
-  - REALIZED_GTFS_ZIP_PATH: family_a's `<prefix>_p50.zip` or `<prefix>_p85.zip`
-    output, built from STATIC_GTFS_ZIP_PATH (same feed - see README's `build`
-    usage). Pointing this at an unrelated feed will show up as a large
-    "unmatched" count below rather than silently producing nonsense numbers.
-
-Output:
-  - OUTPUT_DETAIL_CSV_PATH: one row per matched stop_times.txt entry -
+Output (all written under --out-prefix):
+  - <prefix>_detail.csv - one row per matched stop_times.txt entry -
     route_id, trip_id, stop_sequence, stop_id, scheduled/realized time,
     delay_sec, delay_min.
-  - OUTPUT_SUMMARY_CSV_PATH: mean / mean(|delay|) / stdev / min / max delay,
+  - <prefix>_summary.csv - mean / mean(|delay|) / stdev / min / max delay,
     plus count and % of rows actually changed, overall and per route_id.
-  - OUTPUT_CHART_PNG_PATH: mean delay (minutes) vs. scheduled time-of-day,
-    bucketed every CHART_BUCKET_MINUTES. Rows with delay_sec == 0 are
+  - <prefix>_chart.png - mean delay (minutes) vs. scheduled time-of-day,
+    bucketed every --chart-bucket-minutes. Rows with delay_sec == 0 are
     excluded from the chart only (a 0 is far more often "never observed"
     than "exactly on time" per the caveat above, and including it would
     just wash the plotted mean toward zero without meaning anything) - the
     detail and summary CSVs above still contain every row, unfiltered. A
     faint grey bar behind the line shows how many non-zero observations
     back each bucket, since a bucket's mean is only as trustworthy as its
-    sample count.
-
-Edit the CONFIG block below, then run: `py gtfs_static_vs_realized_diff.py`
+    sample count. Skipped (no file written) if there are zero non-zero-delay
+    rows, or --no-chart is passed - the CLI reports this on stdout either way
+    so a calling script (e.g. a CI step deciding whether to `gh release
+    upload` this file) can tell whether it exists without guessing.
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import statistics
+import sys
 import zipfile
 from pathlib import Path
+from typing import Optional
 
-# ------------------------------- CONFIG -------------------------------
 
-STATIC_GTFS_ZIP_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\family_a_reconstruction\lodz2.zip"
-REALIZED_GTFS_ZIP_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\family_a_reconstruction\gtfs-rt\fa6\out_new_lodz2-fa6_p50.zip"
-
-DELAY_TIME_FIELD = "departure_time"   # or "arrival_time"
-
-OUTPUT_DETAIL_CSV_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\output\gtfs_static_vs_realized_diff_detail-fa6.csv"
-OUTPUT_SUMMARY_CSV_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\output\gtfs_static_vs_realized_diff_summary-fa6.csv"
-
-CHART_BUCKET_MINUTES = 15   # width of the scheduled-time buckets on the chart's x-axis
-CHART_START_HOUR = 9        # first hour shown on the chart; set to None to disable
-CHART_END_HOUR = 17         # last hour shown on the chart; set to None to disable
-CHART_TICK_INTERVAL_MINUTES = 15   # spacing between x-axis ticks, in minutes
-CHART_TICK_LABEL_ROTATION = 45  # degrees to rotate x-axis tick labels (0=horizontal, 90=vertical)
-CHART_LINE_COLOR = "tab:red"       # colour of the mean-delay line
-CHART_BAR_COLOR = "grey"           # colour of the observation-count bars behind it
-OUTPUT_CHART_PNG_PATH = r"C:\Users\Michal\Desktop\easy-OTP\tools\analysis\output\gtfs_static_vs_realized_mean_delay-fa6-9-17-15minute.png"
-
-# ------------------------------------------------------------------------
-
+# ---------------------------------------------------------------------------
+# GTFS time helpers
+# ---------------------------------------------------------------------------
 
 def _parse_gtfs_time(value: str) -> int:
     """GTFS times are H:MM:SS / HH:MM:SS, H allowed to exceed 23 (after-midnight
@@ -117,6 +106,10 @@ def _minutes_to_hhmm(minutes: float) -> str:
     total = int(round(minutes)) % (24 * 60)
     return f"{total // 60:02d}:{total % 60:02d}"
 
+
+# ---------------------------------------------------------------------------
+# GTFS zip readers
+# ---------------------------------------------------------------------------
 
 def _require_zip_member(zip_path: str, member: str) -> None:
     path = Path(zip_path)
@@ -169,12 +162,25 @@ def _read_trip_route_map(zip_path: str) -> dict:
     return mapping
 
 
-def main():
-    print(f"Reading static feed:   {STATIC_GTFS_ZIP_PATH}")
-    static_times = _read_stop_times(STATIC_GTFS_ZIP_PATH, DELAY_TIME_FIELD)
-    print(f"Reading realized feed: {REALIZED_GTFS_ZIP_PATH}")
-    realized_times = _read_stop_times(REALIZED_GTFS_ZIP_PATH, DELAY_TIME_FIELD)
-    trip_route_map = _read_trip_route_map(STATIC_GTFS_ZIP_PATH)
+# ---------------------------------------------------------------------------
+# Core diff
+# ---------------------------------------------------------------------------
+
+# One detail row: (route_id, trip_id, stop_sequence, stop_id, static_sec, realized_sec, delay_sec)
+DetailRow = tuple[str, str, int, str, int, int, int]
+
+
+def build_diff(static_zip: str, realized_zip: str, delay_time_field: str = "departure_time") -> list[DetailRow]:
+    """Join static and realized stop_times.txt on (trip_id, stop_id, stop_sequence).
+
+    Raises RuntimeError (with a message suitable for printing directly, no
+    traceback needed) if the two feeds share no matching rows at all.
+    """
+    print(f"Reading static feed:   {static_zip}")
+    static_times = _read_stop_times(static_zip, delay_time_field)
+    print(f"Reading realized feed: {realized_zip}")
+    realized_times = _read_stop_times(realized_zip, delay_time_field)
+    trip_route_map = _read_trip_route_map(static_zip)
 
     matched_keys = set(static_times) & set(realized_times)
     static_only = set(static_times) - set(realized_times)
@@ -185,8 +191,7 @@ def main():
         print(
             f"WARNING: {len(static_only)} row(s) present in STATIC only "
             "(no matching trip_id/stop_id/stop_sequence in the realized feed). "
-            "If this count is large, REALIZED_GTFS_ZIP_PATH may not have been "
-            "built from STATIC_GTFS_ZIP_PATH."
+            "If this count is large, --realized may not have been built from --static."
         )
     if realized_only:
         print(
@@ -196,11 +201,11 @@ def main():
     if not matched_keys:
         raise RuntimeError(
             "No matching stop_times.txt rows between the two feeds - nothing to "
-            "diff. Check that REALIZED_GTFS_ZIP_PATH was built from "
-            "STATIC_GTFS_ZIP_PATH (family_a.cli build --static <this same static.zip>)."
+            "diff. Check that --realized was built from --static "
+            "(family_a.cli build --static <this same static.zip>)."
         )
 
-    detail_rows = []  # (route_id, trip_id, stop_sequence, stop_id, static_sec, realized_sec, delay_sec)
+    detail_rows: list[DetailRow] = []
     for trip_id, stop_id, stop_sequence in matched_keys:
         static_sec = static_times[(trip_id, stop_id, stop_sequence)]
         realized_sec = realized_times[(trip_id, stop_id, stop_sequence)]
@@ -209,12 +214,15 @@ def main():
         detail_rows.append((route_id, trip_id, stop_sequence, stop_id, static_sec, realized_sec, delay_sec))
 
     detail_rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    return detail_rows
 
-    with open(OUTPUT_DETAIL_CSV_PATH, "w", newline="", encoding="utf-8") as f:
+
+def write_detail_csv(detail_rows: list[DetailRow], out_path: str, delay_time_field: str) -> None:
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow([
             "route_id", "trip_id", "stop_sequence", "stop_id",
-            f"static_{DELAY_TIME_FIELD}", f"realized_{DELAY_TIME_FIELD}",
+            f"static_{delay_time_field}", f"realized_{delay_time_field}",
             "delay_sec", "delay_min",
         ])
         for route_id, trip_id, stop_sequence, stop_id, static_sec, realized_sec, delay_sec in detail_rows:
@@ -223,13 +231,10 @@ def main():
                 _seconds_to_hhmmss(static_sec), _seconds_to_hhmmss(realized_sec),
                 delay_sec, round(delay_sec / 60.0, 2),
             ])
-    print(f"Detail CSV written: {OUTPUT_DETAIL_CSV_PATH} ({len(detail_rows)} rows)")
-
-    _write_summary(detail_rows)
-    _plot_mean_delay(detail_rows)
+    print(f"Detail CSV written: {out_path} ({len(detail_rows)} rows)")
 
 
-def _summarize(delays_sec):
+def _summarize_one(delays_sec: list[int]) -> dict:
     n = len(delays_sec)
     abs_delays = [abs(d) for d in delays_sec]
     changed = sum(1 for d in delays_sec if d != 0)
@@ -245,18 +250,20 @@ def _summarize(delays_sec):
     }
 
 
-def _write_summary(detail_rows):
-    by_route = {}
-    for route_id, trip_id, stop_sequence, stop_id, static_sec, realized_sec, delay_sec in detail_rows:
+def summarize(detail_rows: list[DetailRow]) -> list[tuple[str, dict]]:
+    """Returns [(route_id, stats), ..., ("ALL", stats)]."""
+    by_route: dict[str, list[int]] = {}
+    for route_id, _trip_id, _stop_seq, _stop_id, _static_sec, _realized_sec, delay_sec in detail_rows:
         by_route.setdefault(route_id, []).append(delay_sec)
     all_delays = [row[6] for row in detail_rows]
 
-    summary_rows = []
-    for route_id, delays in sorted(by_route.items()):
-        summary_rows.append((route_id, _summarize(delays)))
-    summary_rows.append(("ALL", _summarize(all_delays)))
+    summary_rows = [(route_id, _summarize_one(delays)) for route_id, delays in sorted(by_route.items())]
+    summary_rows.append(("ALL", _summarize_one(all_delays)))
+    return summary_rows
 
-    with open(OUTPUT_SUMMARY_CSV_PATH, "w", newline="", encoding="utf-8") as f:
+
+def write_summary_csv(summary_rows: list[tuple[str, dict]], out_path: str) -> None:
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow([
             "route_id", "n_rows", "n_changed", "pct_changed",
@@ -269,7 +276,7 @@ def _write_summary(detail_rows):
                 round(stats["mean_delay_sec"], 2), round(stats["mean_abs_delay_sec"], 2),
                 round(stats["stdev_delay_sec"], 2), stats["min_delay_sec"], stats["max_delay_sec"],
             ])
-    print(f"Summary CSV written: {OUTPUT_SUMMARY_CSV_PATH}")
+    print(f"Summary CSV written: {out_path}")
 
     print("\n--- Summary (delay = realized - static, seconds) ---")
     for route_id, stats in summary_rows:
@@ -285,12 +292,29 @@ def _write_summary(detail_rows):
     )
 
 
-def _plot_mean_delay(detail_rows):
+def plot_mean_delay(
+    detail_rows: list[DetailRow],
+    out_path: str,
+    bucket_minutes: int,
+    start_hour: Optional[int],
+    end_hour: Optional[int],
+    tick_interval_minutes: int,
+    tick_label_rotation: int,
+    line_color: str,
+    bar_color: str,
+) -> bool:
     """Mean delay (minutes) vs. scheduled time-of-day, bucketed. Rows with
     delay_sec == 0 are dropped BEFORE bucketing (see module docstring: a 0
     is overwhelmingly "never observed" rather than a real on-time
     measurement, and including it would just drag every bucket's mean
     toward zero without that meaning anything).
+
+    Returns True if a chart file was written, False if skipped (nothing to
+    plot) - callers (e.g. a CI step deciding whether to `gh release upload`
+    this file) should check this rather than assuming out_path always exists.
+
+    Raises ImportError with a clear pip-install hint if matplotlib is not
+    installed - only reached if the caller didn't pass --no-chart.
     """
     nonzero_rows = [row for row in detail_rows if row[6] != 0]
     if not nonzero_rows:
@@ -299,13 +323,13 @@ def _plot_mean_delay(detail_rows):
             "delay_sec == 0 (either everything ran exactly on schedule, or nothing "
             "in the recording actually corrected these rows). Skipping chart."
         )
-        return
+        return False
 
-    start_minute = CHART_START_HOUR * 60 if CHART_START_HOUR is not None else None
-    end_minute = CHART_END_HOUR * 60 if CHART_END_HOUR is not None else None
+    start_minute = start_hour * 60 if start_hour is not None else None
+    end_minute = end_hour * 60 if end_hour is not None else None
     filtered_rows = []
     for row in nonzero_rows:
-        _route_id, _trip_id, _stop_seq, _stop_id, static_sec, _realized_sec, delay_sec = row
+        _route_id, _trip_id, _stop_seq, _stop_id, static_sec, _realized_sec, _delay_sec = row
         static_min = static_sec / 60.0
         if start_minute is not None and static_min < start_minute:
             continue
@@ -316,36 +340,43 @@ def _plot_mean_delay(detail_rows):
     if not filtered_rows:
         print(
             f"\nNo non-zero-delay rows fall inside the configured chart window "
-            f"({CHART_START_HOUR}:00-{CHART_END_HOUR}:00). Skipping chart."
+            f"({start_hour}:00-{end_hour}:00). Skipping chart."
         )
-        return
+        return False
 
-    buckets = {}  # bucket_start_minutes -> list of delay_min
+    buckets: dict[int, list[float]] = {}
     for _route_id, _trip_id, _stop_seq, _stop_id, static_sec, _realized_sec, delay_sec in filtered_rows:
         static_min = static_sec / 60.0
-        bucket_start = int(static_min // CHART_BUCKET_MINUTES) * CHART_BUCKET_MINUTES
+        bucket_start = int(static_min // bucket_minutes) * bucket_minutes
         buckets.setdefault(bucket_start, []).append(delay_sec / 60.0)
 
     bucket_starts = sorted(buckets)
     mean_delays = [statistics.mean(buckets[b]) for b in bucket_starts]
     counts = [len(buckets[b]) for b in bucket_starts]
 
-    import matplotlib
-    matplotlib.use("Agg")  # headless
-    import matplotlib.pyplot as plt
-    import matplotlib.ticker as mticker
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # headless
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
+    except ImportError as exc:
+        raise ImportError(
+            "matplotlib is required for the chart (pip install -r "
+            "tools/analysis/requirements.txt, or pip install matplotlib). "
+            "Pass --no-chart to skip chart generation and keep only the CSVs."
+        ) from exc
 
     fig, ax = plt.subplots(figsize=(12, 6))
 
     ax2 = ax.twinx()
-    ax2.bar(bucket_starts, counts, width=CHART_BUCKET_MINUTES * 0.9, align="edge",
-            color=CHART_BAR_COLOR, alpha=0.25, zorder=1)
-    ax2.set_ylabel("Observations per bucket (non-zero delay rows)", color=CHART_BAR_COLOR)
-    ax2.tick_params(axis="y", labelcolor=CHART_BAR_COLOR)
+    ax2.bar(bucket_starts, counts, width=bucket_minutes * 0.9, align="edge",
+            color=bar_color, alpha=0.25, zorder=1)
+    ax2.set_ylabel("Observations per bucket (non-zero delay rows)", color=bar_color)
+    ax2.tick_params(axis="y", labelcolor=bar_color)
 
     ax.plot(
-        [b + CHART_BUCKET_MINUTES / 2 for b in bucket_starts], mean_delays,
-        color=CHART_LINE_COLOR, marker="o", markersize=4, linewidth=1.5, zorder=2,
+        [b + bucket_minutes / 2 for b in bucket_starts], mean_delays,
+        color=line_color, marker="o", markersize=4, linewidth=1.5, zorder=2,
     )
     ax.axhline(0, color="black", linewidth=0.8, alpha=0.5)
     ax.set_zorder(ax2.get_zorder() + 1)
@@ -354,7 +385,7 @@ def _plot_mean_delay(detail_rows):
     ax.set_xlabel("Scheduled time")
     ax.set_ylabel("Mean delay (min, realized minus static)")
     ax.set_title(
-        f"Mean delay by scheduled time ({CHART_BUCKET_MINUTES}-min buckets, "
+        f"Mean delay by scheduled time ({bucket_minutes}-min buckets, "
         "zero-delay rows excluded)"
     )
     if start_minute is not None and end_minute is not None:
@@ -364,16 +395,89 @@ def _plot_mean_delay(detail_rows):
     elif end_minute is not None:
         ax.set_xlim(None, end_minute)
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, pos: _minutes_to_hhmm(x)))
-    ax.xaxis.set_major_locator(mticker.MultipleLocator(CHART_TICK_INTERVAL_MINUTES))
-    ax.tick_params(axis="x", rotation=CHART_TICK_LABEL_ROTATION)
+    ax.xaxis.set_major_locator(mticker.MultipleLocator(tick_interval_minutes))
+    ax.tick_params(axis="x", rotation=tick_label_rotation)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig(OUTPUT_CHART_PNG_PATH, dpi=150)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
     print(
-        f"Chart saved to {OUTPUT_CHART_PNG_PATH} ({len(filtered_rows)} non-zero rows, "
-        f"{len(bucket_starts)} buckets, window {CHART_START_HOUR}:00-{CHART_END_HOUR}:00)"
+        f"Chart saved to {out_path} ({len(filtered_rows)} non-zero rows, "
+        f"{len(bucket_starts)} buckets, window {start_hour}:00-{end_hour}:00)"
     )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Diff a static GTFS feed against its Family A realized reconstruction "
+            "(<prefix>_p50.zip / <prefix>_p85.zip from family_a.cli build)."
+        ),
+    )
+    parser.add_argument("--static", required=True, help="Static GTFS .zip path.")
+    parser.add_argument("--realized", required=True, help="Family A realized GTFS .zip path (built from --static).")
+    parser.add_argument(
+        "--out-prefix", required=True,
+        help="Writes <prefix>_detail.csv, <prefix>_summary.csv, and (unless --no-chart) <prefix>_chart.png.",
+    )
+    parser.add_argument(
+        "--delay-time-field", default="departure_time", choices=["departure_time", "arrival_time"],
+        help="Which stop_times.txt column to diff (default: departure_time).",
+    )
+    parser.add_argument("--no-chart", action="store_true", help="Skip PNG chart generation (CSVs are always written).")
+    parser.add_argument("--chart-bucket-minutes", type=int, default=15, help="Chart x-axis bucket width in minutes (default: 15).")
+    parser.add_argument("--chart-start-hour", type=int, default=None, help="First hour shown on the chart (default: full range).")
+    parser.add_argument("--chart-end-hour", type=int, default=None, help="Last hour shown on the chart (default: full range).")
+    parser.add_argument("--chart-tick-interval-minutes", type=int, default=15, help="Spacing between x-axis ticks, in minutes (default: 15).")
+    parser.add_argument("--chart-tick-label-rotation", type=int, default=45, help="Degrees to rotate x-axis tick labels (default: 45).")
+    parser.add_argument("--chart-line-color", default="tab:red", help="Colour of the mean-delay line (default: tab:red).")
+    parser.add_argument("--chart-bar-color", default="grey", help="Colour of the observation-count bars (default: grey).")
+    return parser
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = _build_arg_parser().parse_args(argv)
+
+    try:
+        detail_rows = build_diff(args.static, args.realized, args.delay_time_field)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    detail_path = f"{args.out_prefix}_detail.csv"
+    summary_path = f"{args.out_prefix}_summary.csv"
+    chart_path = f"{args.out_prefix}_chart.png"
+
+    write_detail_csv(detail_rows, detail_path, args.delay_time_field)
+    write_summary_csv(summarize(detail_rows), summary_path)
+
+    if args.no_chart:
+        print("\n--no-chart passed - skipping chart generation.")
+    else:
+        try:
+            wrote_chart = plot_mean_delay(
+                detail_rows, chart_path,
+                bucket_minutes=args.chart_bucket_minutes,
+                start_hour=args.chart_start_hour,
+                end_hour=args.chart_end_hour,
+                tick_interval_minutes=args.chart_tick_interval_minutes,
+                tick_label_rotation=args.chart_tick_label_rotation,
+                line_color=args.chart_line_color,
+                bar_color=args.chart_bar_color,
+            )
+        except ImportError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        if not wrote_chart:
+            print(f"(no {chart_path} written - see message above)")
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
