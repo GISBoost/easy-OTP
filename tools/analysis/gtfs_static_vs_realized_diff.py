@@ -53,9 +53,13 @@ path (and a different --out-prefix) to compare both.
 Output (all written under --out-prefix):
   - <prefix>_detail.csv - one row per matched stop_times.txt entry -
     route_id, trip_id, stop_sequence, stop_id, scheduled/realized time,
-    delay_sec, delay_min.
+    delay_sec, delay_min. Only written if --detail-csv is passed (opt-in -
+    the summary CSV below covers day-to-day monitoring; this is for
+    manual, per-row debugging and is large enough per city per day that
+    it isn't worth publishing by default).
   - <prefix>_summary.csv - mean / mean(|delay|) / stdev / min / max delay,
     plus count and % of rows actually changed, overall and per route_id.
+    Always written.
   - <prefix>_chart.png - mean delay (minutes) vs. scheduled time-of-day,
     bucketed every --chart-bucket-minutes. Rows with delay_sec == 0 are
     excluded from the chart only (a 0 is far more often "never observed"
@@ -64,10 +68,16 @@ Output (all written under --out-prefix):
     detail and summary CSVs above still contain every row, unfiltered. A
     faint grey bar behind the line shows how many non-zero observations
     back each bucket, since a bucket's mean is only as trustworthy as its
-    sample count. Skipped (no file written) if there are zero non-zero-delay
-    rows, or --no-chart is passed - the CLI reports this on stdout either way
-    so a calling script (e.g. a CI step deciding whether to `gh release
-    upload` this file) can tell whether it exists without guessing.
+    sample count. The x-axis is cropped tightly to the actual measured
+    range (the first/last bucket that has any non-zero-delay observation,
+    snapped to --chart-bucket-minutes) unless --chart-start-hour/
+    --chart-end-hour override it explicitly - a short/partial recording
+    session produces a short/partial chart instead of a mostly-empty
+    fixed-width one. Skipped (no file written) if there are zero
+    non-zero-delay rows, or --no-chart is passed - the CLI reports this on
+    stdout either way so a calling script (e.g. a CI step deciding whether
+    to `gh release upload` this file) can tell whether it exists without
+    guessing.
 """
 from __future__ import annotations
 
@@ -313,6 +323,12 @@ def plot_mean_delay(
     plot) - callers (e.g. a CI step deciding whether to `gh release upload`
     this file) should check this rather than assuming out_path always exists.
 
+    The x-axis is cropped to [start_hour, end_hour] only when those are
+    explicitly given; otherwise it's cropped to the actual first/last
+    bucket that has data (snapped to bucket_minutes) instead of matplotlib's
+    default auto-margin, so a partial-day recording doesn't produce a chart
+    that's mostly empty space out to a fixed nominal window.
+
     Raises ImportError with a clear pip-install hint if matplotlib is not
     installed - only reached if the caller didn't pass --no-chart.
     """
@@ -388,12 +404,14 @@ def plot_mean_delay(
         f"Mean delay by scheduled time ({bucket_minutes}-min buckets, "
         "zero-delay rows excluded)"
     )
-    if start_minute is not None and end_minute is not None:
-        ax.set_xlim(start_minute, end_minute)
-    elif start_minute is not None:
-        ax.set_xlim(start_minute, None)
-    elif end_minute is not None:
-        ax.set_xlim(None, end_minute)
+    # Default (no explicit --chart-start-hour/--chart-end-hour) crops tightly to
+    # the actual measured data - the first/last bucket that has any observation -
+    # rather than leaving it to matplotlib's auto-margin, which would otherwise
+    # pad a partial-day recording out toward whatever range happened to be passed
+    # in via the (already-filtered) rows, or show unwanted empty space.
+    xlim_start = start_minute if start_minute is not None else bucket_starts[0]
+    xlim_end = end_minute if end_minute is not None else bucket_starts[-1] + bucket_minutes
+    ax.set_xlim(xlim_start, xlim_end)
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, pos: _minutes_to_hhmm(x)))
     ax.xaxis.set_major_locator(mticker.MultipleLocator(tick_interval_minutes))
     ax.tick_params(axis="x", rotation=tick_label_rotation)
@@ -403,7 +421,8 @@ def plot_mean_delay(
     plt.close(fig)
     print(
         f"Chart saved to {out_path} ({len(filtered_rows)} non-zero rows, "
-        f"{len(bucket_starts)} buckets, window {start_hour}:00-{end_hour}:00)"
+        f"{len(bucket_starts)} buckets, window "
+        f"{_minutes_to_hhmm(xlim_start)}-{_minutes_to_hhmm(xlim_end)})"
     )
     return True
 
@@ -423,17 +442,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--realized", required=True, help="Family A realized GTFS .zip path (built from --static).")
     parser.add_argument(
         "--out-prefix", required=True,
-        help="Writes <prefix>_detail.csv, <prefix>_summary.csv, and (unless --no-chart) <prefix>_chart.png.",
+        help="Writes <prefix>_summary.csv, (if --detail-csv) <prefix>_detail.csv, and (unless --no-chart) <prefix>_chart.png.",
     )
     parser.add_argument(
         "--delay-time-field", default="departure_time", choices=["departure_time", "arrival_time"],
         help="Which stop_times.txt column to diff (default: departure_time).",
     )
-    parser.add_argument("--no-chart", action="store_true", help="Skip PNG chart generation (CSVs are always written).")
+    parser.add_argument("--detail-csv", action="store_true", help="Also write <prefix>_detail.csv (one row per matched stop_times entry). Off by default - the summary CSV is always written regardless.")
+    parser.add_argument("--no-chart", action="store_true", help="Skip PNG chart generation (the summary CSV is always written).")
     parser.add_argument("--chart-bucket-minutes", type=int, default=15, help="Chart x-axis bucket width in minutes (default: 15).")
-    parser.add_argument("--chart-start-hour", type=int, default=None, help="First hour shown on the chart (default: full range).")
-    parser.add_argument("--chart-end-hour", type=int, default=None, help="Last hour shown on the chart (default: full range).")
-    parser.add_argument("--chart-tick-interval-minutes", type=int, default=15, help="Spacing between x-axis ticks, in minutes (default: 15).")
+    parser.add_argument("--chart-start-hour", type=int, default=None, help="First hour shown on the chart (default: auto-cropped to the earliest measured bucket).")
+    parser.add_argument("--chart-end-hour", type=int, default=None, help="Last hour shown on the chart (default: auto-cropped to the latest measured bucket).")
+    parser.add_argument("--chart-tick-interval-minutes", type=int, default=30, help="Spacing between x-axis ticks, in minutes (default: 30).")
     parser.add_argument("--chart-tick-label-rotation", type=int, default=45, help="Degrees to rotate x-axis tick labels (default: 45).")
     parser.add_argument("--chart-line-color", default="tab:red", help="Colour of the mean-delay line (default: tab:red).")
     parser.add_argument("--chart-bar-color", default="grey", help="Colour of the observation-count bars (default: grey).")
@@ -449,11 +469,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    detail_path = f"{args.out_prefix}_detail.csv"
     summary_path = f"{args.out_prefix}_summary.csv"
     chart_path = f"{args.out_prefix}_chart.png"
 
-    write_detail_csv(detail_rows, detail_path, args.delay_time_field)
+    if args.detail_csv:
+        write_detail_csv(detail_rows, f"{args.out_prefix}_detail.csv", args.delay_time_field)
     write_summary_csv(summarize(detail_rows), summary_path)
 
     if args.no_chart:

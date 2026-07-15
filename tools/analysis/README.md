@@ -157,35 +157,45 @@ py gtfs_static_vs_realized_diff.py --static warsaw.zip --realized warsaw_realize
 Flags:
 - `--static` (required) — static GTFS `.zip` path.
 - `--realized` (required) — Family A realized `.zip` path, built from `--static`.
-- `--out-prefix` (required) — writes `<prefix>_detail.csv`, `<prefix>_summary.csv`, and (unless
-  `--no-chart`) `<prefix>_chart.png`. Include a directory in the prefix if you want the outputs
-  somewhere other than the current folder (e.g. `--out-prefix out/warsaw_p50`).
+- `--out-prefix` (required) — writes `<prefix>_summary.csv`, (if `--detail-csv`)
+  `<prefix>_detail.csv`, and (unless `--no-chart`) `<prefix>_chart.png`. Include a directory in
+  the prefix if you want the outputs somewhere other than the current folder (e.g.
+  `--out-prefix out/warsaw_p50`).
 - `--delay-time-field` — `departure_time` (default) or `arrival_time`.
-- `--no-chart` — skip PNG chart generation; the two CSVs are always written regardless.
-- `--chart-bucket-minutes` (default `15`), `--chart-start-hour`/`--chart-end-hour` (default: full
-  range), `--chart-tick-interval-minutes` (default `15`), `--chart-tick-label-rotation` (default
-  `45`), `--chart-line-color` (default `tab:red`), `--chart-bar-color` (default `grey`) — same
-  knobs the old CONFIG block exposed, now CLI flags.
+- `--detail-csv` — also write the per-row detail CSV (off by default; the summary CSV is always
+  written regardless of this flag).
+- `--no-chart` — skip PNG chart generation; the summary CSV is always written regardless.
+- `--chart-bucket-minutes` (default `15`), `--chart-start-hour`/`--chart-end-hour` (default:
+  auto-cropped to the earliest/latest bucket with actual data — see chart notes below),
+  `--chart-tick-interval-minutes` (default `30`), `--chart-tick-label-rotation` (default `45`),
+  `--chart-line-color` (default `tab:red`), `--chart-bar-color` (default `grey`) — same knobs the
+  old CONFIG block exposed, now CLI flags.
 
 **Output** (all under `--out-prefix`):
-- `<prefix>_detail.csv` — one row per matched `stop_times.txt` entry: `route_id`, `trip_id`,
-  `stop_sequence`, `stop_id`, static/realized time, `delay_sec`, `delay_min`. (`n` in the console
-  summary = count of matched rows for that route, regardless of whether the delay came out zero
-  or not.)
 - `<prefix>_summary.csv` — mean / mean(|delay|) / stdev / min / max delay, plus count and % of
   rows actually changed, per `route_id` and overall ("ALL" row). Same summary printed to the
-  console.
+  console. Always written.
+- `<prefix>_detail.csv` — one row per matched `stop_times.txt` entry: `route_id`, `trip_id`,
+  `stop_sequence`, `stop_id`, static/realized time, `delay_sec`, `delay_min`. Only written if
+  `--detail-csv` is passed — this is per-row debugging output, not needed for day-to-day
+  monitoring (the summary CSV covers that), and large enough per city per day that it isn't
+  worth publishing by default.
 - `<prefix>_chart.png` — mean delay (minutes) vs. scheduled time-of-day, bucketed every
   `--chart-bucket-minutes`. Rows with `delay_sec == 0` are excluded from this chart only (not
   from the CSVs) since they'd just wash the mean toward zero without meaning anything. A faint
   grey bar behind the line shows how many non-zero observations back each bucket, so you can
-  judge how much to trust a given point. **Not written** (silently, with a printed explanation)
-  if every matched row has `delay_sec == 0`, or if `--no-chart` was passed — check stdout / the
-  file's existence rather than assuming it's always produced.
+  judge how much to trust a given point. The x-axis is cropped tightly to the first/last bucket
+  that actually has data (snapped to `--chart-bucket-minutes`) unless `--chart-start-hour`/
+  `--chart-end-hour` override it explicitly — a partial-day recording (e.g. one that started
+  hours into the nominal window) produces a chart matching that shorter span instead of a mostly
+  empty one padded out to a fixed nominal window. **Not written** (silently, with a printed
+  explanation) if every matched row has `delay_sec == 0`, or if `--no-chart` was passed — check
+  stdout / the file's existence rather than assuming it's always produced.
 
 **Used automatically in CI:** since the phone-recording pipeline (TX-8), `easy-GTFS-RT`'s
 `family_a_build_and_notify_from_phone.yml` calls this CLI once per city per day (P50 variant)
 right after publishing that day's realized GTFS release, and best-effort-uploads the resulting
-chart + CSVs onto the same release (never blocking the release itself — see that workflow's
-"Generate static-vs-realized diff chart" step). Re-running it yourself against any day's
-released static + realized zips reproduces exactly what that step does.
+chart + summary CSV onto the same release (never blocking the release itself — see that
+workflow's "Generate static-vs-realized diff chart" step; it does not pass `--detail-csv`, so
+that file is never produced or uploaded there). Re-running it yourself against any day's released
+static + realized zips reproduces exactly what that step does.
