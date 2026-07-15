@@ -15,10 +15,14 @@ set -uo pipefail   # not -e: one failed city/directory shouldn't stop the others
 # docs/prompts/termux-migration_prompts_for-claude-code.md, Prompt TX-3.
 # Safe to re-run manually for testing: the .uploaded marker prevents duplicate
 # uploads of directories already sent.
+#
+# Usage: sweep_and_upload.sh [YYYY-MM-DD]  (optional - defaults to today, Europe/Warsaw).
+# The override is for manual recovery of a past day (e.g. re-sweeping after directories were
+# renamed to match a naming-scheme change) - the cron invocation never passes it.
 
 source "$HOME/.easy-gtfs-rt-termux.env"
 REPO="GISBoost/easy-GTFS-RT"
-DATE="$(TZ=Europe/Warsaw date +%F)"
+DATE="${1:-$(TZ=Europe/Warsaw date +%F)}"
 API="https://api.github.com"
 WORK_DIR="$HOME/easy-gtfs-rt-termux"
 
