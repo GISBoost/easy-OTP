@@ -1,0 +1,7 @@
+# Shell scripts and runit `run` files always run on Linux/Android (Termux) or Oracle Cloud,
+# never on Windows - force LF regardless of the checkout machine's core.autocrlf. Without this, a
+# Windows checkout silently converts them to CRLF, which then breaks bash parsing and shebang
+# execution the moment the file is scp'd directly to the phone (hit in practice during TX-8's
+# rollout on 2026-07-14 - see scripts/termux/README.md's gotchas).
+*.sh text eol=lf
+scripts/termux/service/*/run text eol=lf
