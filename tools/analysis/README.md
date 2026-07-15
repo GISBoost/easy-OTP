@@ -141,25 +141,51 @@ is why the chart step below drops zero-delay rows rather than plotting them.
 
 **Requires:** a static GTFS `.zip` and a Family A realized `.zip` (`<prefix>_p50.zip` for the
 median-observed variant, or `<prefix>_p85.zip` for the pessimistic 85th-percentile variant) built
-from that same static feed. No QGIS.
+from that same static feed. No QGIS. Chart generation additionally needs `matplotlib` — its own
+`tools/analysis/requirements.txt`, deliberately separate from `tools/family_a_reconstruction/
+requirements.txt` (that one is also installed on the Termux phone, TX-1, where matplotlib would
+be dead weight with no prebuilt wheel for Android's Bionic libc anyway).
 
-**How to run:** fill in `STATIC_GTFS_ZIP_PATH`, `REALIZED_GTFS_ZIP_PATH`, then
-`py gtfs_static_vs_realized_diff.py` from a terminal (needs `matplotlib`, available in any
-regular Python 3 install — QGIS's bundled Python works too if you'd rather run it from there).
-Optionally narrow the chart to a time-of-day window with `CHART_START_HOUR`/`CHART_END_HOUR`,
-adjust tick spacing with `CHART_TICK_INTERVAL_MINUTES`, or recolour it with `CHART_LINE_COLOR`/
-`CHART_BAR_COLOR` (all default to today's values).
+**This is a CLI**, not a fill-in-the-CONFIG script (as of the phone-release integration below —
+every other script in this folder still uses the CONFIG-block convention). Run it with:
 
-**Output:**
-- `gtfs_static_vs_realized_diff_detail.csv` — one row per matched `stop_times.txt` entry:
-  `route_id`, `trip_id`, `stop_sequence`, `stop_id`, static/realized time, `delay_sec`,
-  `delay_min`. (`n` in the console summary = count of matched rows for that route, regardless
-  of whether the delay came out zero or not.)
-- `gtfs_static_vs_realized_diff_summary.csv` — mean / mean(|delay|) / stdev / min / max delay,
-  plus count and % of rows actually changed, per `route_id` and overall ("ALL" row). Same
-  summary printed to the console.
-- `gtfs_static_vs_realized_mean_delay.png` — mean delay (minutes) vs. scheduled time-of-day,
-  bucketed every `CHART_BUCKET_MINUTES` (default 15). Rows with `delay_sec == 0` are excluded
-  from this chart only (not from the CSVs) since they'd just wash the mean toward zero without
-  meaning anything. A faint grey bar behind the line shows how many non-zero observations back
-  each bucket, so you can judge how much to trust a given point.
+```bat
+pip install -r requirements.txt
+py gtfs_static_vs_realized_diff.py --static warsaw.zip --realized warsaw_realized_p50.zip --out-prefix out/warsaw_2026-07-15_p50
+```
+
+Flags:
+- `--static` (required) — static GTFS `.zip` path.
+- `--realized` (required) — Family A realized `.zip` path, built from `--static`.
+- `--out-prefix` (required) — writes `<prefix>_detail.csv`, `<prefix>_summary.csv`, and (unless
+  `--no-chart`) `<prefix>_chart.png`. Include a directory in the prefix if you want the outputs
+  somewhere other than the current folder (e.g. `--out-prefix out/warsaw_p50`).
+- `--delay-time-field` — `departure_time` (default) or `arrival_time`.
+- `--no-chart` — skip PNG chart generation; the two CSVs are always written regardless.
+- `--chart-bucket-minutes` (default `15`), `--chart-start-hour`/`--chart-end-hour` (default: full
+  range), `--chart-tick-interval-minutes` (default `15`), `--chart-tick-label-rotation` (default
+  `45`), `--chart-line-color` (default `tab:red`), `--chart-bar-color` (default `grey`) — same
+  knobs the old CONFIG block exposed, now CLI flags.
+
+**Output** (all under `--out-prefix`):
+- `<prefix>_detail.csv` — one row per matched `stop_times.txt` entry: `route_id`, `trip_id`,
+  `stop_sequence`, `stop_id`, static/realized time, `delay_sec`, `delay_min`. (`n` in the console
+  summary = count of matched rows for that route, regardless of whether the delay came out zero
+  or not.)
+- `<prefix>_summary.csv` — mean / mean(|delay|) / stdev / min / max delay, plus count and % of
+  rows actually changed, per `route_id` and overall ("ALL" row). Same summary printed to the
+  console.
+- `<prefix>_chart.png` — mean delay (minutes) vs. scheduled time-of-day, bucketed every
+  `--chart-bucket-minutes`. Rows with `delay_sec == 0` are excluded from this chart only (not
+  from the CSVs) since they'd just wash the mean toward zero without meaning anything. A faint
+  grey bar behind the line shows how many non-zero observations back each bucket, so you can
+  judge how much to trust a given point. **Not written** (silently, with a printed explanation)
+  if every matched row has `delay_sec == 0`, or if `--no-chart` was passed — check stdout / the
+  file's existence rather than assuming it's always produced.
+
+**Used automatically in CI:** since the phone-recording pipeline (TX-8), `easy-GTFS-RT`'s
+`family_a_build_and_notify_from_phone.yml` calls this CLI once per city per day (P50 variant)
+right after publishing that day's realized GTFS release, and best-effort-uploads the resulting
+chart + CSVs onto the same release (never blocking the release itself — see that workflow's
+"Generate static-vs-realized diff chart" step). Re-running it yourself against any day's
+released static + realized zips reproduces exactly what that step does.

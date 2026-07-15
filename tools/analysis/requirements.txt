@@ -1,0 +1,5 @@
+# Deliberately its own file, separate from tools/family_a_reconstruction/requirements.txt.
+# That file is also installed on the Termux phone (TX-1) - matplotlib has no prebuilt wheels for
+# Android's Bionic libc and is only needed where a chart is actually rendered (a GitHub Actions
+# runner, or your own machine), never the phone. Keep it isolated here.
+matplotlib
