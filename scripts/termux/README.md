@@ -26,6 +26,36 @@ A city id that exists in one place but not the other fails loudly (an unmapped c
 immediately) rather than silently doing nothing - see "Adding a new city" below for the full,
 tested-safe order of operations.
 
+### VEHICLE_POSITIONS_URL reference for the EU comparison cities (spike-verified 2026-07-15)
+
+`config/cities.json` in `easy-GTFS-RT` already has `display_name`/`static_gtfs_url` for these
+cities. Their `VEHICLE_POSITIONS_URL` values below are **not** in that file (it's phone-only
+config, per the "Multi-city config" note above) - this table exists purely so creating each
+city's `cities/<city_id>.env` on the phone (step 2 of "Adding a new city" below) is a copy-paste,
+not a re-run of the discovery spike. All verified `auth=none` (no API key needed).
+
+| city_id | VEHICLE_POSITIONS_URL |
+|---|---|
+| `szczecin` | `https://www.zditm.szczecin.pl/storage/gtfs/gtfs-rt-vehicles.pb` |
+| `prague` | `https://api.golemio.cz/v2/vehiclepositions/gtfsrt/vehicle_positions.pb` |
+| `rome` | `https://romamobilita.it/sites/default/files/rome_rtgtfs_vehicle_positions_feed.pb` |
+| `turin` | `https://percorsieorari.gtt.to.it/das_gtfsrt/vehicle_position.aspx` |
+| `vilnius` | `https://www.stops.lt/vilnius/vehicle_positions.pb` |
+| `sofia` | `https://gtfs.sofiatraffic.bg/api/v1/vehicle-positions` |
+| `bucharest` | `https://gtfs.tpbi.ro/api/gtfs-rt/vehiclePositions` |
+| `lisbon` | `https://gateway.carris.pt/gateway/gtfs/api/v2.11/GTFS/realtime/vehiclepositions` |
+| `amsterdam` | `http://gtfs.ovapi.nl/nl/vehiclePositions.pb` |
+
+Notes from the spike:
+- **Prague (Golemio)** has historically required a free `X-Access-Token` for some endpoints; this
+  one returned HTTP 200 with no key in the 2026-07-15 spike test - re-check if it starts failing.
+- **Rome**'s static GTFS is cron-updated on a Drupal site and can go stale; check `Last-Modified`
+  before relying on a given day's static feed for matching.
+- **Amsterdam (OVapi)** covers all of the Netherlands, not just Amsterdam - its static feed is
+  national, not city-scoped.
+- **Lisbon** is the Carris city-core feed specifically, distinct from Carris Metropolitana (the
+  wider metro-area operator) - don't confuse the two if searching for alternates later.
+
 ## Pipeline overview
 
 ```
