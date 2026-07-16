@@ -84,9 +84,13 @@ Notes from the spike:
 
 ## Pipeline overview
 
-Times below (06:00/22:00/22:10/22:15/21:00) are each city's own local clock, per its `TIMEZONE`
-(see "Recording window timezone" above) - not simultaneous across cities unless they share a
-timezone (e.g. Prague/Rome/Turin/Szczecin all recording in step with Poland).
+Times below (06:00/22:00/21:00) are each city's own local clock, per its `TIMEZONE` (see
+"Recording window timezone" above) - not simultaneous across cities unless they share a timezone
+(e.g. Prague/Rome/Turin/Szczecin all recording in step with Poland). `sweep_and_upload.sh` itself
+is the exception: it's not tied to any one city's clock - it runs every 15 minutes, all day, and
+decides per city, per tick, whether that city's own local window has actually closed yet (see the
+script's header comment and "Recording window timezone" above) - so "22:10" below means "the first
+tick after a given city's local 22:00 + 10 min", not a single simultaneous global event.
 
 ```
 Phone (Termux)                                   GitHub (GISBoost/easy-GTFS-RT)
@@ -98,11 +102,13 @@ Phone (Termux)                                   GitHub (GISBoost/easy-GTFS-RT)
                                                    21:00  healthcheck: alerts via WhatsApp
                                                           listing any city whose raw
                                                           release is still missing today
-22:00  recording window ends, all cities
-22:10  sweep_and_upload.sh (cron) loops every
-       configured city: zips its
-       positions_<city>_<date>_* dirs, uploads
-       to a "positions-raw-<city>-<date>"
+22:00  recording window ends (this city's own
+       local clock)
+~22:10 sweep_and_upload.sh (cron, every 15 min,
+       all day) reaches the first tick after
+       this city's local window has closed:
+       zips its positions_<city>_<date>_* dirs,
+       uploads to a "positions-raw-<city>-<date>"
        pre-release, then fires a
        repository_dispatch event carrying
        that city's id           ----->
@@ -191,12 +197,15 @@ healthcheck, and TX-7/TX-8's workflow half live in the `easy-GTFS-RT` repo
     the service or create the crontab entry:
     ```
     sv-enable crond
-    (crontab -l 2>/dev/null; echo "10 22 * * * /data/data/com.termux/files/usr/bin/bash /data/data/com.termux/files/home/easy-gtfs-rt-termux/sweep_and_upload.sh >> /data/data/com.termux/files/home/easy-gtfs-rt-termux/logs/sweep.log 2>&1") | crontab -
+    (crontab -l 2>/dev/null; echo "*/15 * * * * /data/data/com.termux/files/usr/bin/bash /data/data/com.termux/files/home/easy-gtfs-rt-termux/sweep_and_upload.sh >> /data/data/com.termux/files/home/easy-gtfs-rt-termux/logs/sweep.log 2>&1") | crontab -
     ```
     Confirm: `sv status crond` shows `run:` and `crontab -l` shows the line above. Once enabled,
     `crond` is picked up automatically by `boot/start-services.sh` on future reboots too, same as
     the recording services - no separate boot-script change needed for it. This one crontab entry
-    covers every city - `sweep_and_upload.sh` loops all of them itself.
+    covers every city - `sweep_and_upload.sh` loops all of them itself, every 15 minutes, all day
+    (not once at a fixed time) - see "Recording window timezone" above and the script's own header
+    comment for why: with cities in different timezones, no single daily trigger time is safe for
+    all of them, so the script itself decides per city, per tick, whether it's actually time.
 
 `GH_TOKEN`'s GitHub-side equivalents (`CALLMEBOT_PHONE`, `CALLMEBOT_APIKEY`) already exist in
 `GISBoost/easy-GTFS-RT` from the FA-7/8/9 track - nothing new to configure there. Per-city static
@@ -275,9 +284,20 @@ down`/`up` only needed for files a `family-a-record-<city>` service actually run
   only an actual device restart does. Don't use it to test boot behavior.
 - **Installing the `cronie` package does not enable or schedule anything.** Discovered on-device
   2026-07-13: `crond` sat `down` and `crontab -l` was empty despite `termux_provision.sh` having
-  installed `cronie` - the daily 22:10 sweep had never actually run automatically, ever, only
-  whenever someone ran `sweep_and_upload.sh` by hand. `sv-enable crond` + a real crontab entry
-  (setup step 11 above) are both required separately.
+  installed `cronie` - the sweep had never actually run automatically, ever, only whenever someone
+  ran `sweep_and_upload.sh` by hand. `sv-enable crond` + a real crontab entry (setup step 11 above)
+  are both required separately.
+- **`sweep_and_upload.sh` runs every 15 minutes, all day, on purpose** (fixed 2026-07-16) - it used
+  to be a single daily trigger at a fixed Europe/Warsaw time, which was only safe because every
+  city shared Poland's offset. Once `record_supervised.sh`'s window became per-city, a single
+  fixed trigger could no longer safely cover every city (a city behind Warsaw could still be
+  mid-recording when it fired, truncating that day's session - the `.uploaded` marker never lets a
+  swept directory be reconsidered). The script now gates itself instead: Gate 1 skips a city until
+  its own local window has closed (+ a safety margin), Gate 2 skips a city with nothing new to
+  upload (avoids hitting the GitHub API on every 15-minute tick once a city is done for the day).
+  Both gates fail silently - don't expect a log line for a normal skip, only for real events
+  (upload, dispatch, error). Bonus: unlike the GitHub Actions crons in this pipeline, this script
+  needs no manual DST-flip twice a year - `TZ="$ZONE" date` already knows each city's own rules.
 - **All cities' `record_supervised.sh` processes share one `~/easy-OTP` checkout** (TX-8) - each
   does its own `git pull --ff-only` at startup, so several services restarting at once (e.g. every
   service coming up together at boot) can race for git's lock. The existing warning-and-continue
