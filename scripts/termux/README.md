@@ -18,9 +18,12 @@ must be identical (case-sensitive) in both places**:
    `VEHICLE_POSITIONS_URL` and, since 2026-07-16, an optional `TIMEZONE` (an IANA zone name, e.g.
    `Europe/Vilnius`) - see "Recording window timezone" below. `GH_TOKEN` stays shared, in the
    top-level `~/.easy-gtfs-rt-termux.env` (one token covers all cities in the repo).
-2. **In `easy-GTFS-RT`**: a `<city_id>` key in `config/cities.json` (`display_name` +
-   `static_gtfs_url`) - this is what the build workflow and healthcheck use to know which cities
-   to build/check.
+2. **In `easy-GTFS-RT`**: a `<city_id>` key in `config/cities.json` (`display_name`,
+   `static_gtfs_url`, and, since 2026-07-16, an optional `timezone` - same IANA zone name and
+   `Europe/Warsaw` fallback as the phone-side `TIMEZONE` above, duplicated here because GitHub
+   Actions has no access to the phone's `.env` files) - this is what the build workflow and
+   healthcheck use to know which cities to build/check, and, via `timezone`, when each city's own
+   local day is actually over.
 
 A city id that exists in one place but not the other fails loudly (an unmapped city in a
 `repository_dispatch` payload makes the build workflow's `resolve_targets` job error out
@@ -87,27 +90,24 @@ Notes from the spike:
   wider metro-area operator) - don't confuse the two if searching for alternates later.
 - **Boston (MBTA)** and **Brisbane (TransLink SEQ)** were verified 2026-07-16, both `auth=none`.
   Boston is `America/New_York` (UTC-4 in July), 6h behind Warsaw's summer offset - its recording
-  window doesn't close until Warsaw-local ~04:00 the *next* day, which is well past both the
-  healthcheck's fixed 21:00 Warsaw check and the build workflow's fixed 22:15 Warsaw fallback
-  cron (see "Known gotchas" - GH Actions cron has no per-city timezone awareness). This means
-  Boston will trigger a nightly false "missing" WhatsApp alert from the healthcheck workflow even
-  when nothing is wrong (the primary `repository_dispatch` path already handles Boston correctly
-  via `sweep_and_upload.sh`'s per-city gates - only the healthcheck/fallback's own fixed-Warsaw-time
-  design is affected). Accepted as a known false-positive for now (2026-07-16) rather than fixed -
-  see the "GitHub Actions `schedule:` cron has no DST awareness" gotcha for the pre-existing,
-  now-materialized limitation. Brisbane (`Australia/Brisbane`, UTC+10, no DST) is *ahead* of
-  Warsaw instead, so its window closes at Warsaw-local ~14:00 the *same* day - well before either
-  check runs, no false alerts.
+  window doesn't close until Warsaw-local ~04:00 the *next* day. Adding it is what exposed a real
+  gap: the build workflow's fixed 22:15 Warsaw schedule fallback and the healthcheck's fixed 21:00
+  Warsaw check both used to run *before* Boston's window closes, so the healthcheck would have
+  sent a false "missing" WhatsApp alert every single night. Fixed 2026-07-16 alongside adding
+  these two cities - see "Known gotchas" (`sweep_and_upload.sh`'s dispatch retry marker, and the
+  healthcheck's per-city polling) for the redesign; both now correctly wait for each city's own
+  local window, using the `timezone` field this file's "Multi-city config" section describes.
 
 ## Pipeline overview
 
-Times below (06:00/22:00/21:00) are each city's own local clock, per its `TIMEZONE` (see
+Times below (06:00/22:00) are each city's own local clock, per its `TIMEZONE`/`timezone` (see
 "Recording window timezone" above) - not simultaneous across cities unless they share a timezone
-(e.g. Prague/Rome/Turin/Szczecin all recording in step with Poland). `sweep_and_upload.sh` itself
-is the exception: it's not tied to any one city's clock - it runs every 15 minutes, all day, and
-decides per city, per tick, whether that city's own local window has actually closed yet (see the
-script's header comment and "Recording window timezone" above) - so "22:10" below means "the first
-tick after a given city's local 22:00 + 10 min", not a single simultaneous global event.
+(e.g. Prague/Rome/Turin/Szczecin all recording in step with Poland). Nothing on the GitHub side
+runs on a fixed daily clock anymore either (fixed 2026-07-16, prompted by adding Boston - see the
+note under "VEHICLE_POSITIONS_URL reference" above): `sweep_and_upload.sh`, the healthcheck, and
+the phone's recording services are each independently self-gated on a given city's own local
+time, not a shared trigger - so every "~HH:MM" below means "the first poll tick after this
+condition becomes true for this city", not a single simultaneous global event.
 
 ```
 Phone (Termux)                                   GitHub (GISBoost/easy-GTFS-RT)
@@ -116,9 +116,6 @@ Phone (Termux)                                   GitHub (GISBoost/easy-GTFS-RT)
        wakes up, starts recording that city
        (self-healing: runit restarts it if
        Android kills the process)
-                                                   21:00  healthcheck: alerts via WhatsApp
-                                                          listing any city whose raw
-                                                          release is still missing today
 22:00  recording window ends (this city's own
        local clock)
 ~22:10 sweep_and_upload.sh (cron, every 15 min,
@@ -135,10 +132,18 @@ Phone (Termux)                                   GitHub (GISBoost/easy-GTFS-RT)
                                                           GTFS, publishes
                                                           "<city>-realized-<date>-phone" release,
                                                           WhatsApp notify
-                                                   22:15  schedule fallback - expands to every
-                                                          configured city; each city's own
-                                                          idempotency guard makes an
-                                                          already-built one a fast no-op
+                                                   ~22:10 healthcheck (cron, every 15 min, all
+                                                          day, same pattern) reaches the first
+                                                          tick past this city's own window+margin
+                                                          and finds no raw release yet: alerts via
+                                                          WhatsApp once, then stays silent for the
+                                                          rest of the day for that city
+       (if the dispatch call above itself
+       failed - e.g. a network hiccup - the
+       next sweep tick retries just that call,
+       every 15 min, until it succeeds; no
+       GitHub-side fallback needed for this
+       anymore)
 reboot (any time) start-services.sh (Termux:Boot)
        brings every city's recording service
        back up automatically, no manual
@@ -162,7 +167,7 @@ healthcheck, and TX-7/TX-8's workflow half live in the `easy-GTFS-RT` repo
 | `record_supervised.sh <city>` | TX-2 (+TX-8) | continuously, one instance per city, supervised by `termux-services` | Self-healing loop: sleeps until 06:00, records the *remaining* window for that city, restarts if killed |
 | `service/family-a-record-lodz/run` | TX-2 (+TX-8) | invoked by `runit` | The `termux-services` entry point that execs `record_supervised.sh lodz` - one such service dir per city |
 | `boot/start-services.sh` | TX-2 (boot-survival addendum) | invoked by Termux:Boot after every reboot | Starts `runsvdir` so every city's recording resumes without opening the Termux app manually |
-| `sweep_and_upload.sh` | TX-3 (+TX-7, +TX-8) | daily at 22:10, via `cronie` | Per configured city: uploads unsent recordings as a raw GitHub pre-release, then fires a `repository_dispatch` event (carrying that city's id) to start its build immediately |
+| `sweep_and_upload.sh` | TX-3 (+TX-7, +TX-8) | every 15 min, all day, via `cronie` | Per configured city: uploads unsent recordings as a raw GitHub pre-release once that city's own local window has closed, then fires (and retries, if needed) a `repository_dispatch` event (carrying that city's id) to start its build immediately |
 | `record_custom.sh <city>` | TX-5 (+TX-8) | manually, on demand | `record_custom.sh <city_id> <duration_min> <interval_sec> <suffix>` - one-off recording outside the normal window |
 
 ## One-time phone setup (how this was built)
@@ -235,8 +240,9 @@ step 1 before touching the phone (a `repository_dispatch` naming a city not yet 
 `config/cities.json` fails loudly, by design):
 
 1. In `easy-GTFS-RT`: add a `<city_id>` key to `config/cities.json` (`display_name`,
-   `static_gtfs_url`), PR + merge to `main`. Required first - triggers only evaluate the workflow
-   file (and the `config/cities.json` it reads) from the default branch.
+   `static_gtfs_url`, and, if the city isn't in Poland's timezone, `timezone` too - see "Multi-city
+   config" above), PR + merge to `main`. Required first - triggers only evaluate the workflow file
+   (and the `config/cities.json` it reads) from the default branch.
 2. On the phone: create `~/easy-gtfs-rt-termux/cities/<city_id>.env` with that city's
    `VEHICLE_POSITIONS_URL` (step 8 above) and, if the city isn't in Poland's timezone, its
    `TIMEZONE` too (see "Recording window timezone" above), `chmod 600`.
@@ -326,20 +332,41 @@ down`/`up` only needed for files a `family-a-record-<city>` service actually run
   the `config/cities.json` key in `easy-GTFS-RT`. A mismatch means that city's
   `repository_dispatch` payload names a key the build workflow can't find - it fails loudly in the
   `resolve_targets` job (by design), it does not silently skip the city.
-- **GitHub Actions `schedule:` cron has no DST awareness.** The build workflow
-  (`easy-GTFS-RT/.github/workflows/family_a_build_and_notify_from_phone.yml`) needs its cron value
-  manually flipped between summer (CEST, UTC+2) and winter (CET, UTC+1) - currently
-  `"15 20 * * *"` (22:15 CEST). Since TX-7, this only affects the **fallback** path - the primary
-  trigger (`repository_dispatch`, fired by `sweep_and_upload.sh`) doesn't depend on this cron at
-  all - but still needs flipping so the fallback stays correct for the rare case it's actually
-  needed (since TX-8, the fallback fires for *every* configured city, not just one). The
-  healthcheck workflow (`family_a_phone_healthcheck.yml`) has the same caveat for its 21:00 check,
-  independent of this.
+- **The build workflow's `schedule:` fallback was removed 2026-07-16** (not just DST-flipped -
+  deleted). It used to be a fixed 22:15 Europe/Warsaw cron covering a dispatch call that fails
+  after its upload already succeeded. Two problems: a single fixed Warsaw time can't safely cover
+  a city far from Warsaw's offset (Boston's window doesn't close until Warsaw-local ~04:00 the
+  *next* day - the fallback could only ever catch it a full day late), and this project already
+  hit this exact failure mode once before - `family_a_build_and_notify.yml` (FA-8, commit
+  `e7dba56`, 2026-07-13) dropped an almost identical fallback after GitHub's schedule queue
+  delayed a run past local midnight, its date resolved to the wrong day, and it sent a spurious
+  failure notification for a day that had already built successfully minutes earlier. Replaced by
+  fixing the actual gap at the source instead: see the next bullet. Manual recovery is still
+  `workflow_dispatch` (with its `date`/`city` inputs), same as before.
+- **`sweep_and_upload.sh` retries a failed `repository_dispatch` call** (added 2026-07-16,
+  alongside removing the fallback above). Upload and dispatch are two separate `curl` calls, so a
+  transient failure of just the second one used to mean that city's build never started that day,
+  with no future sweep tick ever retrying (once every directory was `.uploaded`, Gate 2 skipped
+  the city entirely, dispatch included). A per-city-per-date
+  `.dispatched_<city>_<date>` marker (independent of the per-directory `.uploaded` markers) now
+  keeps a city eligible for a dispatch-only retry, every 15 minutes, until it actually succeeds -
+  same reliability class the upload retries already had.
+- **The healthcheck now polls every 15 minutes, per city, instead of once daily at a fixed Warsaw
+  time** (fixed 2026-07-16, same motivation and shape as `sweep_and_upload.sh`'s own gates below).
+  `config/cities.json` gained a `timezone` field (mirrors the phone's `TIMEZONE`, same
+  `Europe/Warsaw` fallback) so the healthcheck can gate each city on its own local window+margin
+  before judging it missing. A still-missing city doesn't re-alert every tick all night: the first
+  detection creates a throwaway `healthcheck-alert-<city>-<date>` marker release (same
+  try-then-treat-as-already-done idiom used elsewhere in this codebase), and later ticks for an
+  already-alerted city stay silent.
 - **The `repository_dispatch` `event_type` string (`"phone-sweep-complete"`) is an exact,
   case-sensitive contract** between `sweep_and_upload.sh` and the workflow's
   `on.repository_dispatch.types` list - a typo on either side means the event is silently dropped
-  by GitHub with no error anywhere, not even in the Actions log (the build just quietly falls back
-  to the 22:15 schedule instead). Keep both in sync if either ever changes.
+  by GitHub with no error anywhere, not even in the Actions log. Since the schedule fallback was
+  removed, there's no other automatic path that would catch a mismatch here - a typo would show up
+  as `sweep_and_upload.sh` logging "Dispatched build..." forever while no build ever runs (and the
+  healthcheck eventually alerting, since the raw release itself did upload but nothing consumed
+  it). Keep both in sync if either ever changes.
 - **`family_a/cli.py` always imports `numpy`/`pandas`**, even for the plain `record` subcommand -
   the phone needs the full `requirements.txt`, not just recorder-only dependencies. This is a
   deliberate decision (not touching shared `cli.py` for one track) - see PRD section 3.
@@ -349,8 +376,9 @@ down`/`up` only needed for files a `family-a-record-<city>` service actually run
   call, for every city, so an expired token silently disables the fast-build path for all of them
   at once, not just uploads. Failures are logged as a `WARNING:` line (not a crash - the script
   has no `set -e`), so there's no direct alert. The first visible sign is the healthcheck workflow
-  starting to send a WhatsApp "no raw recording found" alert every evening, listing every affected
-  city, since the raw release never gets created. Renew at
+  starting to send a WhatsApp "no raw recording found" alert once daily per affected city (its
+  own dedup marker prevents repeats past the first detection - see the healthcheck bullet above),
+  since the raw release never gets created. Renew at
   [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens),
   same scope (`Contents: Read and write` on `GISBoost/easy-GTFS-RT` only), then update the
   `GH_TOKEN` line in `~/.easy-gtfs-rt-termux.env` on the phone.
