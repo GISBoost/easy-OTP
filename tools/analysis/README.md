@@ -183,10 +183,10 @@ Flags:
   `--chart-tick-interval-minutes` (default `30`), `--chart-tick-label-rotation` (default `45`),
   `--chart-line-color` (default `tab:red`), `--chart-bar-color` (default `grey`) — same knobs the
   old CONFIG block exposed, now CLI flags.
-- `--chart-title-prefix` (default: none) — an optional extra line shown above the chart's title,
-  e.g. `--chart-title-prefix "Lodz — 2026-07-15"`. The script has no notion of "city" or "date"
-  itself (it only ever sees GTFS zips); the caller supplies this when it has that context — see
-  "Used automatically in CI" below.
+- `--chart-title-prefix` (default: none) — optional text prepended to the chart's title as
+  `<prefix> — <title>`, e.g. `--chart-title-prefix "Lodz — 2026-07-15"`. The script has no notion
+  of "city" or "date" itself (it only ever sees GTFS zips); the caller supplies this when it has
+  that context — see "Used automatically in CI" below.
 
 **Output** (all under `--out-prefix`):
 - `<prefix>_summary.csv` — mean / mean(|delay|) / stdev / min / max delay, plus count and % of

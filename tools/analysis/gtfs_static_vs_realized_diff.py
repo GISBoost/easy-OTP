@@ -77,9 +77,9 @@ Output (all written under --out-prefix):
     non-zero-delay rows, or --no-chart is passed - the CLI reports this on
     stdout either way so a calling script (e.g. a CI step deciding whether
     to `gh release upload` this file) can tell whether it exists without
-    guessing. --chart-title-prefix optionally adds a line above the title
-    (e.g. a city name and date), since the script itself has no notion of
-    either - the caller (e.g. easy-GTFS-RT's per-city build workflow) is
+    guessing. --chart-title-prefix optionally prepends "<prefix> — " to the
+    title (e.g. a city name and date), since the script itself has no notion
+    of either - the caller (e.g. easy-GTFS-RT's per-city build workflow) is
     what knows that context.
 """
 from __future__ import annotations
@@ -358,9 +358,11 @@ def plot_mean_delay(
         filtered_rows.append(row)
 
     if not filtered_rows:
+        start_label = f"{start_hour}:00" if start_hour is not None else "start"
+        end_label = f"{end_hour}:00" if end_hour is not None else "end"
         print(
             f"\nNo non-zero-delay rows fall inside the configured chart window "
-            f"({start_hour}:00-{end_hour}:00). Skipping chart."
+            f"({start_label}-{end_label}). Skipping chart."
         )
         return False
 
@@ -409,7 +411,7 @@ def plot_mean_delay(
         "zero-delay rows excluded)"
     )
     if title_prefix:
-        title = f"{title_prefix}\n{title}"
+        title = f"{title_prefix} — {title}"
     ax.set_title(title)
     # Default (no explicit --chart-start-hour/--chart-end-hour) crops tightly to
     # the actual measured data - the first/last bucket that has any observation -
@@ -462,7 +464,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chart-end-hour", type=int, default=None, help="Last hour shown on the chart (default: auto-cropped to the latest measured bucket).")
     parser.add_argument("--chart-tick-interval-minutes", type=int, default=30, help="Spacing between x-axis ticks, in minutes (default: 30).")
     parser.add_argument("--chart-tick-label-rotation", type=int, default=45, help="Degrees to rotate x-axis tick labels (default: 45).")
-    parser.add_argument("--chart-title-prefix", default=None, help="Optional line shown above the chart's title (e.g. 'Lodz — 2026-07-15'). Default: no extra line.")
+    parser.add_argument("--chart-title-prefix", default=None, help="Optional text prepended to the chart's title as '<prefix> — <title>' (e.g. 'Lodz — 2026-07-15'). Default: no prefix.")
     parser.add_argument("--chart-line-color", default="tab:red", help="Colour of the mean-delay line (default: tab:red).")
     parser.add_argument("--chart-bar-color", default="grey", help="Colour of the observation-count bars (default: grey).")
     return parser
