@@ -183,6 +183,10 @@ Flags:
   `--chart-tick-interval-minutes` (default `30`), `--chart-tick-label-rotation` (default `45`),
   `--chart-line-color` (default `tab:red`), `--chart-bar-color` (default `grey`) — same knobs the
   old CONFIG block exposed, now CLI flags.
+- `--chart-title-prefix` (default: none) — an optional extra line shown above the chart's title,
+  e.g. `--chart-title-prefix "Lodz — 2026-07-15"`. The script has no notion of "city" or "date"
+  itself (it only ever sees GTFS zips); the caller supplies this when it has that context — see
+  "Used automatically in CI" below.
 
 **Output** (all under `--out-prefix`):
 - `<prefix>_summary.csv` — mean / mean(|delay|) / stdev / min / max delay, plus count and % of
@@ -210,5 +214,9 @@ Flags:
 right after publishing that day's realized GTFS release, and best-effort-uploads the resulting
 chart + summary CSV onto the same release (never blocking the release itself — see that
 workflow's "Generate static-vs-realized diff chart" step; it does not pass `--detail-csv`, so
-that file is never produced or uploaded there). Re-running it yourself against any day's released
-static + realized zips reproduces exactly what that step does.
+that file is never produced or uploaded there). It does pass `--chart-title-prefix "<display
+name> — <date>"`, using that city's `config/cities.json` `display_name` and the day being built,
+so the chart is self-identifying once downloaded from the release rather than a bare "Mean delay
+by scheduled time". Re-running it yourself against any day's released static + realized zips
+reproduces exactly what that step does (add your own `--chart-title-prefix` if you want the same
+labelling).
