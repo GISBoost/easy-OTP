@@ -123,6 +123,19 @@ silently dropped.
 
 ## GTFS comparison script (plain Python, no QGIS)
 
+Two variants of the same underlying comparison exist side by side:
+
+- **`gtfs_static_vs_realized_diff.py`** — the CLI version (below), used automatically by
+  `easy-GTFS-RT`'s phone-build workflow. Fixed defaults, no in-place editing needed.
+- **`gtfs_static_vs_realized_diff_config.py`** — the original CONFIG-block version, restored
+  as its own file (2026-07-16) for ad-hoc runs where you want to hand-edit parameters (paths,
+  chart hour window, bucket/tick sizing, colours) directly in the script rather than pass CLI
+  flags each time — same convention as the isochrone/population scripts above. Not used by any
+  workflow; edit the CONFIG block at the top, then run `py gtfs_static_vs_realized_diff_config.py`
+  with no arguments. Logic is otherwise identical to the CLI version as of the commit just before
+  the CLI conversion (`5c94dd1`) — the two will drift apart over time since edits to one aren't
+  mirrored to the other.
+
 ### `gtfs_static_vs_realized_diff.py`
 
 **What it does:** compares a static GTFS feed against its Family A "realized" reconstruction
