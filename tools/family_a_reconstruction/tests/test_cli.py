@@ -269,6 +269,7 @@ def _make_match_args(tmp_path, **overrides):
         static = None
         out = None
         max_perpendicular_dist_m = 100.0
+        exclude_route_id = []
 
     ns = _NS()
     for key, value in overrides.items():

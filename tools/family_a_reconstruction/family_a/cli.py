@@ -234,7 +234,9 @@ def _cmd_match(args: argparse.Namespace) -> int:
         print(static_error, file=sys.stderr)
         return 1
 
-    trip_shapes, shapes, fallback_used = resolve_trip_shapes(args.static)
+    trip_shapes, shapes, fallback_used = resolve_trip_shapes(
+        args.static, exclude_route_ids=frozenset(args.exclude_route_id)
+    )
     if fallback_used:
         print(
             "Warning: shapes.txt not found in static GTFS - falling back to "
@@ -521,6 +523,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=100.0,
         help="Reject matches farther than this from the route, in metres (default: 100)",
+    )
+    p_match.add_argument(
+        "--exclude-route-id",
+        action="append",
+        default=[],
+        metavar="ROUTE_ID",
+        help=(
+            "Drop this route_id's trips before matching (repeatable). For a feed where a "
+            "whole route/agency's real-time trip_id isn't a reliable one-trip-per-day "
+            "identifier - e.g. Bucharest's Metrorex metro (route_id 968-971,999), whose "
+            "trip_id recurs for unrelated departures hours apart, corrupting distance-along-"
+            "shape sequences into false multi-hour 'trips'. Excluded trips simply produce no "
+            "matched rows, so 'build' passes their static schedule through unchanged - see "
+            "matcher.load_trip_shape_index's docstring."
+        ),
     )
     p_match.set_defaults(func=_cmd_match)
 

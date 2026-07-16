@@ -17,6 +17,7 @@ from family_a.matcher import (
     load_trip_shape_index,
     match_snapshots,
     project_point_to_polyline,
+    resolve_trip_shapes,
     snapshot_feed_timestamp,
 )
 
@@ -187,6 +188,28 @@ def test_load_trip_shape_index_skips_trips_without_shape_id(tmp_path):
         )
     index = load_trip_shape_index(str(path))
     assert index == {"trip1": "shape1"}
+
+
+def test_load_trip_shape_index_excludes_given_route_ids(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "trips.txt",
+            "trip_id,route_id,shape_id\n"
+            "trip1,routeA,shape1\n"
+            "trip2,routeB,shape1\n",
+        )
+    index = load_trip_shape_index(str(path), exclude_route_ids=frozenset({"routeB"}))
+    assert index == {"trip1": "shape1"}
+
+
+def test_resolve_trip_shapes_excludes_given_route_ids(tmp_path):
+    gtfs = _make_gtfs_zip(tmp_path, with_shapes=True)
+    trip_shapes, shapes, fallback_used = resolve_trip_shapes(
+        str(gtfs), exclude_route_ids=frozenset({"routeA"})
+    )
+    assert trip_shapes == {}
+    assert fallback_used is False
 
 
 # ---------------------------------------------------------------------------

@@ -183,8 +183,22 @@ def _read_trip_route_map(zip_path: str) -> dict:
 DetailRow = tuple[str, str, int, str, int, int, int]
 
 
-def build_diff(static_zip: str, realized_zip: str, delay_time_field: str = "departure_time") -> list[DetailRow]:
+def build_diff(
+    static_zip: str,
+    realized_zip: str,
+    delay_time_field: str = "departure_time",
+    exclude_route_ids: frozenset[str] = frozenset(),
+) -> list[DetailRow]:
     """Join static and realized stop_times.txt on (trip_id, stop_id, stop_sequence).
+
+    *exclude_route_ids* drops matched rows whose route_id (from static
+    trips.txt) is in the set, before delays are computed - for a route whose
+    real-time trip_id isn't a reliable one-trip-per-day identifier (e.g.
+    Bucharest's Metrorex metro, see family_a.matcher.load_trip_shape_index's
+    docstring), so it doesn't skew this report's per-route or "ALL routes"
+    stats with multi-hour/multi-day false deltas. This is purely a reporting
+    filter - it does not affect --realized itself; re-run family_a.cli match
+    with --exclude-route-id if the underlying build should skip it too.
 
     Raises RuntimeError (with a message suitable for printing directly, no
     traceback needed) if the two feeds share no matching rows at all.
@@ -198,6 +212,14 @@ def build_diff(static_zip: str, realized_zip: str, delay_time_field: str = "depa
     matched_keys = set(static_times) & set(realized_times)
     static_only = set(static_times) - set(realized_times)
     realized_only = set(realized_times) - set(static_times)
+
+    if exclude_route_ids:
+        before = len(matched_keys)
+        matched_keys = {
+            key for key in matched_keys
+            if trip_route_map.get(key[0], "") not in exclude_route_ids
+        }
+        print(f"--exclude-route-id: dropped {before - len(matched_keys)} matched row(s) for route(s) {sorted(exclude_route_ids)}")
 
     print(f"stop_times.txt rows: static={len(static_times)}, realized={len(realized_times)}, matched={len(matched_keys)}")
     if static_only:
@@ -457,6 +479,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--delay-time-field", default="departure_time", choices=["departure_time", "arrival_time"],
         help="Which stop_times.txt column to diff (default: departure_time).",
     )
+    parser.add_argument(
+        "--exclude-route-id",
+        action="append",
+        default=[],
+        metavar="ROUTE_ID",
+        help=(
+            "Drop this route_id from the report (repeatable) - for a route whose real-time "
+            "trip_id isn't a reliable one-trip-per-day identifier, see build_diff's docstring."
+        ),
+    )
     parser.add_argument("--detail-csv", action="store_true", help="Also write <prefix>_detail.csv (one row per matched stop_times entry). Off by default - the summary CSV is always written regardless.")
     parser.add_argument("--no-chart", action="store_true", help="Skip PNG chart generation (the summary CSV is always written).")
     parser.add_argument("--chart-bucket-minutes", type=int, default=15, help="Chart x-axis bucket width in minutes (default: 15).")
@@ -474,7 +506,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = _build_arg_parser().parse_args(argv)
 
     try:
-        detail_rows = build_diff(args.static, args.realized, args.delay_time_field)
+        detail_rows = build_diff(
+            args.static, args.realized, args.delay_time_field,
+            exclude_route_ids=frozenset(args.exclude_route_id),
+        )
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

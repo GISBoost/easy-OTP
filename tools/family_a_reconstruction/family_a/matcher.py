@@ -103,18 +103,32 @@ def load_shapes(gtfs_zip_path: str) -> dict[str, list[tuple[float, float]]]:
     }
 
 
-def load_trip_shape_index(gtfs_zip_path: str) -> dict[str, str]:
+def load_trip_shape_index(
+    gtfs_zip_path: str, exclude_route_ids: frozenset[str] = frozenset()
+) -> dict[str, str]:
     """Load trips.txt into trip_id -> shape_id.
 
     Trips with an empty/missing shape_id column are excluded — such a trip
     can never resolve to a real shape, so match_snapshots's plain dict
     lookup naturally buckets it under "unknown_shape" without special-casing.
+
+    *exclude_route_ids* (route_id column, not trip_id) is excluded the same
+    way — a trip whose route isn't in the returned index is simply
+    "unknown_shape" to match_snapshots, no different from one lacking a
+    shape_id. Added for feeds where a whole agency/mode's real-time trip_id
+    isn't a reliable one-trip-per-day identifier (observed on Bucharest's
+    Metrorex metro, 2026-07-16: the same trip_id recurs for unrelated real
+    departures hours apart, and the simple trajectory-unaware matcher stitches
+    them into one fictitious multi-hour "trip" — see this module's own
+    docstring on trajectory continuity being out of scope for a proper fix).
     """
     trip_shapes: dict[str, str] = {}
     with zipfile.ZipFile(gtfs_zip_path) as zf:
         with zf.open("trips.txt") as fh:
             reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
             for row in reader:
+                if row.get("route_id", "") in exclude_route_ids:
+                    continue
                 shape_id = row.get("shape_id", "")
                 if shape_id:
                     trip_shapes[row["trip_id"]] = shape_id
@@ -193,7 +207,7 @@ def load_stop_locations(gtfs_zip_path: str) -> dict[str, tuple[float, float]]:
 
 
 def resolve_trip_shapes(
-    gtfs_zip_path: str,
+    gtfs_zip_path: str, exclude_route_ids: frozenset[str] = frozenset()
 ) -> tuple[dict[str, str], dict[str, list[tuple[float, float]]], bool]:
     """Resolve (trip_shapes, shapes, fallback_used) for a static GTFS zip.
 
@@ -203,19 +217,38 @@ def resolve_trip_shapes(
     can do a uniform shapes.get(trip_shapes.get(trip_id)) lookup regardless of
     which loader produced the data.
 
+    *exclude_route_ids* — see load_trip_shape_index. The fallback path has no
+    route_id of its own (load_fallback_shapes_from_stops only reads
+    stops.txt/stop_times.txt), so excluded trip_ids are looked up here via a
+    second, minimal trips.txt pass and dropped before being merged in -
+    default empty, callers that never pass it (build's own resolve_trip_shapes
+    call) see no behavior change.
+
     Factored out of what was cli.py's _cmd_match inline logic so that FA-3's
     build command resolves shapes identically to FA-2's match command for the
     same --static input - duplicating this logic would risk the two drifting
     apart, which would silently misalign build's stop distances against the
     distance_along_shape_m values match already wrote out.
     """
-    trip_shapes = load_trip_shape_index(gtfs_zip_path)
+    trip_shapes = load_trip_shape_index(gtfs_zip_path, exclude_route_ids=exclude_route_ids)
     shapes = load_shapes(gtfs_zip_path)
 
     fallback_used = False
     if not shapes:
         fallback_used = True
         fallback_shapes = load_fallback_shapes_from_stops(gtfs_zip_path)
+        if exclude_route_ids:
+            trip_routes: dict[str, str] = {}
+            with zipfile.ZipFile(gtfs_zip_path) as zf:
+                with zf.open("trips.txt") as fh:
+                    reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
+                    for row in reader:
+                        trip_routes[row["trip_id"]] = row.get("route_id", "")
+            fallback_shapes = {
+                trip_id: polyline
+                for trip_id, polyline in fallback_shapes.items()
+                if trip_routes.get(trip_id, "") not in exclude_route_ids
+            }
         for trip_id, polyline in fallback_shapes.items():
             shapes[trip_id] = polyline
             trip_shapes[trip_id] = trip_id
