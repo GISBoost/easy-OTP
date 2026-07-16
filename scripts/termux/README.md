@@ -48,6 +48,8 @@ zone, so `TIMEZONE` is optional for them - only cosmetic if set). For the EU com
 | `sofia` | `Europe/Sofia` |
 | `bucharest` | `Europe/Bucharest` |
 | `lisbon` | `Europe/Lisbon` |
+| `boston` | `America/New_York` |
+| `brisbane` | `Australia/Brisbane` |
 
 Without this, every city's recording window was silently evaluated in Europe/Warsaw wall-clock
 time regardless of the city's real timezone - for cities one hour ahead of Poland (Vilnius, Sofia,
@@ -73,6 +75,8 @@ not a re-run of the discovery spike. All verified `auth=none` (no API key needed
 | `sofia` | `https://gtfs.sofiatraffic.bg/api/v1/vehicle-positions` |
 | `bucharest` | `https://gtfs.tpbi.ro/api/gtfs-rt/vehiclePositions` |
 | `lisbon` | `https://gateway.carris.pt/gateway/gtfs/api/v2.11/GTFS/realtime/vehiclepositions` |
+| `boston` | `https://cdn.mbta.com/realtime/VehiclePositions.pb` |
+| `brisbane` | `https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions` |
 
 Notes from the spike:
 - **Prague (Golemio)** has historically required a free `X-Access-Token` for some endpoints; this
@@ -81,6 +85,19 @@ Notes from the spike:
   before relying on a given day's static feed for matching.
 - **Lisbon** is the Carris city-core feed specifically, distinct from Carris Metropolitana (the
   wider metro-area operator) - don't confuse the two if searching for alternates later.
+- **Boston (MBTA)** and **Brisbane (TransLink SEQ)** were verified 2026-07-16, both `auth=none`.
+  Boston is `America/New_York` (UTC-4 in July), 6h behind Warsaw's summer offset - its recording
+  window doesn't close until Warsaw-local ~04:00 the *next* day, which is well past both the
+  healthcheck's fixed 21:00 Warsaw check and the build workflow's fixed 22:15 Warsaw fallback
+  cron (see "Known gotchas" - GH Actions cron has no per-city timezone awareness). This means
+  Boston will trigger a nightly false "missing" WhatsApp alert from the healthcheck workflow even
+  when nothing is wrong (the primary `repository_dispatch` path already handles Boston correctly
+  via `sweep_and_upload.sh`'s per-city gates - only the healthcheck/fallback's own fixed-Warsaw-time
+  design is affected). Accepted as a known false-positive for now (2026-07-16) rather than fixed -
+  see the "GitHub Actions `schedule:` cron has no DST awareness" gotcha for the pre-existing,
+  now-materialized limitation. Brisbane (`Australia/Brisbane`, UTC+10, no DST) is *ahead* of
+  Warsaw instead, so its window closes at Warsaw-local ~14:00 the *same* day - well before either
+  check runs, no false alerts.
 
 ## Pipeline overview
 
