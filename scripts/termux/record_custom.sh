@@ -22,13 +22,18 @@ source "$HOME/easy-gtfs-rt-termux/cities/${CITY}.env"
 source "$HOME/easy-gtfs-rt-termux/venv/bin/activate"
 termux-wake-lock
 
-RECORDING_DATE="$(TZ=Europe/Warsaw date +%F)"
+# See record_supervised.sh for why this isn't hardcoded to Europe/Warsaw - falls back to it only
+# when a city's cities/<city_id>.env doesn't set TIMEZONE.
+ZONE="${TIMEZONE:-Europe/Warsaw}"
+RECORDING_DATE="$(TZ="$ZONE" date +%F)"
 OUT_DIR="$HOME/easy-gtfs-rt-termux/positions_${CITY}_${RECORDING_DATE}_${SUFFIX}"
 
 cd "$HOME/easy-OTP" && git pull --ff-only
 cd "$HOME/easy-OTP/tools/family_a_reconstruction"
 
-python -m family_a.cli record \
+# TZ="$ZONE" prefix so the subprocess's own datetime.now() calls (recording.json, snapshot
+# filenames) match the zone RECORDING_DATE above was computed in - see record_supervised.sh.
+TZ="$ZONE" python -m family_a.cli record \
   --url "$VEHICLE_POSITIONS_URL" \
   --out-dir "$OUT_DIR" \
   --duration-min "$DURATION_MIN" \

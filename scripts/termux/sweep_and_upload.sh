@@ -16,19 +16,31 @@ set -uo pipefail   # not -e: one failed city/directory shouldn't stop the others
 # Safe to re-run manually for testing: the .uploaded marker prevents duplicate
 # uploads of directories already sent.
 #
-# Usage: sweep_and_upload.sh [YYYY-MM-DD]  (optional - defaults to today, Europe/Warsaw).
-# The override is for manual recovery of a past day (e.g. re-sweeping after directories were
-# renamed to match a naming-scheme change) - the cron invocation never passes it.
+# Usage: sweep_and_upload.sh [YYYY-MM-DD]  (optional - defaults to each city's own local "today",
+# per its cities/<city_id>.env TIMEZONE - see record_supervised.sh). When given, the override
+# applies to every city uniformly (same calendar date string, not re-localized per city) - it's
+# for manual recovery of a past day (e.g. re-sweeping after directories were renamed to match a
+# naming-scheme change) - the cron invocation never passes it.
 
 source "$HOME/.easy-gtfs-rt-termux.env"
 REPO="GISBoost/easy-GTFS-RT"
-DATE="${1:-$(TZ=Europe/Warsaw date +%F)}"
+DATE_OVERRIDE="${1:-}"
 API="https://api.github.com"
 WORK_DIR="$HOME/easy-gtfs-rt-termux"
 
 for CITY_ENV in "$WORK_DIR"/cities/*.env; do
   [ -f "$CITY_ENV" ] || continue
   CITY="$(basename "$CITY_ENV" .env)"
+
+  # Reset before sourcing so a city whose .env doesn't set TIMEZONE doesn't inherit whatever an
+  # earlier city in this same loop left behind. Falls back to Europe/Warsaw, matching
+  # record_supervised.sh's default - directories for a city with no TIMEZONE set are still dated
+  # in Warsaw time, consistent with what actually recorded them.
+  unset TIMEZONE
+  source "$CITY_ENV"
+  ZONE="${TIMEZONE:-Europe/Warsaw}"
+  DATE="${DATE_OVERRIDE:-$(TZ="$ZONE" date +%F)}"
+
   TAG="positions-raw-${CITY}-${DATE}"
 
   # Find or create today's raw-data release for this city.

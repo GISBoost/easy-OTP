@@ -20,7 +20,15 @@ source "$HOME/easy-gtfs-rt-termux/cities/${CITY}.env"
 source "$HOME/easy-gtfs-rt-termux/venv/bin/activate"
 termux-wake-lock
 
-STARTUP_LOG="$HOME/easy-gtfs-rt-termux/logs/record_${CITY}_$(TZ=Europe/Warsaw date +%F).log"
+# Per-city IANA timezone (e.g. "Europe/Vilnius"), set in cities/<city_id>.env - controls what
+# real-world local hours the 06:00-22:00 window below actually covers. Falls back to
+# Europe/Warsaw (the historical, pre-TX-8 behavior) when a city's .env doesn't set it, so
+# existing cities need no changes. Do not default this to the phone's own system clock (also
+# Europe/Warsaw) implicitly via a bare `date` call - that would silently reintroduce the
+# Warsaw-anchored-for-every-city bug this variable exists to fix.
+ZONE="${TIMEZONE:-Europe/Warsaw}"
+
+STARTUP_LOG="$HOME/easy-gtfs-rt-termux/logs/record_${CITY}_$(TZ="$ZONE" date +%F).log"
 mkdir -p "$HOME/easy-gtfs-rt-termux/logs"
 # All city services share the one ~/easy-OTP checkout - if two start at once (e.g. every service
 # restarting together at boot), a concurrent `git pull` here can lose the lock race and fail; the
@@ -34,7 +42,7 @@ cd "$HOME/easy-OTP/tools/family_a_reconstruction"
 while true; do
   # 10# forces base-10: date +%H/%M zero-pads (e.g. "08"), which bash arithmetic
   # would otherwise parse as an invalid octal literal and abort the assignment.
-  NOW_MIN=$(( 10#$(TZ=Europe/Warsaw date +%H) * 60 + 10#$(TZ=Europe/Warsaw date +%M) ))
+  NOW_MIN=$(( 10#$(TZ="$ZONE" date +%H) * 60 + 10#$(TZ="$ZONE" date +%M) ))
   WINDOW_START=$(( 6 * 60 ))
   WINDOW_END=$(( 22 * 60 ))
 
@@ -50,11 +58,17 @@ while true; do
   fi
 
   REMAINING_MIN=$(( WINDOW_END - NOW_MIN ))
-  RECORDING_DATE="$(TZ=Europe/Warsaw date +%F)"
-  TIMESTAMP="$(TZ=Europe/Warsaw date +%H%M%S)"
+  RECORDING_DATE="$(TZ="$ZONE" date +%F)"
+  TIMESTAMP="$(TZ="$ZONE" date +%H%M%S)"
   OUT_DIR="$HOME/easy-gtfs-rt-termux/positions_${CITY}_${RECORDING_DATE}_${TIMESTAMP}"
 
-  python -m family_a.cli record \
+  # TZ="$ZONE" prefix (not just `export`) so the subprocess's own datetime.now() calls
+  # (recording.json's started_at/stopped_at, snapshot_*.pb filenames - see recorder.py) use the
+  # same zone as the window check above, instead of the phone's actual system clock (Warsaw).
+  # Without this, the recording would correctly happen during the city's local 06:00-22:00, but
+  # everything the Python process itself timestamps would still read as Warsaw wall-clock time -
+  # exactly the kind of mismatched-clocks confusion this whole change exists to avoid.
+  TZ="$ZONE" python -m family_a.cli record \
     --url "$VEHICLE_POSITIONS_URL" \
     --out-dir "$OUT_DIR" \
     --duration-min "$REMAINING_MIN" \

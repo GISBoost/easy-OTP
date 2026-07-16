@@ -15,8 +15,9 @@ Every city being recorded needs two matching entries, kept in sync by hand - **t
 must be identical (case-sensitive) in both places**:
 
 1. **On the phone**: `~/easy-gtfs-rt-termux/cities/<city_id>.env`, holding that city's
-   `VEHICLE_POSITIONS_URL`. `GH_TOKEN` stays shared, in the top-level
-   `~/.easy-gtfs-rt-termux.env` (one token covers all cities in the repo).
+   `VEHICLE_POSITIONS_URL` and, since 2026-07-16, an optional `TIMEZONE` (an IANA zone name, e.g.
+   `Europe/Vilnius`) - see "Recording window timezone" below. `GH_TOKEN` stays shared, in the
+   top-level `~/.easy-gtfs-rt-termux.env` (one token covers all cities in the repo).
 2. **In `easy-GTFS-RT`**: a `<city_id>` key in `config/cities.json` (`display_name` +
    `static_gtfs_url`) - this is what the build workflow and healthcheck use to know which cities
    to build/check.
@@ -25,6 +26,34 @@ A city id that exists in one place but not the other fails loudly (an unmapped c
 `repository_dispatch` payload makes the build workflow's `resolve_targets` job error out
 immediately) rather than silently doing nothing - see "Adding a new city" below for the full,
 tested-safe order of operations.
+
+### Recording window timezone
+
+`record_supervised.sh`'s 06:00-22:00 recording window (and `record_custom.sh`'s/
+`sweep_and_upload.sh`'s date stamping) is evaluated in a city's own `TIMEZONE` (an IANA zone name,
+e.g. `Europe/Vilnius`), set in that city's `cities/<city_id>.env`. If a city's `.env` doesn't set
+`TIMEZONE`, everything for that city falls back to `Europe/Warsaw` - the original, single-timezone
+behavior from before TX-8's multi-city expansion.
+
+**Set this for every city outside CET/CEST** (Prague, Rome, Turin, and Szczecin share Poland's
+zone, so `TIMEZONE` is optional for them - only cosmetic if set). For the EU comparison cities:
+
+| city_id | TIMEZONE |
+|---|---|
+| `szczecin` | `Europe/Warsaw` (optional - already the default) |
+| `prague` | `Europe/Prague` (optional - same offset as Warsaw) |
+| `rome` | `Europe/Rome` (optional - same offset as Warsaw) |
+| `turin` | `Europe/Rome` (optional - same offset as Warsaw) |
+| `vilnius` | `Europe/Vilnius` |
+| `sofia` | `Europe/Sofia` |
+| `bucharest` | `Europe/Bucharest` |
+| `lisbon` | `Europe/Lisbon` |
+
+Without this, every city's recording window was silently evaluated in Europe/Warsaw wall-clock
+time regardless of the city's real timezone - for cities one hour ahead of Poland (Vilnius, Sofia,
+Bucharest), the actual local hours captured were 07:00-23:00, not 06:00-22:00; for Lisbon (one
+hour behind), 05:00-21:00 - missing the last hour of evening service. Fixed 2026-07-16; add
+`TIMEZONE` to a city's `.env` and restart its `family-a-record-<city_id>` service to pick it up.
 
 ### VEHICLE_POSITIONS_URL reference for the EU comparison cities (spike-verified 2026-07-15)
 
@@ -54,6 +83,10 @@ Notes from the spike:
   wider metro-area operator) - don't confuse the two if searching for alternates later.
 
 ## Pipeline overview
+
+Times below (06:00/22:00/22:10/22:15/21:00) are each city's own local clock, per its `TIMEZONE`
+(see "Recording window timezone" above) - not simultaneous across cities unless they share a
+timezone (e.g. Prague/Rome/Turin/Szczecin all recording in step with Poland).
 
 ```
 Phone (Termux)                                   GitHub (GISBoost/easy-GTFS-RT)
@@ -179,7 +212,8 @@ step 1 before touching the phone (a `repository_dispatch` naming a city not yet 
    `static_gtfs_url`), PR + merge to `main`. Required first - triggers only evaluate the workflow
    file (and the `config/cities.json` it reads) from the default branch.
 2. On the phone: create `~/easy-gtfs-rt-termux/cities/<city_id>.env` with that city's
-   `VEHICLE_POSITIONS_URL` (step 8 above), `chmod 600`.
+   `VEHICLE_POSITIONS_URL` (step 8 above) and, if the city isn't in Poland's timezone, its
+   `TIMEZONE` too (see "Recording window timezone" above), `chmod 600`.
 3. Copy `service/family-a-record-lodz/` to `service/family-a-record-<city_id>/` (in this repo, or
    directly on the phone under `$PREFIX/var/service/`), edit the one `exec ... record_supervised.sh
    <city_id>` line to the new city id, `chmod +x run`, `sv-enable family-a-record-<city_id>`.
@@ -224,6 +258,14 @@ down`/`up` only needed for files a `family-a-record-<city>` service actually run
 - **`record_supervised.sh`'s `date +%H`/`+%M`** must go through `10#` (e.g. `10#$(date +%H)`) -
   otherwise bash parses zero-padded values like `08`/`09` as invalid octal and the script aborts.
   Already fixed in the current version; don't reintroduce a plain `$(( $(date +%H) * 60 ))`.
+- **A city's recording window and its `family_a.cli record` subprocess must use the same `TZ`.**
+  `record_supervised.sh`/`record_custom.sh` derive `ZONE` once from `cities/<city_id>.env`'s
+  `TIMEZONE` (default `Europe/Warsaw`) and pass it both to their own `date` calls AND as a
+  `TZ="$ZONE"` prefix on the `python -m family_a.cli record` invocation itself - the Python
+  process's internal `datetime.now()` calls (recording.json, snapshot filenames) otherwise follow
+  the phone's actual system clock (Europe/Warsaw), not the shell's temporary `TZ` override, which
+  would silently reintroduce a Warsaw/city clock mismatch even after the window itself is fixed.
+  See "Recording window timezone" above.
 - **Termux:Boot's execution context does not inherit Termux env vars** (`$PREFIX` in particular).
   `boot/start-services.sh` sets them explicitly - don't remove those exports.
 - **`sv-enable` cannot do anything at a cold boot** - it needs `runit`'s `runsvdir` already
