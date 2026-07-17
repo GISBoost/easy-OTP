@@ -170,7 +170,12 @@ def load_fallback_shapes_from_stops(
         with zf.open("stops.txt") as fh:
             reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
             for row in reader:
-                stop_latlon[row["stop_id"]] = (float(row["stop_lat"]), float(row["stop_lon"]))
+                lat, lon = row["stop_lat"], row["stop_lon"]
+                if not lat or not lon:
+                    # See load_stop_locations: some feeds leave these blank for
+                    # location_type entries that never appear in stop_times.
+                    continue
+                stop_latlon[row["stop_id"]] = (float(lat), float(lon))
 
         with zf.open("stop_times.txt") as fh:
             reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
@@ -198,11 +203,26 @@ def load_stop_locations(gtfs_zip_path: str) -> dict[str, tuple[float, float]]:
     keep each loader's contract simple and independently readable.
     """
     stop_latlon: dict[str, tuple[float, float]] = {}
+    skipped = 0
     with zipfile.ZipFile(gtfs_zip_path) as zf:
         with zf.open("stops.txt") as fh:
             reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
             for row in reader:
-                stop_latlon[row["stop_id"]] = (float(row["stop_lat"]), float(row["stop_lon"]))
+                lat, lon = row["stop_lat"], row["stop_lon"]
+                if not lat or not lon:
+                    # Real-world feeds (e.g. MBTA) leave stop_lat/stop_lon blank for
+                    # some location_type entries (stations, boarding areas, generic
+                    # nodes) that are never a stop_times reference point. Downstream
+                    # segment_stats.py already treats a missing stop_id as "skip this
+                    # segment", so dropping these here is safe, not a data loss.
+                    skipped += 1
+                    continue
+                stop_latlon[row["stop_id"]] = (float(lat), float(lon))
+    if skipped:
+        logger.warning(
+            "load_stop_locations: skipped %d stop(s) in %s with missing stop_lat/stop_lon.",
+            skipped, gtfs_zip_path,
+        )
     return stop_latlon
 
 

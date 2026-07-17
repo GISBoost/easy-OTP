@@ -14,6 +14,7 @@ from google.transit import gtfs_realtime_pb2
 from family_a.matcher import (
     load_fallback_shapes_from_stops,
     load_shapes,
+    load_stop_locations,
     load_trip_shape_index,
     match_snapshots,
     project_point_to_polyline,
@@ -257,6 +258,55 @@ def test_load_fallback_logs_warning(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         load_fallback_shapes_from_stops(str(gtfs))
     assert any("shapes.txt" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# load_stop_locations
+# ---------------------------------------------------------------------------
+
+
+def test_load_stop_locations_happy_path(tmp_path):
+    gtfs = _make_gtfs_zip(tmp_path)
+    locations = load_stop_locations(str(gtfs))
+    assert locations == {"s1": (0.0, 0.0), "s2": (0.01, 0.0), "s3": (0.02, 0.0)}
+
+
+def test_load_stop_locations_skips_blank_coordinates(tmp_path, caplog):
+    """Regression test: real-world feeds (e.g. MBTA) leave stop_lat/stop_lon
+    blank for some location_type entries (stations, boarding areas, generic
+    nodes) that never appear as a stop_times reference point. These rows must
+    be skipped, not crash the whole build.
+    """
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "stops.txt",
+            "stop_id,stop_lat,stop_lon\n"
+            "s1,0.0,0.0\n"
+            "s2,,\n"
+            "s3,0.02,0.0\n",
+        )
+    with caplog.at_level("WARNING"):
+        locations = load_stop_locations(str(path))
+    assert locations == {"s1": (0.0, 0.0), "s3": (0.02, 0.0)}
+    assert "s2" not in locations
+    assert any("skipped 1 stop" in record.message for record in caplog.records)
+
+
+def test_load_fallback_shapes_from_stops_skips_blank_coordinates(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,shape_id\ntrip1,routeA,\n")
+        zf.writestr(
+            "stops.txt",
+            "stop_id,stop_lat,stop_lon\ns1,0.0,0.0\ns2,,\ns3,0.02,0.0\n",
+        )
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,stop_id,stop_sequence\ntrip1,s1,0\ntrip1,s2,1\ntrip1,s3,2\n",
+        )
+    fallback = load_fallback_shapes_from_stops(str(path))
+    assert fallback["trip1"] == [(0.0, 0.0), (0.02, 0.0)]
 
 
 # ---------------------------------------------------------------------------
