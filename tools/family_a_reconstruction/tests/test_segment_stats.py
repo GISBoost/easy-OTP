@@ -13,6 +13,7 @@ import pytest
 from family_a.build_gtfs import StaticIndex
 from family_a.calendar_scope import time_bucket_for_seconds
 from family_a.interpolate import stop_distance_along_shape
+from family_a.matcher import cumulative_distances
 from family_a.segment_stats import (
     aggregate_segments,
     collect_segment_observations,
@@ -21,6 +22,10 @@ from family_a.segment_stats import (
 
 # Same straight north-south line used in test_matcher.py / test_interpolate.py.
 _STRAIGHT_LINE = [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0)]
+
+# Out-and-back loop mirroring shape 154679's exact structure (FA-11 handoff): the
+# coordinate (0.01, 0.0) occurs at a low index (1) and a high index (3).
+_LOOP_LINE = [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0), (0.01, 0.0), (0.0, 0.0)]
 
 _T0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
@@ -314,6 +319,126 @@ def test_collect_shape_cumulative_dist_and_trusted_stop_dist_omitted_matches_def
 
     assert without_params == with_none_params
     assert counts_without == counts_with_none
+
+
+# ---------------------------------------------------------------------------
+# collect_segment_observations - sequential monotonic stop-pattern resolution (FA-11)
+# ---------------------------------------------------------------------------
+
+
+def test_collect_late_stop_resolves_to_late_pass_reproducing_poznan_route151_pattern():
+    """End-to-end reproduction of the Poznań route 151 / shape 154679 case (FA-11
+    handoff): a 3-stop trip on an out-and-back loop, whose last stop sits on a
+    coordinate the shape's polyline also visits much earlier. Independent per-stop
+    resolution (today's pre-FA-11 bug) would anchor that last stop to the EARLY
+    pass, making the vehicle appear to reach it before the middle stop - a negative,
+    rejected segment time. FA-11's sequential resolver must anchor it to the LATE
+    pass instead, giving a small, plausible segment time.
+    """
+    cumulative = cumulative_distances(_LOOP_LINE)
+    idx = _make_static_index(
+        trips={"t1": ("R151", "0")},
+        stops={"t1": [(1, "A", 0, 0), (2, "B", 0, 0), (3, "C", 0, 0)]},
+    )
+    trip_shapes = {"t1": "loop_shape"}
+    shapes = {"loop_shape": _LOOP_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.02, 0.0), "C": (0.01, 0.0)}
+
+    # Real vehicle trajectory: passes A at t=0, B (the turnaround) at t=200, then C
+    # (the duplicated point) at t=260 - a genuine, correctly-ordered, monotonic
+    # position series matching the shape's own late pass through that coordinate.
+    matched = _matched_df([
+        ("t1", _t(0), cumulative[0]),
+        ("t1", _t(200), cumulative[2]),
+        ("t1", _t(260), cumulative[3]),
+        ("t1", _t(320), cumulative[4]),
+    ])
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+    )
+
+    key_ab = ("R151", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
+    key_bc = ("R151", "0", "B", "C", "WEEKDAY", time_bucket_for_seconds(200, 120))
+    assert segment_times[key_ab] == pytest.approx([200.0])
+    assert segment_times[key_bc] == pytest.approx([60.0])
+    assert counts["segments_observed"] == 2
+    assert counts["rejected_seg_time"] == 0
+
+
+def test_collect_pattern_cache_keyed_by_shape_and_stop_pattern_not_bare_shape_id():
+    """Two trips share one shape_id but differ in stop pattern - an express variant
+    skipping a middle stop the local variant serves. Deliberately overlapping
+    stop_sequence numbers (both trips have a seq=2, but it means a different
+    physical stop in each) so that a cache keyed by bare shape_id alone would leak
+    the local trip's seq=2 (the middle stop M) into the express trip's own seq=2
+    (stop B) lookup. The pattern-keyed cache (FA-11) must keep them independent.
+    """
+    cumulative = cumulative_distances(_STRAIGHT_LINE)
+    idx = _make_static_index(
+        trips={"t_local": ("RL", "0"), "t_express": ("RX", "0")},
+        stops={
+            "t_local": [(1, "A", 0, 0), (2, "M", 0, 0), (3, "B", 0, 0)],
+            "t_express": [(1, "A", 0, 0), (2, "B", 0, 0)],  # seq=2 is B here, not M
+        },
+    )
+    trip_shapes = {"t_local": "shared_shape", "t_express": "shared_shape"}
+    shapes = {"shared_shape": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "M": (0.01, 0.0), "B": (0.02, 0.0)}
+
+    # t_local processed first, populating the cache under a leak-prone key if the
+    # cache key were bare "shared_shape" alone.
+    matched = _matched_df([
+        ("t_local", _t(0), cumulative[0]),
+        ("t_local", _t(100), cumulative[1]),
+        ("t_local", _t(200), cumulative[2]),
+        ("t_express", _t(300), cumulative[0]),
+        ("t_express", _t(400), cumulative[2]),
+    ])
+
+    segment_times, _counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+    )
+
+    key_express_ab = ("RX", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(300, 120))
+    # If the cache leaked t_local's seq=2 (M's distance) into t_express's own seq=2
+    # (B), this segment would resolve to a fractional ~50s instead of the correct
+    # 100s (B's own true crossing, matching the vehicle's real 300->400 timing).
+    assert segment_times[key_express_ab] == pytest.approx([100.0])
+
+
+def test_collect_fully_trusted_trip_never_calls_resolve_stop_distances_for_pattern(monkeypatch):
+    """Documents/guards the all-or-nothing-per-trip design decision FA-11's branch
+    logic relies on (shape_dist.evaluate_trip_trust never trusts a subset of a
+    trip's stops): a fully trusted trip must skip the new sequential resolver
+    entirely, not just project_point_to_polyline (already proven not to be called,
+    by test_shape_dist.py's own _boom guards on that function).
+    """
+    def _boom(*args, **kwargs):
+        raise AssertionError("resolve_stop_distances_for_pattern must not be called for a fully trusted trip")
+
+    monkeypatch.setattr("family_a.segment_stats.resolve_stop_distances_for_pattern", _boom)
+
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    trusted_d_b = 5000.0  # deliberately far from the geometric value
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(100), trusted_d_b),
+    ])
+
+    trusted_stop_dist = {("t1", 1): 0.0, ("t1", 2): trusted_d_b}
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
+        trusted_stop_dist=trusted_stop_dist,
+    )
+
+    key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
+    assert segment_times[key] == pytest.approx([100.0])
+    assert counts["segments_observed"] == 1
 
 
 # ---------------------------------------------------------------------------

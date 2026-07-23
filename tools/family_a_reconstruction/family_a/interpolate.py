@@ -13,9 +13,26 @@ No QGIS / GDAL imports. Run tests: pytest tests/test_interpolate.py -v
 
 from __future__ import annotations
 
+import logging
+import math
 from datetime import datetime
 
-from family_a.matcher import project_point_to_polyline
+from family_a.matcher import _project_onto_segment, cumulative_distances, project_point_to_polyline
+
+logger = logging.getLogger(__name__)
+
+# PRD FA-11, "open questions" #3: backward slack (metres) allowed when
+# restricting resolve_stop_distances_for_pattern's search to polyline points
+# at/after the previous stop's resolved distance. Real feeds have minor,
+# legitimate non-monotonicity at stop clusters (depots, transfer hubs) - a
+# rigid ">=" with zero tolerance risks rejecting a legitimate case outright,
+# forcing an unwanted fallback to the unrestricted global search.
+#
+# NOT YET CONFIRMED BY MICHAŁ - this is a documented starting point ("tens of
+# metres"), not an empirically-tuned value. Flag any change, and report this
+# value's effect on the Poznań 07-18 re-run (inflated-segment count) back to
+# him per FA-11's acceptance criteria before treating it as final.
+DEFAULT_BACKWARD_TOLERANCE_M = 50.0
 
 
 def stop_distance_along_shape(
@@ -59,6 +76,105 @@ def stop_distance_along_shape(
         return trusted_dist_m
     dist_along_m, _perp_m = project_point_to_polyline(stop_lat, stop_lon, polyline, cumulative=cumulative)
     return dist_along_m
+
+
+def resolve_stop_distances_for_pattern(
+    polyline: list[tuple[float, float]],
+    ordered_stops: list[tuple[str, float, float]],
+    cumulative: list[float] | None = None,
+    backward_tolerance_m: float = DEFAULT_BACKWARD_TOLERANCE_M,
+    shape_id: str | None = None,
+    trip_id: str | None = None,
+) -> list[float]:
+    """Resolve a whole trip's ordered stop pattern's distance_along_shape_m together (FA-11).
+
+    *ordered_stops* is [(stop_id, lat, lon), ...] in stop_sequence order for one trip's
+    stop pattern. Returns a list of resolved distances, POSITIONALLY aligned with
+    ordered_stops (not a stop_id-keyed dict) - a stop_id can legitimately occur more
+    than once in one trip's pattern on a loop/out-and-back route, and collapsing to a
+    dict would silently corrupt exactly that case.
+
+    Replaces today's independent, context-free per-stop projection (each stop resolved
+    on its own via stop_distance_along_shape/project_point_to_polyline, with zero
+    awareness of the stop's place in the trip) with a SEQUENTIAL resolution that
+    enforces monotonicity along the shape's own cumulative-distance axis:
+
+    - The first stop (index 0) has no "previous" to anchor against, so it always uses
+      today's unrestricted global nearest-point search over the whole polyline -
+      unchanged, no special-cased distance-0 assumption (real trips don't always start
+      their shape at distance 0).
+    - Every later stop searches ONLY polyline points at cumulative_distance >=
+      (previously resolved distance - backward_tolerance_m), among which it picks the
+      perpendicular-nearest candidate (same lowest-index-wins tie-break as
+      project_point_to_polyline, just scoped to this restricted range). A segment is
+      only considered once its far endpoint reaches the threshold (cheap pre-filter),
+      but a straddling segment's actual projected point is separately re-checked
+      against the threshold too - otherwise its before-threshold portion could still
+      win, defeating the whole point of the restriction. This is what prevents a stop
+      that is late in stop_sequence from wrongly anchoring to an early pass of a
+      self-repeating/out-and-back shape merely because that pass has a lower polyline
+      index (the exact failure mode reproduced on Poznań route 151, shape 154679,
+      trip 3_1256050^+, stops 411->385).
+    - backward_tolerance_m is a real, non-zero slack, not a rigid ">=": real feeds have
+      minor, legitimate non-monotonicity at stop clusters (depots, transfer hubs), and a
+      rigid floor could reject a legitimate case outright. If NO segment satisfies the
+      constraint even with this slack (rare), this falls back to the full unrestricted
+      global search and logs a warning identifying shape_id/trip_id/stop_id - never a
+      hard error, the build must still complete regardless.
+
+    Does not eliminate anchoring ambiguity in 100% of cases (very densely overlapping
+    loops may still have edge cases) - this is risk reduction backed by the reproduced
+    example above, not a mathematical guarantee for every possible geometry.
+
+    Intended to be called once per distinct (shape_id, stop pattern) - cheap, one-time
+    cost, not per GPS observation (see segment_stats._resolve_pattern_distances, which
+    caches by exactly that key).
+    """
+    if cumulative is None:
+        cumulative = cumulative_distances(polyline)
+
+    resolved: list[float] = []
+    for idx, (stop_id, lat, lon) in enumerate(ordered_stops):
+        if idx == 0:
+            dist_along_m, _perp_m = project_point_to_polyline(lat, lon, polyline, cumulative=cumulative)
+            resolved.append(dist_along_m)
+            continue
+
+        threshold = resolved[idx - 1] - backward_tolerance_m
+        best_perp_m = math.inf
+        best_dist_along_m: float | None = None
+
+        for i in range(len(polyline) - 1):
+            if cumulative[i + 1] < threshold:
+                # Segment's far endpoint never reaches the threshold - no point on
+                # it can either. Cheap skip before doing the projection math.
+                continue
+            lat1, lon1 = polyline[i]
+            lat2, lon2 = polyline[i + 1]
+            dist_along_m, perp_m = _project_onto_segment(lat, lon, lat1, lon1, lat2, lon2, cumulative[i])
+            if dist_along_m < threshold:
+                # A straddling segment (starts before the threshold, ends at/after
+                # it) can still project onto its own before-threshold portion -
+                # that candidate must not count, or monotonicity isn't actually
+                # enforced despite the segment-level pre-filter above.
+                continue
+            if perp_m < best_perp_m:
+                best_perp_m = perp_m
+                best_dist_along_m = dist_along_m
+
+        if best_dist_along_m is None:
+            dist_along_m, _perp_m = project_point_to_polyline(lat, lon, polyline, cumulative=cumulative)
+            logger.warning(
+                "interpolate.py: no polyline segment satisfies the backward tolerance "
+                "(%.1fm) for shape_id=%s trip_id=%s stop_id=%s (pattern position=%d) - "
+                "falling back to unrestricted global search, resolved to %.1fm.",
+                backward_tolerance_m, shape_id, trip_id, stop_id, idx, dist_along_m,
+            )
+            resolved.append(dist_along_m)
+        else:
+            resolved.append(best_dist_along_m)
+
+    return resolved
 
 
 def interpolate_stop_time(

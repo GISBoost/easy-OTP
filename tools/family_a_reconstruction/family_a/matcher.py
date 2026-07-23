@@ -326,6 +326,68 @@ def resolve_trip_shapes(
 # ---------------------------------------------------------------------------
 
 
+def cumulative_distances(polyline: list[tuple[float, float]]) -> list[float]:
+    """Per-vertex cumulative haversine distance from the first vertex, in metres.
+
+    Extracted from project_point_to_polyline (FA-11) so FA-11's sequential
+    per-pattern resolver can build this once per shape and reuse it, same as
+    project_point_to_polyline already did internally when cumulative was
+    omitted. Same length as polyline; polyline[0] always maps to 0.0.
+    """
+    cumulative = [0.0] * len(polyline)
+    for i in range(1, len(polyline)):
+        cumulative[i] = cumulative[i - 1] + haversine_m(*polyline[i - 1], *polyline[i])
+    return cumulative
+
+
+def _project_onto_segment(
+    lat: float,
+    lon: float,
+    lat1: float,
+    lon1: float,
+    lat2: float,
+    lon2: float,
+    seg_start_cum: float,
+) -> tuple[float, float]:
+    """Project (lat, lon) onto segment (lat1,lon1)->(lat2,lon2). Returns (dist_along_m, perp_m).
+
+    dist_along_m is measured from the polyline's first vertex, i.e.
+    seg_start_cum (the segment start's own cumulative distance) plus the
+    haversine distance from the segment start to the projected point.
+
+    Extracted from project_point_to_polyline's per-segment loop body (FA-11)
+    so the same projection math can be reused by a restricted (index-range-
+    limited) search without duplicating it. Behaviour is unchanged - see
+    project_point_to_polyline's docstring for the planar-projection/haversine
+    rationale and the degenerate zero-length-segment handling below.
+    """
+    ax, ay = lon1, lat1
+    bx, by = lon2, lat2
+    px, py = lon, lat
+    abx, aby = bx - ax, by - ay
+    seg_len_sq = abx * abx + aby * aby
+
+    if seg_len_sq == 0.0:
+        # Degenerate zero-length segment (duplicate consecutive shape
+        # points) — the segment start is the only candidate.
+        t = 0.0
+    else:
+        t = ((px - ax) * abx + (py - ay) * aby) / seg_len_sq
+        t = max(0.0, min(1.0, t))  # clamp: projection outside the segment -> nearest endpoint
+
+    proj_lat = ay + t * aby
+    proj_lon = ax + t * abx
+
+    perp_m = haversine_m(lat, lon, proj_lat, proj_lon)
+    # Partial distance along THIS segment, measured with haversine on the
+    # actual projected coordinate (not t * full segment length) to stay
+    # consistent with how `cumulative` was built.
+    partial_m = haversine_m(lat1, lon1, proj_lat, proj_lon)
+    dist_along_m = seg_start_cum + partial_m
+
+    return dist_along_m, perp_m
+
+
 def project_point_to_polyline(
     lat: float,
     lon: float,
@@ -365,9 +427,7 @@ def project_point_to_polyline(
         return 0.0, haversine_m(lat, lon, *polyline[0])
 
     if cumulative is None:
-        cumulative = [0.0] * len(polyline)
-        for i in range(1, len(polyline)):
-            cumulative[i] = cumulative[i - 1] + haversine_m(*polyline[i - 1], *polyline[i])
+        cumulative = cumulative_distances(polyline)
 
     best_perp_m = math.inf
     best_dist_along_m = 0.0
@@ -376,29 +436,7 @@ def project_point_to_polyline(
         lat1, lon1 = polyline[i]
         lat2, lon2 = polyline[i + 1]
 
-        ax, ay = lon1, lat1
-        bx, by = lon2, lat2
-        px, py = lon, lat
-        abx, aby = bx - ax, by - ay
-        seg_len_sq = abx * abx + aby * aby
-
-        if seg_len_sq == 0.0:
-            # Degenerate zero-length segment (duplicate consecutive shape
-            # points) — the segment start is the only candidate.
-            t = 0.0
-        else:
-            t = ((px - ax) * abx + (py - ay) * aby) / seg_len_sq
-            t = max(0.0, min(1.0, t))  # clamp: projection outside the segment -> nearest endpoint
-
-        proj_lat = ay + t * aby
-        proj_lon = ax + t * abx
-
-        perp_m = haversine_m(lat, lon, proj_lat, proj_lon)
-        # Partial distance along THIS segment, measured with haversine on the
-        # actual projected coordinate (not t * full segment length) to stay
-        # consistent with how `cumulative` was built.
-        partial_m = haversine_m(lat1, lon1, proj_lat, proj_lon)
-        dist_along_m = cumulative[i] + partial_m
+        dist_along_m, perp_m = _project_onto_segment(lat, lon, lat1, lon1, lat2, lon2, cumulative[i])
 
         if perp_m < best_perp_m:
             best_perp_m = perp_m

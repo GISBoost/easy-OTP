@@ -23,7 +23,12 @@ import pandas as pd
 
 from family_a.build_gtfs import SegmentKey, segment_key_for
 from family_a.calendar_scope import day_type_for_date, time_bucket_for_seconds
-from family_a.interpolate import interpolate_stop_time, stop_distance_along_shape
+from family_a.interpolate import (
+    DEFAULT_BACKWARD_TOLERANCE_M,
+    interpolate_stop_time,
+    resolve_stop_distances_for_pattern,
+    stop_distance_along_shape,
+)
 
 if TYPE_CHECKING:
     from family_a.build_gtfs import StaticIndex
@@ -45,6 +50,7 @@ def collect_segment_observations(
     bucket_minutes: int = 120,
     shape_cumulative_dist: dict[str, list[float]] | None = None,
     trusted_stop_dist: dict[tuple[str, int], float] | None = None,
+    backward_tolerance_m: float = DEFAULT_BACKWARD_TOLERANCE_M,
 ) -> tuple[dict[SegmentKey, list[float]], dict[str, int]]:
     """For each trip's matched position series, interpolate every consecutive
     scheduled stop pair's crossing time and derive an observed segment
@@ -96,9 +102,23 @@ def collect_segment_observations(
     shape_dist.evaluate_shape_trust/evaluate_trip_trust. shape_cumulative_dist
     is looked up once per trip group by shape_id and threaded through to the
     geometric fallback so it lands on the same distance axis as a trustworthy
-    feed's own shape_dist_traveled; trusted_stop_dist is looked up per stop
-    by (trip_id, stop_sequence) and, when present, bypasses geometric
-    projection for that stop entirely.
+    feed's own shape_dist_traveled.
+
+    trusted_stop_dist (FA-10) is strictly all-or-nothing per trip
+    (shape_dist.evaluate_trip_trust only adds an entry for EVERY stop_sequence
+    of a trip once that trip's own shape_dist_traveled fill-rate is 100%,
+    never a subset) - so per trip group this function picks exactly one of two
+    paths, never mixes them within a trip:
+    - Fully trusted trip: every stop's distance comes straight from
+      trusted_stop_dist[(trip_id, seq)] - no geometric projection at all.
+    - Not trusted (the common case for feeds without a usable
+      shape_dist_traveled, e.g. Poznań/Szczecin/Gdańsk): the trip's whole
+      ordered stop pattern is resolved together, once, via FA-11's
+      interpolate.resolve_stop_distances_for_pattern (sequential, monotonicity-
+      enforced) instead of resolving each stop independently - see
+      _resolve_pattern_distances below. *backward_tolerance_m* is the slack
+      (metres) that resolver allows a later stop to sit behind the previous
+      stop's resolved distance before treating it as non-monotonic.
     """
     segment_times: dict[SegmentKey, list[float]] = defaultdict(list)
     counts = {
@@ -115,9 +135,17 @@ def collect_segment_observations(
 
     zone = zoneinfo.ZoneInfo(agency_tz)
 
-    # (shape_id, stop_id) -> distance_along_shape_m, scoped to this call only
-    # (many trips share a shape/stop; avoids stale-cache risk across calls).
-    distance_cache: dict[tuple[str, str], float] = {}
+    # (shape_id, tuple of stop_ids in trip order) -> {stop_sequence: distance_along_shape_m},
+    # scoped to this call only (many trips share a shape/pattern; avoids stale-cache risk
+    # across calls). Keyed by the FULL stop pattern (FA-11), not bare shape_id, so trips
+    # sharing a shape but a different stop subset/order (e.g. express vs. local variants
+    # on the same physical route) never reuse each other's resolution.
+    pattern_cache: dict[tuple[str, tuple[str, ...]], dict[int, float]] = {}
+
+    # Trips with ANY trusted_stop_dist entry have EVERY stop_sequence trusted
+    # (shape_dist.evaluate_trip_trust is all-or-nothing per trip) - precomputed once so
+    # the per-trip branch below is a single cheap membership check.
+    trusted_trip_ids = {tid for tid, _seq in trusted_stop_dist} if trusted_stop_dist else set()
 
     group_cols = ["trip_id", "recording_date"] if "recording_date" in matched.columns else ["trip_id"]
 
@@ -141,6 +169,13 @@ def collect_segment_observations(
 
         cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
 
+        trip_fully_trusted = trip_id in trusted_trip_ids
+        pattern_dist: dict[int, float] | None = None
+        if not trip_fully_trusted:
+            pattern_dist = _resolve_pattern_distances(
+                pattern_cache, shape_id, trip_id, stops, stop_locations, polyline, cumulative, backward_tolerance_m
+            )
+
         for idx in range(len(stops) - 1):
             seq_from, stop_from, _arr_from, _dep_from = stops[idx]
             seq_to, stop_to, _arr_to, _dep_to = stops[idx + 1]
@@ -149,15 +184,12 @@ def collect_segment_observations(
                 counts["missing_stop_location"] += 1
                 continue
 
-            trusted_from = trusted_stop_dist.get((trip_id, seq_from)) if trusted_stop_dist else None
-            trusted_to = trusted_stop_dist.get((trip_id, seq_to)) if trusted_stop_dist else None
-
-            d_from = _cached_stop_distance(
-                distance_cache, shape_id, stop_from, stop_locations, polyline, cumulative, trusted_from
-            )
-            d_to = _cached_stop_distance(
-                distance_cache, shape_id, stop_to, stop_locations, polyline, cumulative, trusted_to
-            )
+            if trip_fully_trusted:
+                d_from = trusted_stop_dist[(trip_id, seq_from)]
+                d_to = trusted_stop_dist[(trip_id, seq_to)]
+            else:
+                d_from = pattern_dist[seq_from]
+                d_to = pattern_dist[seq_to]
 
             t_from = interpolate_stop_time(position_series, d_from)
             t_to = interpolate_stop_time(position_series, d_to)
@@ -216,6 +248,47 @@ def _cached_stop_distance(
     if cache_key not in cache:
         lat, lon = stop_locations[stop_id]
         cache[cache_key] = stop_distance_along_shape(lat, lon, polyline, cumulative=cumulative)
+    return cache[cache_key]
+
+
+def _resolve_pattern_distances(
+    cache: dict[tuple[str, tuple[str, ...]], dict[int, float]],
+    shape_id: str,
+    trip_id: str,
+    stops: list[tuple],
+    stop_locations: dict[str, tuple[float, float]],
+    polyline: list[tuple[float, float]],
+    cumulative: list[float] | None,
+    backward_tolerance_m: float,
+) -> dict[int, float]:
+    """Memoizing wrapper around resolve_stop_distances_for_pattern (FA-11).
+
+    Cache key: (shape_id, tuple of stop_ids in trip order) - trips sharing a shape but a
+    different stop pattern/subset (e.g. express vs. local variants on the same physical
+    route) never reuse each other's resolution. Only used for trips that are NOT fully
+    covered by trusted_stop_dist (see collect_segment_observations's docstring on the
+    all-or-nothing-per-trip invariant this relies on).
+
+    Stops with no entry in stop_locations are excluded before resolving - mirrors
+    collect_segment_observations's own missing_stop_location check, which independently
+    counts them per stop pair - and are simply absent from the returned dict.
+    """
+    filtered = [(seq, stop_id) for seq, stop_id, *_rest in stops if stop_id in stop_locations]
+    seqs, stop_ids = zip(*filtered) if filtered else ((), ())
+    cache_key = (shape_id, stop_ids)
+
+    if cache_key not in cache:
+        ordered_stops = [(stop_id, *stop_locations[stop_id]) for stop_id in stop_ids]
+        distances = resolve_stop_distances_for_pattern(
+            polyline,
+            ordered_stops,
+            cumulative=cumulative,
+            backward_tolerance_m=backward_tolerance_m,
+            shape_id=shape_id,
+            trip_id=trip_id,
+        )
+        cache[cache_key] = dict(zip(seqs, distances))
+
     return cache[cache_key]
 
 

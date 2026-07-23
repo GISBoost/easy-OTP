@@ -165,6 +165,21 @@ def test_project_point_cumulative_none_matches_default_haversine_build():
     assert with_default == with_explicit_none
 
 
+def test_project_point_to_polyline_duplicate_point_on_loop_shape_ties_to_lowest_index():
+    # FA-11 hard constraint: project_point_to_polyline's own tie-break must stay
+    # unchanged (FA-11 only changes how a whole trip's STOP pattern is resolved, via
+    # a new, separate function - this one keeps resolving a single point independently
+    # and in isolation, exactly as before). Out-and-back polyline mirroring shape
+    # 154679's structure: (0.01, 0.0) occurs at both a low index (1) and a high index
+    # (3), an exact coordinate match both times.
+    loop_line = [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0), (0.01, 0.0), (0.0, 0.0)]
+    dist_along, perp = project_point_to_polyline(0.01, 0.0, loop_line)
+    assert perp == 0.0
+    # Low-index occurrence (index 1) must win, not the high-index one (index 3).
+    low_index_cum = project_point_to_polyline(0.01, 0.0, loop_line[:2])[0]
+    assert math.isclose(dist_along, low_index_cum, rel_tol=1e-9)
+
+
 def test_project_point_cumulative_override_changes_distance_along():
     # A point strictly inside the second segment - no perpendicular-distance tie
     # between segments, so the effect of a custom cumulative array is unambiguous.

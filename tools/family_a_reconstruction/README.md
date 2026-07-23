@@ -29,7 +29,9 @@ All three subcommands are implemented and documented below:
 - `record` — implemented (FA-1).
 - `match` — implemented (FA-2), multi-directory merge (FA-6), trustworthy
   `shape_dist_traveled` as the live-matching distance axis (FA-10, see below).
-- `build` — implemented (FA-3), trustworthy `shape_dist_traveled` for stop anchoring (FA-10).
+- `build` — implemented (FA-3), trustworthy `shape_dist_traveled` for stop anchoring (FA-10),
+  sequential/monotonic stop-pattern anchoring as the geometric fallback for feeds without a
+  trustworthy `shape_dist_traveled` (FA-11).
 - Full end-to-end worked example and CLI polish — this document (FA-4).
 
 ## Setup (Windows)
