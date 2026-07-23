@@ -255,6 +255,68 @@ def test_collect_empty_matched_dataframe():
 
 
 # ---------------------------------------------------------------------------
+# collect_segment_observations - shape_dist_traveled trust (FA-10)
+# ---------------------------------------------------------------------------
+
+
+def test_collect_trusted_stop_dist_bypasses_geometric_anchoring():
+    """A trusted stop_time distance must be used directly for interpolation,
+    not the geometric projection stop_distance_along_shape would derive from
+    stop_locations. Chosen deliberately different from the geometric distance
+    so the two are distinguishable in the resulting segment time.
+    """
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    geometric_d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+    trusted_d_b = geometric_d_b + 200.0  # deliberately different from the geometric value
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(100), trusted_d_b),
+    ])
+
+    trusted_stop_dist = {("t1", 1): 0.0, ("t1", 2): trusted_d_b}
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
+        trusted_stop_dist=trusted_stop_dist,
+    )
+
+    key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
+    assert segment_times[key] == pytest.approx([100.0])
+    assert counts["segments_observed"] == 1
+
+
+def test_collect_shape_cumulative_dist_and_trusted_stop_dist_omitted_matches_default():
+    """Fallback-parity regression: omitting both new FA-10 params must reproduce
+    exactly today's fully-geometric output - the hard "byte-identical fallback"
+    constraint, checked at collect_segment_observations's own level.
+    """
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(100), d_b),
+    ])
+
+    without_params, counts_without = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+    )
+    with_none_params, counts_with_none = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
+        shape_cumulative_dist=None, trusted_stop_dist=None,
+    )
+
+    assert without_params == with_none_params
+    assert counts_without == counts_with_none
+
+
+# ---------------------------------------------------------------------------
 # collect_segment_observations - recording_date grouping (FA-6)
 # ---------------------------------------------------------------------------
 

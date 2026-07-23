@@ -34,6 +34,43 @@ def test_stop_distance_along_shape_at_first_vertex():
 
 
 # ---------------------------------------------------------------------------
+# stop_distance_along_shape - FA-10 trusted_dist_m / cumulative
+# ---------------------------------------------------------------------------
+
+
+def test_stop_distance_along_shape_trusted_dist_bypasses_projection(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("project_point_to_polyline must not be called when trusted_dist_m is given")
+
+    monkeypatch.setattr("family_a.interpolate.project_point_to_polyline", _boom)
+    result = stop_distance_along_shape(0.005, 0.0, _STRAIGHT_LINE, trusted_dist_m=1234.5)
+    assert result == 1234.5
+
+
+def test_stop_distance_along_shape_trusted_dist_none_falls_back_to_projection():
+    expected = project_point_to_polyline(0.005, 0.0, _STRAIGHT_LINE)[0]
+    assert stop_distance_along_shape(0.005, 0.0, _STRAIGHT_LINE, trusted_dist_m=None) == expected
+
+
+def test_stop_distance_along_shape_cumulative_overrides_haversine_axis():
+    # A point strictly within the second segment (not exactly on a vertex, so
+    # there's no perpendicular-distance tie between segments to worry about).
+    point_lat, point_lon = 0.015, 0.0
+    custom_cumulative = [0.0, 500.0, 1000.0]
+
+    with_custom = stop_distance_along_shape(
+        point_lat, point_lon, _STRAIGHT_LINE, cumulative=custom_cumulative
+    )
+    expected_with_custom = project_point_to_polyline(
+        point_lat, point_lon, _STRAIGHT_LINE, cumulative=custom_cumulative
+    )[0]
+    assert with_custom == expected_with_custom
+
+    default_result = stop_distance_along_shape(point_lat, point_lon, _STRAIGHT_LINE)
+    assert default_result != with_custom
+
+
+# ---------------------------------------------------------------------------
 # interpolate_stop_time
 # ---------------------------------------------------------------------------
 

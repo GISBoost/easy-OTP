@@ -26,6 +26,10 @@ tools/family_a_reconstruction/.venv/
 tools/family_a_reconstruction/*.csv
 tools/family_a_reconstruction/*.parquet
 
+# --- FA-10 manual verification scratch (raw GTFS-RT snapshots, downloaded static
+# GTFS zips, ad hoc match/build outputs - personal test data, not deliverable code) ---
+tools/family_a_reconstruction/gtfs-manual-test/
+
 # --- i18n developer tooling (build scripts, LLM translation helpers) ---
 tools/i18n/
 easy_otp.pro

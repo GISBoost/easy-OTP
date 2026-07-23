@@ -27,8 +27,9 @@ keeps the original scheduled time.
 All three subcommands are implemented and documented below:
 
 - `record` — implemented (FA-1).
-- `match` — implemented (FA-2), multi-directory merge (FA-6).
-- `build` — implemented (FA-3).
+- `match` — implemented (FA-2), multi-directory merge (FA-6), trustworthy
+  `shape_dist_traveled` as the live-matching distance axis (FA-10, see below).
+- `build` — implemented (FA-3), trustworthy `shape_dist_traveled` for stop anchoring (FA-10).
 - Full end-to-end worked example and CLI polish — this document (FA-4).
 
 ## Setup (Windows)
@@ -139,6 +140,23 @@ though the position stayed genuinely close to the route the whole time (low
 archive. This is an inherent limitation of simple nearest-segment matching without
 trajectory-continuity awareness, not a bug — see `family_a/matcher.py`'s module docstring.
 `build`'s interpolation step does not assume this series is strictly monotonic.
+
+**Trustworthy `shape_dist_traveled` (FA-10):** when the static feed's `shape_dist_traveled`
+column is present, fully filled, and unit-consistent with the shape's own geometry (checked
+per shape — see `family_a/shape_dist.py`), `match` uses it directly as the distance axis for
+live vehicle positions instead of the geometric projection described above, and `build` uses
+it directly for stop anchoring instead of `stop_distance_along_shape`'s geometric projection —
+this sidesteps the geometric method's tie-break-to-earliest-segment ambiguity entirely, which
+otherwise silently collapses two genuinely different occurrences of the same stop on a
+loop/out-and-back route to one identical distance. Confirmed on real data so far: Prague's PID
+feed is fully trustworthy (its `shape_dist_traveled` is published in **kilometres**, not
+metres — `shape_dist.py` detects and converts several common unit conventions, not just
+metres). A feed without this column, or with it present but empty/inconsistent (observed on
+Łódź and Vilnius: column present in the header, every value blank), falls back to the
+geometric method above with no behaviour change. Both subcommands print
+`Shapes trustworthy for shape_dist_traveled (FA-10): N/M` in their summary (`build` also
+prints the corresponding trip-level count) — check this line to see whether a given feed
+benefited.
 
 The command prints a summary of the resolved agency timezone, directories merged, the
 recording date range covered, snapshots processed, observations matched, and observations

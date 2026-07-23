@@ -802,6 +802,86 @@ def test_cmd_build_end_to_end_writes_both_zips(tmp_path, capsys):
     assert "P85 output written to" in captured.out
 
 
+def _make_build_static_zip_with_shape_dist_traveled(tmp_path):
+    """Like _make_build_static_zip, but with a fully-filled, unit-consistent
+    shape_dist_traveled in both shapes.txt and stop_times.txt (FA-10) - exercises
+    the trusted-anchor path through _cmd_build itself, not just shape_dist.py's own
+    unit tests (which call evaluate_shape_trust/evaluate_trip_trust directly,
+    bypassing cli.py's wiring entirely).
+
+    Stop B's shape_dist_traveled (1112.0) is deliberately set to HALFWAY along the
+    shape, not to B's own true geometric position (which sits at the far end,
+    ~2224m) - this makes the trusted-anchor value and the geometric-projection
+    value clearly distinguishable in the resulting corrected schedule, so a bug
+    that silently fell back to geometric anchoring (e.g. cli.py passing
+    evaluate_trip_trust's shape_cumulative_dist/shape_scale_factor arguments in
+    the wrong order) would be caught by the timing assertion below, not just by
+    the absence of a crash.
+    """
+    path = tmp_path / "gtfs_build_shape_dist.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "trips.txt",
+            "trip_id,route_id,direction_id,shape_id,service_id\nt1,R1,0,shape1,svc1\n",
+        )
+        zf.writestr(
+            "stops.txt",
+            "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.02,0.0\n",
+        )
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\n"
+            "t1,08:00:00,08:00:00,A,1,0.0\n"
+            "t1,08:10:00,08:10:00,B,2,1112.0\n",
+        )
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled\n"
+            "shape1,0.0,0.0,0,0.0\n"
+            "shape1,0.01,0.0,1,1112.0\n"
+            "shape1,0.02,0.0,2,2224.0\n",
+        )
+        zf.writestr(
+            "calendar.txt",
+            "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,"
+            "start_date,end_date\n"
+            "svc1,1,1,1,1,1,0,0,20260101,20261231\n",
+        )
+    return path
+
+
+def test_cmd_build_uses_trusted_shape_dist_traveled_end_to_end(tmp_path, capsys):
+    gtfs = _make_build_static_zip_with_shape_dist_traveled(tmp_path)
+
+    matched_path = tmp_path / "matched.csv"
+    # 07:00 UTC = 08:00 local Europe/Warsaw (same alignment as the plain
+    # end-to-end test above). Positions bracket the trusted B distance
+    # (1112.0, at 07:00:30) BEFORE the geometric B distance (~2224.0, at
+    # 07:01:00) - if the trusted value is used, B's corrected travel time is
+    # 30s; if a bug silently fell back to geometric anchoring, it would be 60s.
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m,perpendicular_dist_m\n"
+        "t1,2026-01-01T07:00:00Z,0.0,0.0\n"
+        "t1,2026-01-01T07:00:30Z,1112.0,0.0\n"
+        "t1,2026-01-01T07:01:00Z,2224.0,0.0\n",
+        encoding="utf-8",
+    )
+
+    out_prefix = str(tmp_path / "out_shape_dist")
+    args = _make_build_args(tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=out_prefix)
+    result = _cmd_build(args)
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "Shapes trustworthy for shape_dist_traveled (FA-10): 1/1" in captured.out
+    assert "Trips using shape_dist_traveled for stop anchoring (FA-10): 1/1" in captured.out
+
+    with zipfile.ZipFile(f"{out_prefix}_p50.zip") as zf:
+        stop_times_content = zf.read("stop_times.txt").decode("utf-8")
+    b_row = next(line for line in stop_times_content.splitlines() if ",B," in line)
+    assert "08:00:30" in b_row
+
+
 def test_cmd_build_reads_matched_csv_produced_by_cmd_match_with_recording_date(tmp_path, capsys):
     """FA-6 end-to-end regression: recording_date survives _cmd_match's CSV
     write as a plain string, and _cmd_build's collect_segment_observations

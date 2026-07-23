@@ -19,7 +19,11 @@ from family_a.matcher import project_point_to_polyline
 
 
 def stop_distance_along_shape(
-    stop_lat: float, stop_lon: float, polyline: list[tuple[float, float]]
+    stop_lat: float,
+    stop_lon: float,
+    polyline: list[tuple[float, float]],
+    cumulative: list[float] | None = None,
+    trusted_dist_m: float | None = None,
 ) -> float:
     """distance_along_shape_m for a stop's location, via FA-2's projection.
 
@@ -30,15 +34,30 @@ def stop_distance_along_shape(
     component - a stop's own mismatch from the route geometry isn't relevant
     here, only where along the route it sits.
 
-    Deliberately geometric-only: does not read a stop_times.txt
-    shape_dist_traveled column even when the static feed provides one.
-    Approved MVP simplification (kept consistent with FA-2, which projects
-    every observation the same way) - a shape_dist_traveled fast path would
-    be more accurate on feeds that publish it, but is left for a future
-    milestone rather than silently mixing two different measurement methods
-    for "distance along shape" within the same run.
+    FA-10 reverses this function's former "Approved MVP simplification"
+    (deliberately geometric-only, never reading stop_times.txt's own
+    shape_dist_traveled even when the static feed provides one) for feeds
+    that earn trust via shape_dist.py's fill-rate and unit-consistency
+    checks:
+
+    - *trusted_dist_m*: when given (the stop's own trip/shape passed both
+      checks), returned directly - no call to project_point_to_polyline at
+      all. This is the preferred path FA-10 adds.
+    - *cumulative*: when given (the stop's shape alone passed the
+      unit-consistency check, but this specific stop's trip did not pass
+      the fill-rate check), passed through to project_point_to_polyline so
+      the geometric fallback still lands on the shape's own
+      shape_dist_traveled distance axis rather than a haversine-derived one -
+      keeping it comparable to a live vehicle observation matched onto the
+      same shape (see matcher.match_snapshots's shape_cumulative_dist).
+
+    Omitting both (every pre-FA-10 call site, and every feed without a
+    trustworthy shape_dist_traveled) reproduces the original purely-geometric
+    behaviour exactly.
     """
-    dist_along_m, _perp_m = project_point_to_polyline(stop_lat, stop_lon, polyline)
+    if trusted_dist_m is not None:
+        return trusted_dist_m
+    dist_along_m, _perp_m = project_point_to_polyline(stop_lat, stop_lon, polyline, cumulative=cumulative)
     return dist_along_m
 
 

@@ -13,6 +13,7 @@ from google.transit import gtfs_realtime_pb2
 
 from family_a.matcher import (
     load_fallback_shapes_from_stops,
+    load_shape_dist_traveled,
     load_shapes,
     load_stop_locations,
     load_trip_shape_index,
@@ -157,6 +158,31 @@ def test_project_point_degenerate_zero_length_segment():
     assert perp < 50
 
 
+def test_project_point_cumulative_none_matches_default_haversine_build():
+    # FA-10: omitting *cumulative* must reproduce today's haversine-derived behaviour.
+    with_default = project_point_to_polyline(0.005, 0.0, _STRAIGHT_LINE)
+    with_explicit_none = project_point_to_polyline(0.005, 0.0, _STRAIGHT_LINE, cumulative=None)
+    assert with_default == with_explicit_none
+
+
+def test_project_point_cumulative_override_changes_distance_along():
+    # A point strictly inside the second segment - no perpendicular-distance tie
+    # between segments, so the effect of a custom cumulative array is unambiguous.
+    point_lat, point_lon = 0.015, 0.0
+    custom_cumulative = [0.0, 500.0, 1000.0]
+
+    dist_along_custom, perp_custom = project_point_to_polyline(
+        point_lat, point_lon, _STRAIGHT_LINE, cumulative=custom_cumulative
+    )
+    dist_along_default, perp_default = project_point_to_polyline(
+        point_lat, point_lon, _STRAIGHT_LINE
+    )
+
+    assert dist_along_custom != dist_along_default
+    # perpendicular distance is always geometric, unaffected by *cumulative*.
+    assert math.isclose(perp_custom, perp_default, abs_tol=1e-9)
+
+
 # ---------------------------------------------------------------------------
 # load_shapes / load_trip_shape_index
 # ---------------------------------------------------------------------------
@@ -211,6 +237,70 @@ def test_resolve_trip_shapes_excludes_given_route_ids(tmp_path):
     )
     assert trip_shapes == {}
     assert fallback_used is False
+
+
+# ---------------------------------------------------------------------------
+# load_shape_dist_traveled (FA-10)
+# ---------------------------------------------------------------------------
+
+
+def test_load_shape_dist_traveled_fully_filled(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        # Deliberately out-of-order shape_pt_sequence, same as _make_gtfs_zip, to
+        # verify re-sort applies to shape_dist_traveled too.
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled\n"
+            "shape1,0.02,0.0,2,2224.0\n"
+            "shape1,0.0,0.0,0,0.0\n"
+            "shape1,0.01,0.0,1,1112.0\n",
+        )
+    result = load_shape_dist_traveled(str(path))
+    assert result == {"shape1": [0.0, 1112.0, 2224.0]}
+
+
+def test_load_shape_dist_traveled_missing_shapes_file_returns_empty_dict(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,shape_id\ntrip1,routeA,\n")
+    assert load_shape_dist_traveled(str(path)) == {}
+
+
+def test_load_shape_dist_traveled_column_absent_returns_empty_dict(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+            "shape1,0.0,0.0,0\nshape1,0.01,0.0,1\n",
+        )
+    assert load_shape_dist_traveled(str(path)) == {}
+
+
+def test_load_shape_dist_traveled_entirely_blank_values_are_none_not_zero(tmp_path):
+    # The Łódź/Vilnius trap: column present in the header, every row's value blank.
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled\n"
+            "shape1,0.0,0.0,0,\nshape1,0.01,0.0,1,\n",
+        )
+    result = load_shape_dist_traveled(str(path))
+    assert result == {"shape1": [None, None]}
+
+
+def test_load_shape_dist_traveled_partial_fill(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled\n"
+            "shape1,0.0,0.0,0,0.0\nshape1,0.01,0.0,1,\n",
+        )
+    result = load_shape_dist_traveled(str(path))
+    assert result == {"shape1": [0.0, None]}
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +544,32 @@ def test_match_snapshots_empty_input_returns_empty_dataframe_with_columns():
         "distance_along_shape_m",
         "perpendicular_dist_m",
     ]
+
+
+def test_match_snapshots_shape_cumulative_dist_overrides_distance_axis(tmp_path):
+    # FA-10: a point strictly inside the second segment, so there's no
+    # perpendicular-distance tie masking the effect of a custom cumulative array.
+    trip_shapes, shapes = _shapes_and_trips()
+    feed = _make_feed_message([_vehicle_entity("e1", "trip1", 0.015, 0.0, 1_700_000_000)])
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df_default = match_snapshots([path], trip_shapes, shapes)
+    df_custom = match_snapshots(
+        [path], trip_shapes, shapes, shape_cumulative_dist={"shape1": [0.0, 500.0, 1000.0]}
+    )
+
+    assert df_default.iloc[0]["distance_along_shape_m"] != df_custom.iloc[0]["distance_along_shape_m"]
+
+
+def test_match_snapshots_shape_cumulative_dist_omitted_is_unchanged(tmp_path):
+    trip_shapes, shapes = _shapes_and_trips()
+    feed = _make_feed_message([_vehicle_entity("e1", "trip1", 0.005, 0.0, 1_700_000_000)])
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df_without_param = match_snapshots([path], trip_shapes, shapes)
+    df_with_none = match_snapshots([path], trip_shapes, shapes, shape_cumulative_dist=None)
+
+    assert df_without_param.equals(df_with_none)
 
 
 # ---------------------------------------------------------------------------

@@ -161,6 +161,52 @@ def test_load_static_index_basic(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# load_static_index - stop_time_dist_traveled (FA-10)
+# ---------------------------------------------------------------------------
+
+
+def test_load_static_index_stop_time_dist_traveled_filled(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,direction_id,service_id\nt1,R1,0,svc1\n")
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\n"
+            "t1,08:00:00,08:00:00,A,1,0.0\n"
+            "t1,08:10:00,08:11:00,B,2,1112.0\n",
+        )
+    idx = load_static_index(str(path))
+    assert idx.stop_time_dist_traveled == {("t1", 1): 0.0, ("t1", 2): 1112.0}
+
+
+def test_load_static_index_stop_time_dist_traveled_absent_column(tmp_path):
+    path = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0", "service_id": "svc1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "08:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+        ],
+    )
+    idx = load_static_index(path)
+    assert idx.stop_time_dist_traveled == {("t1", 1): None}
+
+
+def test_load_static_index_stop_time_dist_traveled_blank_value_is_none(tmp_path):
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,direction_id,service_id\nt1,R1,0,svc1\n")
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\n"
+            "t1,08:00:00,08:00:00,A,1,\n"
+            "t1,08:10:00,08:11:00,B,2,1112.0\n",
+        )
+    idx = load_static_index(str(path))
+    assert idx.stop_time_dist_traveled == {("t1", 1): None, ("t1", 2): 1112.0}
+
+
+# ---------------------------------------------------------------------------
 # rebuild_stop_times
 # ---------------------------------------------------------------------------
 

@@ -24,6 +24,7 @@ import pandas as pd
 from family_a.build_gtfs import load_static_index, rebuild_stop_times, repackage_gtfs
 from family_a.calendar_scope import load_service_day_types, resolve_agency_timezone
 from family_a.matcher import (
+    load_shape_dist_traveled,
     load_stop_locations,
     match_snapshots,
     resolve_trip_shapes,
@@ -43,6 +44,7 @@ from family_a.segment_stats import (
     collect_segment_observations,
     filter_min_observations,
 )
+from family_a.shape_dist import evaluate_shape_trust, evaluate_trip_trust
 
 
 def _cmd_record(args: argparse.Namespace) -> int:
@@ -244,6 +246,12 @@ def _cmd_match(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    # FA-10: use a trustworthy static shape_dist_traveled as the live-matching
+    # distance axis when the feed provides one - falls back to geometric
+    # (haversine) projection when it doesn't (empty dict, no behaviour change).
+    shape_dist_raw = load_shape_dist_traveled(args.static)
+    shape_cumulative_dist, _shape_scale_factor = evaluate_shape_trust(shapes, shape_dist_raw)
+
     agency_tz = resolve_agency_timezone(args.static)
     zone = zoneinfo.ZoneInfo(agency_tz)
 
@@ -279,7 +287,11 @@ def _cmd_match(args: argparse.Namespace) -> int:
         recording_dates.append(recording_date)
 
         df = match_snapshots(
-            snapshot_paths, trip_shapes, shapes, max_perpendicular_dist_m=args.max_perpendicular_dist_m
+            snapshot_paths,
+            trip_shapes,
+            shapes,
+            max_perpendicular_dist_m=args.max_perpendicular_dist_m,
+            shape_cumulative_dist=shape_cumulative_dist,
         )
         # Scalar broadcast: recording_date identifies which recording SESSION
         # a row came from, not a per-observation calendar date - unlike
@@ -326,6 +338,7 @@ def _cmd_match(args: argparse.Namespace) -> int:
     for reason in ("unknown_shape", "too_far_from_route", "no_trip_id", "corrupt_snapshot"):
         print(f"  - {reason}: {total_reject_counts.get(reason, 0)}")
     print(f"Fallback shapes used (shapes.txt missing): {'yes' if fallback_used else 'no'}")
+    print(f"Shapes trustworthy for shape_dist_traveled (FA-10): {len(shape_cumulative_dist)}/{len(shape_dist_raw)}")
     print(f"Output written to: {out_path}")
     return 0
 
@@ -388,9 +401,20 @@ def _cmd_build(args: argparse.Namespace) -> int:
     agency_tz = resolve_agency_timezone(args.static)
     service_day_types = load_service_day_types(args.static)
 
+    # FA-10: use shape_dist_traveled directly for stop anchoring when the static feed
+    # is trustworthy (fill-rate + unit-consistency checks) - falls back to today's
+    # purely-geometric anchoring when it isn't (empty dicts, no behaviour change).
+    shape_dist_raw = load_shape_dist_traveled(args.static)
+    shape_cumulative_dist, shape_scale_factor = evaluate_shape_trust(shapes, shape_dist_raw)
+    trusted_stop_dist = evaluate_trip_trust(
+        static_index, trip_shapes, shape_cumulative_dist, shape_scale_factor
+    )
+
     segment_times, collect_counts = collect_segment_observations(
         matched, static_index, trip_shapes, shapes, stop_locations, agency_tz,
         args.time_bucket_minutes,
+        shape_cumulative_dist=shape_cumulative_dist,
+        trusted_stop_dist=trusted_stop_dist,
     )
     segment_times, dropped_count = filter_min_observations(
         segment_times, args.min_observations_per_segment
@@ -425,6 +449,9 @@ def _cmd_build(args: argparse.Namespace) -> int:
     # segments_observed/interpolation_gaps above for that.
     print(f"Segments as gap across the full static schedule (kept scheduled time): {gap_count}")
     print(f"Fallback shapes used (shapes.txt missing): {'yes' if fallback_used else 'no'}")
+    trusted_trip_count = len({trip_id for trip_id, _seq in trusted_stop_dist})
+    print(f"Shapes trustworthy for shape_dist_traveled (FA-10): {len(shape_cumulative_dist)}/{len(shape_dist_raw)}")
+    print(f"Trips using shape_dist_traveled for stop anchoring (FA-10): {trusted_trip_count}/{len(static_index.trip_stops)}")
     print(f"P50 output written to: {out_p50}")
     print(f"P85 output written to: {out_p85}")
     return 0

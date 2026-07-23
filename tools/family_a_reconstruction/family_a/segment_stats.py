@@ -43,6 +43,8 @@ def collect_segment_observations(
     stop_locations: dict[str, tuple[float, float]],
     agency_tz: str,
     bucket_minutes: int = 120,
+    shape_cumulative_dist: dict[str, list[float]] | None = None,
+    trusted_stop_dist: dict[tuple[str, int], float] | None = None,
 ) -> tuple[dict[SegmentKey, list[float]], dict[str, int]]:
     """For each trip's matched position series, interpolate every consecutive
     scheduled stop pair's crossing time and derive an observed segment
@@ -88,6 +90,15 @@ def collect_segment_observations(
       interpolation_gaps.
     - rejected_seg_time: interpolation succeeded on both stops but the
       derived segment time was non-positive or implausibly long.
+
+    *shape_cumulative_dist*/*trusted_stop_dist* (FA-10, both optional, both
+    default to today's fully-geometric behaviour when omitted): see
+    shape_dist.evaluate_shape_trust/evaluate_trip_trust. shape_cumulative_dist
+    is looked up once per trip group by shape_id and threaded through to the
+    geometric fallback so it lands on the same distance axis as a trustworthy
+    feed's own shape_dist_traveled; trusted_stop_dist is looked up per stop
+    by (trip_id, stop_sequence) and, when present, bypasses geometric
+    projection for that stop entirely.
     """
     segment_times: dict[SegmentKey, list[float]] = defaultdict(list)
     counts = {
@@ -128,16 +139,25 @@ def collect_segment_observations(
         position_series = list(zip(group["timestamp"], group["distance_along_shape_m"]))
         counts["trips_processed"] += 1
 
+        cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
+
         for idx in range(len(stops) - 1):
-            _seq_from, stop_from, _arr_from, _dep_from = stops[idx]
-            _seq_to, stop_to, _arr_to, _dep_to = stops[idx + 1]
+            seq_from, stop_from, _arr_from, _dep_from = stops[idx]
+            seq_to, stop_to, _arr_to, _dep_to = stops[idx + 1]
 
             if stop_from not in stop_locations or stop_to not in stop_locations:
                 counts["missing_stop_location"] += 1
                 continue
 
-            d_from = _cached_stop_distance(distance_cache, shape_id, stop_from, stop_locations, polyline)
-            d_to = _cached_stop_distance(distance_cache, shape_id, stop_to, stop_locations, polyline)
+            trusted_from = trusted_stop_dist.get((trip_id, seq_from)) if trusted_stop_dist else None
+            trusted_to = trusted_stop_dist.get((trip_id, seq_to)) if trusted_stop_dist else None
+
+            d_from = _cached_stop_distance(
+                distance_cache, shape_id, stop_from, stop_locations, polyline, cumulative, trusted_from
+            )
+            d_to = _cached_stop_distance(
+                distance_cache, shape_id, stop_to, stop_locations, polyline, cumulative, trusted_to
+            )
 
             t_from = interpolate_stop_time(position_series, d_from)
             t_to = interpolate_stop_time(position_series, d_to)
@@ -178,11 +198,24 @@ def _cached_stop_distance(
     stop_id: str,
     stop_locations: dict[str, tuple[float, float]],
     polyline: list[tuple[float, float]],
+    cumulative: list[float] | None = None,
+    trusted_dist_m: float | None = None,
 ) -> float:
+    """Memoizing wrapper around stop_distance_along_shape, keyed by (shape_id, stop_id).
+
+    *trusted_dist_m* (FA-10) short-circuits before touching this cache entirely - it's
+    a plain per-(trip_id, stop_sequence) value with no geometric computation to
+    memoize, and this cache's (shape_id, stop_id) key is deliberately coarser than
+    that (shared across every occurrence of a stop_id on a shape, an ambiguity FA-10
+    exists to bypass for a loop/out-and-back shape) - caching a trusted value under
+    this key could let one occurrence's value leak into another's lookup.
+    """
+    if trusted_dist_m is not None:
+        return trusted_dist_m
     cache_key = (shape_id, stop_id)
     if cache_key not in cache:
         lat, lon = stop_locations[stop_id]
-        cache[cache_key] = stop_distance_along_shape(lat, lon, polyline)
+        cache[cache_key] = stop_distance_along_shape(lat, lon, polyline, cumulative=cumulative)
     return cache[cache_key]
 
 

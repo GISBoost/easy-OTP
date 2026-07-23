@@ -24,7 +24,7 @@ import csv
 import io
 import zipfile
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from family_a.calendar_scope import time_bucket_for_seconds
 
@@ -85,6 +85,10 @@ class StaticIndex:
     all_trip_ids: set[str]
     # trip_id -> service_id, for calendar_scope.load_service_day_types lookup
     trip_service_id: dict[str, str]
+    # (trip_id, stop_sequence) -> shape_dist_traveled (None if blank/missing) - FA-10.
+    # Defaults to {} so existing test helpers that build a StaticIndex directly
+    # (not via load_static_index) don't need updating for a field they don't test.
+    stop_time_dist_traveled: dict[tuple[str, int], float | None] = field(default_factory=dict)
 
 
 def load_static_index(gtfs_zip_path: str) -> StaticIndex:
@@ -93,6 +97,7 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
     trip_service_id: dict[str, str] = {}
     trip_stops_raw: dict[str, list] = defaultdict(list)
     stop_map: dict[tuple[str, int], tuple[str, int, int]] = {}
+    stop_time_dist_traveled: dict[tuple[str, int], float | None] = {}
 
     with zipfile.ZipFile(gtfs_zip_path) as zf:
         with zf.open("trips.txt") as fh:
@@ -116,6 +121,13 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
                 dep_sec = parse_gtfs_time(dep_raw)
                 trip_stops_raw[trip_id].append((seq, stop_id, arr_sec, dep_sec))
                 stop_map[(trip_id, seq)] = (stop_id, arr_sec, dep_sec)
+                # FA-10: never coerce a blank shape_dist_traveled to 0.0 - shape_dist.py's
+                # fill-rate check needs to tell "genuinely zero" apart from "absent" to
+                # correctly reject the Łódź/Vilnius trap (column present, every row blank).
+                dist_raw = row.get("shape_dist_traveled") or ""
+                stop_time_dist_traveled[(trip_id, seq)] = (
+                    float(dist_raw) if dist_raw.strip() else None
+                )
 
     trip_stops = {
         tid: sorted(stops, key=lambda x: x[0])
@@ -128,6 +140,7 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
         stop_map=stop_map,
         all_trip_ids=set(trip_route.keys()),
         trip_service_id=trip_service_id,
+        stop_time_dist_traveled=stop_time_dist_traveled,
     )
 
 

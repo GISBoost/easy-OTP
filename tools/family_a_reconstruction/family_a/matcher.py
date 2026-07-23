@@ -63,8 +63,13 @@ _R_M = 6_371_000.0
 _MATCHED_COLUMNS = ["trip_id", "timestamp", "distance_along_shape_m", "perpendicular_dist_m"]
 
 
-def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance in metres between two WGS-84 points."""
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres between two WGS-84 points.
+
+    Public (not module-private) since FA-10's shape_dist.py also needs it, for the
+    same haversine-based polyline-length computation this module already does
+    internally - no separate reimplementation.
+    """
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlam = math.radians(lon2 - lon1)
@@ -99,6 +104,46 @@ def load_shapes(gtfs_zip_path: str) -> dict[str, list[tuple[float, float]]]:
 
     return {
         shape_id: [(lat, lon) for _, lat, lon in sorted(points, key=lambda p: p[0])]
+        for shape_id, points in raw.items()
+    }
+
+
+def load_shape_dist_traveled(gtfs_zip_path: str) -> dict[str, list[float | None]]:
+    """Load shapes.txt's own shape_dist_traveled column (FA-10).
+
+    shape_id -> ordered [value, ...] by shape_pt_sequence, same ordering
+    convention as load_shapes. A blank/missing value is None, never coerced to
+    0.0 - shape_dist.py's unit-consistency check needs to tell "genuinely
+    zero" apart from "absent" to correctly reject the Łódź/Vilnius trap
+    (column present in the header, every row's value blank).
+
+    A deliberately separate single pass over shapes.txt from load_shapes,
+    not a shared return value - same "simple, independently testable
+    contract" preference this module already documents for
+    load_shapes/load_trip_shape_index (see resolve_trip_shapes's docstring).
+
+    Returns an empty dict if shapes.txt is absent, or present but without a
+    shape_dist_traveled column at all - mirrors load_shapes's "does not
+    raise" contract, and lets callers treat "column never existed" and
+    "column found nothing" identically as "no trust data available".
+    """
+    with zipfile.ZipFile(gtfs_zip_path) as zf:
+        if "shapes.txt" not in zf.namelist():
+            return {}
+        with zf.open("shapes.txt") as fh:
+            reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
+            if "shape_dist_traveled" not in (reader.fieldnames or []):
+                return {}
+            raw: dict[str, list[tuple[int, float | None]]] = defaultdict(list)
+            for row in reader:
+                shape_id = row["shape_id"]
+                seq = int(row["shape_pt_sequence"])
+                raw_val = row.get("shape_dist_traveled") or ""
+                dist = float(raw_val) if raw_val.strip() else None
+                raw[shape_id].append((seq, dist))
+
+    return {
+        shape_id: [dist for _, dist in sorted(points, key=lambda p: p[0])]
         for shape_id, points in raw.items()
     }
 
@@ -282,13 +327,16 @@ def resolve_trip_shapes(
 
 
 def project_point_to_polyline(
-    lat: float, lon: float, polyline: list[tuple[float, float]]
+    lat: float,
+    lon: float,
+    polyline: list[tuple[float, float]],
+    cumulative: list[float] | None = None,
 ) -> tuple[float, float]:
     """Project (lat, lon) onto the closest point of polyline.
 
     Returns (distance_along_polyline_m, perpendicular_distance_m):
-    - distance_along_polyline_m: cumulative haversine distance from the
-      first vertex to the projected point.
+    - distance_along_polyline_m: cumulative distance from the first vertex to
+      the projected point.
     - perpendicular_distance_m: haversine distance from (lat, lon) to its
       projected point.
 
@@ -301,15 +349,25 @@ def project_point_to_polyline(
     A polyline with a single point has no segment: the projection is that
     point itself, at distance_along_m = 0.0. Ties between equally-near
     segments are resolved in favor of the earliest (lowest-index) one.
+
+    *cumulative* (FA-10): an optional precomputed per-vertex cumulative
+    distance array, same length as polyline. When given, it REPLACES the
+    haversine-based cumulative build below - this lets a trustworthy static
+    feed's own shape_dist_traveled values drive this projection's distance
+    axis, so a live vehicle observation and a shape_dist_traveled-anchored
+    stop stay comparable (see shape_dist.py). When omitted (every pre-FA-10
+    call site), behaviour is unchanged: cumulative distance is derived via
+    haversine summation, exactly as before.
     """
     if len(polyline) == 0:
         raise ValueError("polyline must contain at least one point")
     if len(polyline) == 1:
-        return 0.0, _haversine_m(lat, lon, *polyline[0])
+        return 0.0, haversine_m(lat, lon, *polyline[0])
 
-    cumulative = [0.0] * len(polyline)
-    for i in range(1, len(polyline)):
-        cumulative[i] = cumulative[i - 1] + _haversine_m(*polyline[i - 1], *polyline[i])
+    if cumulative is None:
+        cumulative = [0.0] * len(polyline)
+        for i in range(1, len(polyline)):
+            cumulative[i] = cumulative[i - 1] + haversine_m(*polyline[i - 1], *polyline[i])
 
     best_perp_m = math.inf
     best_dist_along_m = 0.0
@@ -335,11 +393,11 @@ def project_point_to_polyline(
         proj_lat = ay + t * aby
         proj_lon = ax + t * abx
 
-        perp_m = _haversine_m(lat, lon, proj_lat, proj_lon)
+        perp_m = haversine_m(lat, lon, proj_lat, proj_lon)
         # Partial distance along THIS segment, measured with haversine on the
         # actual projected coordinate (not t * full segment length) to stay
         # consistent with how `cumulative` was built.
-        partial_m = _haversine_m(lat1, lon1, proj_lat, proj_lon)
+        partial_m = haversine_m(lat1, lon1, proj_lat, proj_lon)
         dist_along_m = cumulative[i] + partial_m
 
         if perp_m < best_perp_m:
@@ -391,6 +449,7 @@ def match_snapshots(
     trip_shapes: dict[str, str],
     shapes: dict[str, list[tuple[float, float]]],
     max_perpendicular_dist_m: float = 100.0,
+    shape_cumulative_dist: dict[str, list[float]] | None = None,
 ) -> pd.DataFrame:
     """Map-match VehiclePosition entities across all snapshot_paths onto shapes.
 
@@ -400,6 +459,14 @@ def match_snapshots(
     load_trip_shape_index each have a simple, independently testable
     contract, and match_snapshots's lookup (shapes.get(trip_shapes.get(x)))
     is no more complex for it.
+
+    *shape_cumulative_dist* (FA-10): optional shape_id -> trustworthy
+    cumulative shape_dist_traveled array (see shape_dist.evaluate_shape_trust),
+    passed straight through to project_point_to_polyline's own *cumulative*
+    parameter for the matched shape - keeps a live vehicle observation's
+    distance_along_shape_m on the same axis as a shape_dist_traveled-anchored
+    stop. Omitted (the default) or missing an entry for a given shape_id
+    falls back to geometric (haversine) projection exactly as before.
 
     Columns: trip_id, timestamp (UTC datetime64), distance_along_shape_m,
     perpendicular_dist_m. One row per accepted observation, sorted by
@@ -464,7 +531,8 @@ def match_snapshots(
 
             lat = vp.position.latitude
             lon = vp.position.longitude
-            dist_along_m, perp_m = project_point_to_polyline(lat, lon, polyline)
+            cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
+            dist_along_m, perp_m = project_point_to_polyline(lat, lon, polyline, cumulative=cumulative)
 
             if perp_m > max_perpendicular_dist_m:
                 rejects["too_far_from_route"] += 1
