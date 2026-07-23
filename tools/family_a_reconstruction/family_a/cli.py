@@ -23,10 +23,13 @@ import pandas as pd
 
 from family_a.build_gtfs import load_static_index, rebuild_stop_times, repackage_gtfs
 from family_a.calendar_scope import load_service_day_types, resolve_agency_timezone
+from family_a.interpolate import resolve_all_trip_stop_anchors
 from family_a.matcher import (
+    DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD,
     load_shape_dist_traveled,
     load_stop_locations,
     match_snapshots,
+    observed_trip_ids,
     resolve_trip_shapes,
     snapshot_feed_timestamp,
 )
@@ -250,7 +253,49 @@ def _cmd_match(args: argparse.Namespace) -> int:
     # distance axis when the feed provides one - falls back to geometric
     # (haversine) projection when it doesn't (empty dict, no behaviour change).
     shape_dist_raw = load_shape_dist_traveled(args.static)
-    shape_cumulative_dist, _shape_scale_factor = evaluate_shape_trust(shapes, shape_dist_raw)
+    shape_cumulative_dist, shape_scale_factor = evaluate_shape_trust(shapes, shape_dist_raw)
+
+    # FA-12: resolve every trip's own (already FA-10/FA-11-corrected) stop anchor list once, up
+    # front - match_snapshots uses this to window each live observation's own map-matching
+    # search instead of searching the whole route. 'match' has never required stop_times.txt
+    # unless shapes.txt was also missing (_validate_static_gtfs_for_match), and never touched
+    # stops.txt's own content at all - a feed that genuinely lacks stop_times.txt/stops.txt, or
+    # has malformed rows in either (missing columns, non-numeric stop_sequence/stop_lat/stop_lon),
+    # must degrade gracefully here to "no anchors, no windowing" rather than making 'match' newly
+    # hard-fail for a static feed shape it previously supported - so the whole attempt (not just
+    # the initial stop_times.txt load) is wrapped in one try/except, always falling back to an
+    # empty trip_stop_anchors on any failure.
+    try:
+        static_index = load_static_index(args.static)
+        stop_locations = load_stop_locations(args.static)
+        trusted_stop_dist = evaluate_trip_trust(
+            static_index, trip_shapes, shape_cumulative_dist, shape_scale_factor
+        )
+        # Restrict resolution to trips actually seen in this run's RT data - a static feed's
+        # own trip roster can be tens of thousands of trips (e.g. Gdańsk: ~93,600), while any
+        # single day's snapshots only ever report the small subset actually running. Resolving
+        # every trip in the whole feed regardless of whether 'match' could ever need it made
+        # this otherwise-cheap step cost proportional to static feed size, not RT data volume.
+        all_observed_trip_ids: set[str] = set()
+        for snapshot_paths in per_dir_snapshots.values():
+            all_observed_trip_ids |= observed_trip_ids(snapshot_paths)
+        trip_stop_anchors = resolve_all_trip_stop_anchors(
+            static_index,
+            trip_shapes,
+            shapes,
+            stop_locations,
+            shape_cumulative_dist=shape_cumulative_dist,
+            trusted_stop_dist=trusted_stop_dist,
+            trip_ids=all_observed_trip_ids,
+        )
+    except (KeyError, OSError, ValueError) as exc:
+        print(
+            f"Warning: could not resolve stop anchors from static GTFS ({exc}) - FA-12 "
+            "live-position windowing disabled for this run (falls back to today's "
+            "unrestricted matching).",
+            file=sys.stderr,
+        )
+        trip_stop_anchors = {}
 
     agency_tz = resolve_agency_timezone(args.static)
     zone = zoneinfo.ZoneInfo(agency_tz)
@@ -292,12 +337,23 @@ def _cmd_match(args: argparse.Namespace) -> int:
             shapes,
             max_perpendicular_dist_m=args.max_perpendicular_dist_m,
             shape_cumulative_dist=shape_cumulative_dist,
+            trip_stop_anchors=trip_stop_anchors,
+            position_signal_coverage_threshold=args.position_signal_coverage_threshold,
         )
         # Scalar broadcast: recording_date identifies which recording SESSION
         # a row came from, not a per-observation calendar date - unlike
         # day_type (FA-5), which is derived per-observation from its own
         # timestamp for a different purpose.
         df["recording_date"] = recording_date
+
+        # FA-12: capability is decided per-directory/day, so print it per directory rather than
+        # only an aggregate - multiple --positions-dir values can legitimately differ.
+        coverage = df.attrs.get("position_signal_coverage", {"sequence": 0.0, "stop_id": 0.0})
+        print(
+            f"Position signal (FA-12) for {positions_dir}: {df.attrs.get('position_signal', 'none')} "
+            f"(sequence coverage {coverage['sequence'] * 100:.1f}%, "
+            f"stop_id coverage {coverage['stop_id'] * 100:.1f}%)"
+        )
 
         for reason, count in df.attrs.get("reject_counts", {}).items():
             total_reject_counts[reason] = total_reject_counts.get(reason, 0) + count
@@ -564,6 +620,19 @@ def build_parser() -> argparse.ArgumentParser:
             "shape sequences into false multi-hour 'trips'. Excluded trips simply produce no "
             "matched rows, so 'build' passes their static schedule through unchanged - see "
             "matcher.load_trip_shape_index's docstring."
+        ),
+    )
+    p_match.add_argument(
+        "--position-signal-coverage-threshold",
+        type=float,
+        default=DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD,
+        help=(
+            "FA-12: fraction (0-1) of a day's VehiclePosition entities (with a non-empty "
+            "trip_id) that must carry a usable current_stop_sequence, or failing that "
+            "stop_id, before that whole day is treated as having 'capability' for windowed "
+            "live-position matching - narrowing each observation's map-matching search to "
+            "the segment between its neighboring scheduled stops instead of the whole route "
+            f"(default: {DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD})."
         ),
     )
     p_match.set_defaults(func=_cmd_match)

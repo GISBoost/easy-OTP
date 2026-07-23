@@ -16,8 +16,12 @@ from __future__ import annotations
 import logging
 import math
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from family_a.matcher import _project_onto_segment, cumulative_distances, project_point_to_polyline
+
+if TYPE_CHECKING:
+    from family_a.build_gtfs import StaticIndex
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +179,94 @@ def resolve_stop_distances_for_pattern(
             resolved.append(best_dist_along_m)
 
     return resolved
+
+
+def resolve_all_trip_stop_anchors(
+    static_index: "StaticIndex",
+    trip_shapes: dict[str, str],
+    shapes: dict[str, list[tuple[float, float]]],
+    stop_locations: dict[str, tuple[float, float]],
+    shape_cumulative_dist: dict[str, list[float]] | None = None,
+    trusted_stop_dist: dict[tuple[str, int], float] | None = None,
+    backward_tolerance_m: float = DEFAULT_BACKWARD_TOLERANCE_M,
+    trip_ids: set[str] | None = None,
+) -> dict[str, list[tuple[int, str, float]]]:
+    """Eagerly resolve stop anchor lists for trips in the static feed (FA-12).
+
+    Returns trip_id -> [(stop_sequence, stop_id, distance_along_shape_m), ...], sorted by
+    stop_sequence - the already-corrected FA-10/FA-11 stop anchors, in the exact form FA-12's
+    matcher.match_snapshots needs to build a live observation's window
+    ([dist(stop[idx-1]), dist(stop[idx+1])]). A trip with no resolvable shape/polyline, or no
+    stops with a known location, is simply absent from the returned dict - callers treat a
+    missing trip_id as "no anchors, fall back to unrestricted matching", same convention as
+    every other fallback in this module.
+
+    *trip_ids* (FA-12): when given, restricts resolution to only these trip_ids - see
+    matcher.observed_trip_ids. A static feed's own trip roster can be tens of thousands of trips
+    (e.g. Gdańsk: ~93,600), while any single day's RT data only ever reports the small subset
+    actually running; resolving every trip in the whole feed regardless of whether 'match' could
+    ever need it made this eager pass cost proportional to static feed size rather than RT data
+    volume - the exact regression discovered running this milestone's own real-data verification
+    against Gdańsk. Omitted (the default, None) resolves every trip in the feed, unchanged from
+    this function's original contract - existing callers (and this function's own tests) that
+    never pass it see no behaviour change.
+
+    Per trip, picks exactly one of two paths - never mixes them - mirroring
+    segment_stats.collect_segment_observations's own trusted-vs-pattern branch:
+    - Fully trusted (every stop_sequence of this trip present in *trusted_stop_dist* -
+      shape_dist.evaluate_trip_trust is all-or-nothing per trip): each stop's distance comes
+      straight from *trusted_stop_dist*, no geometric projection at all.
+    - Otherwise: the trip's whole ordered stop pattern is resolved together via FA-11's
+      resolve_stop_distances_for_pattern (sequential, monotonicity-enforced).
+
+    Deliberately a separate implementation rather than a shared extraction with segment_stats.py's
+    private per-trip helpers (_cached_stop_distance/_resolve_pattern_distances) - same rationale
+    matcher.resolve_trip_shapes's own docstring gives for its comparable choice: this runs ahead
+    of any matched positions (match's own step, before any VehiclePosition has been seen), whereas
+    segment_stats.py's version is lazily driven by whichever trips actually appear in the matched
+    dataframe (build's step, after matching). Different drivers for the same underlying math, kept
+    independent and separately testable rather than forcing one shared abstraction to serve both.
+
+    *shape_cumulative_dist*/*trusted_stop_dist*/*backward_tolerance_m*: see
+    shape_dist.evaluate_shape_trust/evaluate_trip_trust and resolve_stop_distances_for_pattern.
+    Both optional args default to today's fully-geometric, non-trusted behaviour when omitted.
+    """
+    trusted_trip_ids = {tid for tid, _seq in trusted_stop_dist} if trusted_stop_dist else set()
+
+    anchors: dict[str, list[tuple[int, str, float]]] = {}
+    for trip_id, stops in static_index.trip_stops.items():
+        if trip_ids is not None and trip_id not in trip_ids:
+            continue
+        shape_id = trip_shapes.get(trip_id)
+        polyline = shapes.get(shape_id) if shape_id is not None else None
+        if polyline is None:
+            continue
+
+        filtered = [(seq, stop_id) for seq, stop_id, *_rest in stops if stop_id in stop_locations]
+        if not filtered:
+            continue
+
+        if trip_id in trusted_trip_ids:
+            anchors[trip_id] = [
+                (seq, stop_id, trusted_stop_dist[(trip_id, seq)]) for seq, stop_id in filtered
+            ]
+            continue
+
+        cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
+        ordered_stops = [(stop_id, *stop_locations[stop_id]) for seq, stop_id in filtered]
+        distances = resolve_stop_distances_for_pattern(
+            polyline,
+            ordered_stops,
+            cumulative=cumulative,
+            backward_tolerance_m=backward_tolerance_m,
+            shape_id=shape_id,
+            trip_id=trip_id,
+        )
+        anchors[trip_id] = [
+            (seq, stop_id, dist) for (seq, stop_id), dist in zip(filtered, distances)
+        ]
+
+    return anchors
 
 
 def interpolate_stop_time(

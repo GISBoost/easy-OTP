@@ -6,8 +6,10 @@ Run: pytest tests/test_interpolate.py -v
 
 from datetime import datetime, timedelta, timezone
 
+from family_a.build_gtfs import StaticIndex
 from family_a.interpolate import (
     interpolate_stop_time,
+    resolve_all_trip_stop_anchors,
     resolve_stop_distances_for_pattern,
     stop_distance_along_shape,
 )
@@ -169,6 +171,158 @@ def test_resolve_stop_distances_for_pattern_minor_backward_step_within_tolerance
 
     assert resolved[1] == expected_b
     assert not caplog.records
+
+
+# ---------------------------------------------------------------------------
+# resolve_all_trip_stop_anchors (FA-12)
+# ---------------------------------------------------------------------------
+
+
+def _make_static_index(trips, stops, service_ids=None) -> StaticIndex:
+    """Mirrors test_segment_stats.py's own helper of the same name/shape."""
+    stop_map = {}
+    for trip_id, stop_list in stops.items():
+        for seq, stop_id, arr, dep in stop_list:
+            stop_map[(trip_id, seq)] = (stop_id, arr, dep)
+    if service_ids is None:
+        service_ids = {tid: "" for tid in trips}
+    return StaticIndex(
+        trip_route=trips,
+        trip_stops={tid: sorted(sl, key=lambda x: x[0]) for tid, sl in stops.items()},
+        stop_map=stop_map,
+        all_trip_ids=set(trips.keys()),
+        trip_service_id=service_ids,
+    )
+
+
+def test_resolve_all_trip_stop_anchors_fully_trusted_trip_bypasses_geometry(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("resolve_stop_distances_for_pattern must not be called for a fully trusted trip")
+
+    monkeypatch.setattr("family_a.interpolate.resolve_stop_distances_for_pattern", _boom)
+
+    static_index = _make_static_index(
+        trips={"trip1": ("routeA", "0")},
+        stops={"trip1": [(0, "s0", 0, 0), (1, "s1", 60, 60), (2, "s2", 120, 120)]},
+    )
+    trip_shapes = {"trip1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"s0": (0.0, 0.0), "s1": (0.01, 0.0), "s2": (0.02, 0.0)}
+    trusted_stop_dist = {("trip1", 0): 0.0, ("trip1", 1): 1111.9, ("trip1", 2): 2223.8}
+
+    anchors = resolve_all_trip_stop_anchors(
+        static_index, trip_shapes, shapes, stop_locations, trusted_stop_dist=trusted_stop_dist
+    )
+
+    assert anchors["trip1"] == [(0, "s0", 0.0), (1, "s1", 1111.9), (2, "s2", 2223.8)]
+
+
+def test_resolve_all_trip_stop_anchors_non_trusted_trip_uses_pattern_resolver():
+    static_index = _make_static_index(
+        trips={"tripL": ("routeA", "0")},
+        stops={
+            "tripL": [
+                (0, "s_start", 0, 0),
+                (1, "s_turn", 0, 0),
+                (2, "s_late", 0, 0),
+            ]
+        },
+    )
+    trip_shapes = {"tripL": "loopshape"}
+    shapes = {"loopshape": _LOOP_LINE}
+    stop_locations = {"s_start": (0.0, 0.0), "s_turn": (0.02, 0.0), "s_late": (0.01, 0.0)}
+    cumulative = cumulative_distances(_LOOP_LINE)
+
+    anchors = resolve_all_trip_stop_anchors(static_index, trip_shapes, shapes, stop_locations)
+
+    # Same acceptance criterion as
+    # test_resolve_stop_distances_for_pattern_late_stop_resolves_to_late_pass_on_duplicated_point:
+    # s_late must resolve to the LATE pass (index 3), not the early one (index 1) a
+    # context-free projection would pick.
+    assert anchors["tripL"] == [
+        (0, "s_start", cumulative[0]),
+        (1, "s_turn", cumulative[2]),
+        (2, "s_late", cumulative[3]),
+    ]
+
+
+def test_resolve_all_trip_stop_anchors_omitted_args_reproduce_pattern_resolved_default():
+    # Two trips (not one) so "trip_ids omitted resolves every trip in the feed" is actually
+    # distinguished from "happened to resolve the only trip present".
+    static_index = _make_static_index(
+        trips={"trip1": ("routeA", "0"), "trip2": ("routeA", "0")},
+        stops={
+            "trip1": [(0, "s0", 0, 0), (1, "s1", 60, 60)],
+            "trip2": [(0, "s0", 0, 0), (1, "s1", 60, 60)],
+        },
+    )
+    trip_shapes = {"trip1": "shape1", "trip2": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"s0": (0.0, 0.0), "s1": (0.01, 0.0)}
+
+    without_params = resolve_all_trip_stop_anchors(static_index, trip_shapes, shapes, stop_locations)
+    with_none = resolve_all_trip_stop_anchors(
+        static_index, trip_shapes, shapes, stop_locations,
+        shape_cumulative_dist=None, trusted_stop_dist=None, trip_ids=None,
+    )
+
+    assert without_params == with_none
+    assert set(without_params) == {"trip1", "trip2"}
+    expected_s1 = project_point_to_polyline(0.01, 0.0, _STRAIGHT_LINE)[0]
+    assert without_params["trip1"][1] == (1, "s1", expected_s1)
+    assert without_params["trip2"][1] == (1, "s1", expected_s1)
+
+
+def test_resolve_all_trip_stop_anchors_trip_ids_restricts_resolution():
+    # FA-12 performance fix: a static feed's own trip roster can be far larger than the
+    # subset a single day's RT data actually reports running (e.g. Gdańsk: ~93,600 trips
+    # in stop_times.txt) - trip_ids restricts eager resolution to just the trips 'match'
+    # could ever need, instead of the whole static feed.
+    static_index = _make_static_index(
+        trips={"trip1": ("routeA", "0"), "trip2": ("routeA", "0")},
+        stops={
+            "trip1": [(0, "s0", 0, 0), (1, "s1", 60, 60)],
+            "trip2": [(0, "s0", 0, 0), (1, "s1", 60, 60)],
+        },
+    )
+    trip_shapes = {"trip1": "shape1", "trip2": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"s0": (0.0, 0.0), "s1": (0.01, 0.0)}
+
+    anchors = resolve_all_trip_stop_anchors(
+        static_index, trip_shapes, shapes, stop_locations, trip_ids={"trip1"}
+    )
+
+    assert "trip1" in anchors
+    assert "trip2" not in anchors
+
+
+def test_resolve_all_trip_stop_anchors_skips_trip_with_no_resolvable_shape():
+    static_index = _make_static_index(
+        trips={"trip1": ("routeA", "0")},
+        stops={"trip1": [(0, "s0", 0, 0), (1, "s1", 60, 60)]},
+    )
+    trip_shapes: dict[str, str] = {}  # trip1 has no shape_id at all
+    shapes: dict[str, list[tuple[float, float]]] = {}
+    stop_locations = {"s0": (0.0, 0.0), "s1": (0.01, 0.0)}
+
+    anchors = resolve_all_trip_stop_anchors(static_index, trip_shapes, shapes, stop_locations)
+
+    assert "trip1" not in anchors
+
+
+def test_resolve_all_trip_stop_anchors_skips_trip_with_no_known_stop_locations():
+    static_index = _make_static_index(
+        trips={"trip1": ("routeA", "0")},
+        stops={"trip1": [(0, "s_missing", 0, 0)]},
+    )
+    trip_shapes = {"trip1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations: dict[str, tuple[float, float]] = {}  # s_missing not in stops.txt
+
+    anchors = resolve_all_trip_stop_anchors(static_index, trip_shapes, shapes, stop_locations)
+
+    assert "trip1" not in anchors
 
 
 # ---------------------------------------------------------------------------

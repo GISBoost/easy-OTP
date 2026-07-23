@@ -9,22 +9,32 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from google.transit import gtfs_realtime_pb2
 
 from family_a.matcher import (
+    cumulative_distances,
     load_fallback_shapes_from_stops,
     load_shape_dist_traveled,
     load_shapes,
     load_stop_locations,
     load_trip_shape_index,
     match_snapshots,
+    observed_trip_ids,
     project_point_to_polyline,
+    project_point_to_polyline_windowed,
     resolve_trip_shapes,
     snapshot_feed_timestamp,
 )
 
 # A straight north-south line, ~0.01 deg lat apart (~1.1km per segment) at the equator.
 _STRAIGHT_LINE = [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0)]
+
+# Out-and-back loop mirroring shape 154679's exact structure (FA-11 handoff) and
+# test_interpolate.py's own _LOOP_LINE: the coordinate (0.01, 0.0) occurs at a low index (1)
+# and a high index (3), an exact match both times - the same class of ambiguity FA-12 protects
+# live-position matching against, now that FA-10/FA-11 already protect stop anchoring.
+_LOOP_LINE = [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0), (0.01, 0.0), (0.0, 0.0)]
 
 
 # ---------------------------------------------------------------------------
@@ -86,14 +96,31 @@ def _make_feed_message(entities: list[gtfs_realtime_pb2.FeedEntity]) -> bytes:
 
 
 def _vehicle_entity(
-    entity_id: str, trip_id: str, lat: float, lon: float, timestamp: int
+    entity_id: str,
+    trip_id: str,
+    lat: float,
+    lon: float,
+    timestamp: int,
+    current_stop_sequence: int | None = None,
+    stop_id: str = "",
 ) -> gtfs_realtime_pb2.FeedEntity:
+    """*current_stop_sequence*/*stop_id* (FA-12): optional VehiclePosition fields used for
+    windowed live-position matching. current_stop_sequence is omitted (proto HasField-checkable,
+    absent by default) unless explicitly given; stop_id defaults to the proto's own empty-string
+    default when not given - mirroring real feeds that never populate it (see the handoff's
+    cross-city coverage matrix).
+    """
+    kwargs = {}
+    if current_stop_sequence is not None:
+        kwargs["current_stop_sequence"] = current_stop_sequence
     return gtfs_realtime_pb2.FeedEntity(
         id=entity_id,
         vehicle=gtfs_realtime_pb2.VehiclePosition(
             trip=gtfs_realtime_pb2.TripDescriptor(trip_id=trip_id),
             position=gtfs_realtime_pb2.Position(latitude=lat, longitude=lon),
             timestamp=timestamp,
+            stop_id=stop_id,
+            **kwargs,
         ),
     )
 
@@ -585,6 +612,333 @@ def test_match_snapshots_shape_cumulative_dist_omitted_is_unchanged(tmp_path):
     df_with_none = match_snapshots([path], trip_shapes, shapes, shape_cumulative_dist=None)
 
     assert df_without_param.equals(df_with_none)
+
+
+# ---------------------------------------------------------------------------
+# project_point_to_polyline_windowed (FA-12)
+# ---------------------------------------------------------------------------
+
+
+def test_project_point_to_polyline_windowed_excludes_out_of_window_pass():
+    cumulative = cumulative_distances(_LOOP_LINE)
+    d = cumulative[1]
+
+    # The duplicated point (0.01, 0.0) occurs at cumulative[1]==d (early pass) and
+    # cumulative[3]==3*d (late pass). Restricting the window to [2d, 4d] excludes the
+    # early pass entirely, unlike the unrestricted project_point_to_polyline, which
+    # ties to the lowest index (see the sibling test below).
+    result = project_point_to_polyline_windowed(0.01, 0.0, _LOOP_LINE, cumulative, 2 * d, 4 * d)
+
+    assert result is not None
+    dist_along_m, perp_m = result
+    assert dist_along_m == cumulative[3]
+    assert perp_m == 0.0
+
+
+def test_project_point_to_polyline_windowed_unrestricted_would_tie_to_early_pass():
+    cumulative = cumulative_distances(_LOOP_LINE)
+    d = cumulative[1]
+    assert project_point_to_polyline(0.01, 0.0, _LOOP_LINE)[0] == d
+
+
+def test_project_point_to_polyline_windowed_returns_none_when_nothing_in_range():
+    cumulative = cumulative_distances(_LOOP_LINE)
+    total_len = cumulative[-1]
+    # A window entirely past the end of the polyline can never contain a projected point.
+    result = project_point_to_polyline_windowed(
+        0.0, 0.0, _LOOP_LINE, cumulative, total_len + 1000.0, total_len + 2000.0
+    )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# match_snapshots windowed live-position matching (FA-12)
+# ---------------------------------------------------------------------------
+
+
+def _loop_trip_anchors():
+    """One trip's hand-built FA-10/FA-11-style anchor list on _LOOP_LINE.
+
+    Mirrors the exact ambiguity test_interpolate.py's own FA-11 test targets (stop_id
+    "sX" physically visited twice, at the loop's early and late pass of the same
+    duplicated coordinate) - built directly rather than via
+    interpolate.resolve_all_trip_stop_anchors, keeping this test focused purely on
+    matcher.py's own windowing logic.
+    """
+    cumulative = cumulative_distances(_LOOP_LINE)
+    return [
+        (0, "s0", cumulative[0]),
+        (1, "sX", cumulative[1]),
+        (2, "s2", cumulative[2]),
+        (3, "sX", cumulative[3]),
+        (4, "s4", cumulative[4]),
+    ], cumulative
+
+
+def test_match_snapshots_windowed_sequence_avoids_distant_loop_pass(tmp_path):
+    # Priority acceptance criterion (PRD FA-12): a live observation at a duplicated
+    # loop coordinate, reporting current_stop_sequence for the LATE stop, must resolve
+    # to the late pass - not the early pass project_point_to_polyline's own
+    # context-free tie-break would pick (see the sibling test above), and not the
+    # early pass a stop-anchor-only fix (FA-10/FA-11) would still be vulnerable to
+    # for the live position axis itself.
+    trip_shapes = {"tripL": "loopshape"}
+    shapes = {"loopshape": _LOOP_LINE}
+    anchors, cumulative = _loop_trip_anchors()
+    trip_stop_anchors = {"tripL": anchors}
+
+    feed = _make_feed_message(
+        [
+            _vehicle_entity("e1", "tripL", 0.0, 0.0, 1_700_000_000, current_stop_sequence=0),
+            _vehicle_entity("e2", "tripL", 0.02, 0.0, 1_700_000_010, current_stop_sequence=2),
+            _vehicle_entity("e3", "tripL", 0.01, 0.0, 1_700_000_020, current_stop_sequence=3),
+        ]
+    )
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df = match_snapshots([path], trip_shapes, shapes, trip_stop_anchors=trip_stop_anchors)
+
+    assert df.attrs["position_signal"] == "sequence"
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    # Note: the loop-shaped polyline itself is exact Python floats, but the observed
+    # lat/lon passed through a real protobuf round-trip (VehiclePosition.latitude/
+    # longitude are proto `float`, i.e. float32) - pytest.approx absorbs that
+    # negligible (~1e-8 relative) precision loss, distinct from the tie-break logic
+    # under test.
+    assert df.iloc[2]["distance_along_shape_m"] == pytest.approx(cumulative[3])
+
+    # Contrast: today's unwindowed matching (trip_stop_anchors omitted) ties to the
+    # early pass for that same ambiguous observation - the exact bug this milestone
+    # closes for the live-position axis.
+    df_legacy = match_snapshots([path], trip_shapes, shapes)
+    assert df_legacy.attrs["position_signal"] == "none"
+    df_legacy = df_legacy.sort_values("timestamp").reset_index(drop=True)
+    assert df_legacy.iloc[2]["distance_along_shape_m"] == pytest.approx(cumulative[1])
+
+
+def test_match_snapshots_partial_coverage_falls_back_per_observation(tmp_path):
+    # Prague-like partial coverage (~68%): observations missing current_stop_sequence
+    # must still fall back correctly to unrestricted matching, without breaking the
+    # ones that do have the field, at the default (0.60) threshold.
+    trip_shapes = {"tripL": "loopshape"}
+    shapes = {"loopshape": _LOOP_LINE}
+    anchors, cumulative = _loop_trip_anchors()
+    trip_stop_anchors = {"tripL": anchors}
+
+    entities = [
+        _vehicle_entity("e0", "tripL", 0.0, 0.0, 1_700_000_000, current_stop_sequence=0),
+        _vehicle_entity("e1", "tripL", 0.02, 0.0, 1_700_000_010, current_stop_sequence=1),
+    ]
+    # ~68% coverage (Prague-like): 8 observations with the field (the 2 above + 6 more),
+    # 5 without (4 here + 1 ambiguous below) = 8/13 ~= 61.5%, above the 0.60 threshold.
+    for i in range(6):
+        entities.append(
+            _vehicle_entity(f"e_seq{i}", "tripL", 0.0, 0.0, 1_700_000_020 + i, current_stop_sequence=0)
+        )
+    for i in range(4):
+        entities.append(_vehicle_entity(f"e_nofield{i}", "tripL", 0.0, 0.0, 1_700_000_100 + i))
+    # The ambiguous duplicated-point observation, missing the field entirely - must fall
+    # back to the unrestricted (early-pass) result for this one observation only.
+    entities.append(_vehicle_entity("e_ambig", "tripL", 0.01, 0.0, 1_700_000_200))
+
+    feed = _make_feed_message(entities)
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df = match_snapshots([path], trip_shapes, shapes, trip_stop_anchors=trip_stop_anchors)
+
+    assert df.attrs["position_signal"] == "sequence"
+    coverage = df.attrs["position_signal_coverage"]["sequence"]
+    assert 0.60 <= coverage < 0.90
+
+    ambig_row = df[df["timestamp"] == datetime.fromtimestamp(1_700_000_200, tz=timezone.utc)]
+    assert len(ambig_row) == 1
+    assert ambig_row.iloc[0]["distance_along_shape_m"] == pytest.approx(cumulative[1])
+
+
+def test_match_snapshots_threshold_comparison_60_vs_90(tmp_path):
+    # The exact comparison Michał asked for: the same ~68%-coverage synthetic day,
+    # run once at the decided default (0.60, capability engages) and once at a
+    # stricter 0.90 (capability does not engage) - demonstrating the practical
+    # difference the threshold choice makes on the Prague-like edge case.
+    trip_shapes = {"tripL": "loopshape"}
+    shapes = {"loopshape": _LOOP_LINE}
+    anchors, cumulative = _loop_trip_anchors()
+    trip_stop_anchors = {"tripL": anchors}
+
+    entities = [
+        _vehicle_entity("e0", "tripL", 0.0, 0.0, 1_700_000_000, current_stop_sequence=0),
+        _vehicle_entity("e1", "tripL", 0.02, 0.0, 1_700_000_010, current_stop_sequence=1),
+    ]
+    for i in range(6):
+        entities.append(
+            _vehicle_entity(f"e_seq{i}", "tripL", 0.0, 0.0, 1_700_000_020 + i, current_stop_sequence=0)
+        )
+    for i in range(4):
+        entities.append(_vehicle_entity(f"e_nofield{i}", "tripL", 0.0, 0.0, 1_700_000_100 + i))
+    entities.append(_vehicle_entity("e_ambig", "tripL", 0.01, 0.0, 1_700_000_200, current_stop_sequence=3))
+
+    feed = _make_feed_message(entities)
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df_60 = match_snapshots(
+        [path], trip_shapes, shapes, trip_stop_anchors=trip_stop_anchors,
+        position_signal_coverage_threshold=0.60,
+    )
+    df_90 = match_snapshots(
+        [path], trip_shapes, shapes, trip_stop_anchors=trip_stop_anchors,
+        position_signal_coverage_threshold=0.90,
+    )
+
+    assert df_60.attrs["position_signal"] == "sequence"
+    assert df_90.attrs["position_signal"] == "none"
+
+    ambig_ts = datetime.fromtimestamp(1_700_000_200, tz=timezone.utc)
+    ambig_60 = df_60[df_60["timestamp"] == ambig_ts].iloc[0]
+    ambig_90 = df_90[df_90["timestamp"] == ambig_ts].iloc[0]
+
+    # At 0.60: capability engages, the observation's own current_stop_sequence=3
+    # windows it correctly to the late pass. At 0.90: capability never engages for
+    # this day at all, so the SAME observation - despite carrying the field - falls
+    # back to today's unrestricted (early-pass) tie-break.
+    assert ambig_60["distance_along_shape_m"] == pytest.approx(cumulative[3])
+    assert ambig_90["distance_along_shape_m"] == pytest.approx(cumulative[1])
+    assert ambig_60["distance_along_shape_m"] != ambig_90["distance_along_shape_m"]
+
+
+def test_match_snapshots_zero_coverage_stays_full_fallback(tmp_path):
+    # Gdańsk-like: neither field ever populated - the whole day must fall back to
+    # today's unrestricted matching, no exceptions, no partial windowing, even though
+    # trip_stop_anchors is given.
+    trip_shapes = {"tripL": "loopshape"}
+    shapes = {"loopshape": _LOOP_LINE}
+    anchors, cumulative = _loop_trip_anchors()
+    trip_stop_anchors = {"tripL": anchors}
+
+    feed = _make_feed_message(
+        [
+            _vehicle_entity("e1", "tripL", 0.0, 0.0, 1_700_000_000),
+            _vehicle_entity("e2", "tripL", 0.01, 0.0, 1_700_000_010),
+        ]
+    )
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df = match_snapshots([path], trip_shapes, shapes, trip_stop_anchors=trip_stop_anchors)
+
+    assert df.attrs["position_signal"] == "none"
+    assert df.attrs["position_signal_coverage"] == {"sequence": 0.0, "stop_id": 0.0}
+    row = df[df["timestamp"] == datetime.fromtimestamp(1_700_000_010, tz=timezone.utc)].iloc[0]
+    assert row["distance_along_shape_m"] == pytest.approx(cumulative[1])
+
+
+def test_match_snapshots_stop_id_recurrence_disambiguated_by_prior_confirmed_index(tmp_path):
+    # PRD FA-12 "Ograniczenia" point 5: stop_id "sX" occurs twice in this trip's own
+    # pattern (stop_sequence 1 and 3, the loop's early and late pass of the same
+    # physical stop). No observation ever carries current_stop_sequence, so the day's
+    # signal is stop_id. The first "sX" observation (no prior confirmed state) must
+    # resolve to the EARLY occurrence; a later "sX" observation, after the trip has
+    # already been confirmed past stop_sequence 1, must resolve to the LATE occurrence
+    # - not an arbitrary first/last pick.
+    trip_shapes = {"tripX": "loopshape"}
+    shapes = {"loopshape": _LOOP_LINE}
+    anchors, cumulative = _loop_trip_anchors()
+    trip_stop_anchors = {"tripX": anchors}
+
+    feed = _make_feed_message(
+        [
+            _vehicle_entity("e1", "tripX", 0.0, 0.0, 1_700_000_000, stop_id="s0"),
+            _vehicle_entity("e2", "tripX", 0.01, 0.0, 1_700_000_010, stop_id="sX"),
+            _vehicle_entity("e3", "tripX", 0.02, 0.0, 1_700_000_020, stop_id="s2"),
+            _vehicle_entity("e4", "tripX", 0.01, 0.0, 1_700_000_030, stop_id="sX"),
+        ]
+    )
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df = match_snapshots([path], trip_shapes, shapes, trip_stop_anchors=trip_stop_anchors)
+
+    assert df.attrs["position_signal"] == "stop_id"
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    first_sx = df.iloc[1]
+    second_sx = df.iloc[3]
+    assert first_sx["distance_along_shape_m"] == pytest.approx(cumulative[1])
+    assert second_sx["distance_along_shape_m"] == pytest.approx(cumulative[3])
+
+
+def test_match_snapshots_windowing_works_for_0_indexed_and_1_indexed_stop_sequence(tmp_path):
+    # PRD FA-12 point 4: stop_sequence numbering base must be derived per feed, never
+    # hardcoded - confirmed empirically: Poznań is 0-indexed, Prague is 1-indexed.
+    # Two feeds differing ONLY in whether their stop_sequence starts at 0 or 1 must
+    # both window the same ambiguous observation correctly.
+    trip_shapes = {"tripL": "loopshape"}
+    shapes = {"loopshape": _LOOP_LINE}
+    cumulative = cumulative_distances(_LOOP_LINE)
+
+    zero_indexed_anchors = {
+        "tripL": [
+            (0, "s0", cumulative[0]),
+            (1, "s1", cumulative[1]),
+            (2, "s2", cumulative[2]),
+            (3, "s3", cumulative[3]),
+        ]
+    }
+    one_indexed_anchors = {
+        "tripL": [
+            (1, "s0", cumulative[0]),
+            (2, "s1", cumulative[1]),
+            (3, "s2", cumulative[2]),
+            (4, "s3", cumulative[3]),
+        ]
+    }
+
+    feed_zero_indexed = _make_feed_message(
+        [_vehicle_entity("e1", "tripL", 0.01, 0.0, 1_700_000_000, current_stop_sequence=3)]
+    )
+    feed_one_indexed = _make_feed_message(
+        [_vehicle_entity("e1", "tripL", 0.01, 0.0, 1_700_000_000, current_stop_sequence=4)]
+    )
+    path_zero = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed_zero_indexed)
+    path_one = _write_pb(tmp_path / "snapshot_20260101-000001.pb", feed_one_indexed)
+
+    df_zero = match_snapshots([path_zero], trip_shapes, shapes, trip_stop_anchors=zero_indexed_anchors)
+    df_one = match_snapshots([path_one], trip_shapes, shapes, trip_stop_anchors=one_indexed_anchors)
+
+    assert df_zero.attrs["position_signal"] == "sequence"
+    assert df_one.attrs["position_signal"] == "sequence"
+    assert df_zero.iloc[0]["distance_along_shape_m"] == pytest.approx(cumulative[3])
+    assert df_one.iloc[0]["distance_along_shape_m"] == pytest.approx(cumulative[3])
+
+
+# ---------------------------------------------------------------------------
+# observed_trip_ids (FA-12)
+# ---------------------------------------------------------------------------
+
+
+def test_observed_trip_ids_collects_distinct_non_empty_trip_ids(tmp_path):
+    feed = gtfs_realtime_pb2.FeedMessage(
+        header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
+        entity=[
+            _vehicle_entity("e1", "trip1", 0.0, 0.0, 1_700_000_000),
+            _vehicle_entity("e2", "trip1", 0.01, 0.0, 1_700_000_010),
+            _vehicle_entity("e3", "trip2", 0.0, 0.0, 1_700_000_020),
+            _vehicle_entity("e4", "", 0.0, 0.0, 1_700_000_030),  # empty trip_id excluded
+            gtfs_realtime_pb2.FeedEntity(
+                id="e5",
+                trip_update=gtfs_realtime_pb2.TripUpdate(
+                    trip=gtfs_realtime_pb2.TripDescriptor(trip_id="trip3")
+                ),
+            ),  # no "vehicle" field - excluded
+        ],
+    )
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed.SerializeToString())
+
+    assert observed_trip_ids([path]) == {"trip1", "trip2"}
+
+
+def test_observed_trip_ids_skips_corrupt_snapshot(tmp_path):
+    good_feed = _make_feed_message([_vehicle_entity("e1", "trip1", 0.0, 0.0, 1_700_000_000)])
+    good_path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", good_feed)
+    bad_path = _write_pb(tmp_path / "snapshot_20260101-000001.pb", b"\xff\xfenot-a-feed")
+
+    assert observed_trip_ids([good_path, bad_path]) == {"trip1"}
 
 
 # ---------------------------------------------------------------------------

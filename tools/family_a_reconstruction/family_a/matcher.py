@@ -45,6 +45,7 @@ No QGIS / GDAL imports. Run tests: pytest tests/test_matcher.py -v
 
 from __future__ import annotations
 
+import bisect
 import csv
 import io
 import logging
@@ -61,6 +62,17 @@ logger = logging.getLogger(__name__)
 _R_M = 6_371_000.0
 
 _MATCHED_COLUMNS = ["trip_id", "timestamp", "distance_along_shape_m", "perpendicular_dist_m"]
+
+# PRD FA-12, "otwarte kwestie" #4: fraction of a feed/day's VehiclePosition entities (with a
+# non-empty trip_id) that must carry a usable current_stop_sequence (or, failing that, stop_id)
+# before that whole day is treated as having "capability" for windowed live-position matching.
+# Prague's real measured coverage is exactly the borderline case the PRD flags as needing a real
+# decision rather than an arbitrary cutoff (68% current_stop_sequence, 0.5% stop_id) - CONFIRMED
+# WITH MICHAŁ (2026-07-23): 0.60, so Prague qualifies via current_stop_sequence. See
+# tests/test_matcher.py's threshold-comparison test (0.60 vs 0.90 on a Prague-like ~68%-coverage
+# synthetic day) and this milestone's real-data verification on archived Prague 07-17/07-18 data
+# for the empirical difference this choice makes.
+DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD = 0.60
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -445,6 +457,111 @@ def project_point_to_polyline(
     return best_dist_along_m, best_perp_m
 
 
+def project_point_to_polyline_windowed(
+    lat: float,
+    lon: float,
+    polyline: list[tuple[float, float]],
+    cumulative: list[float],
+    window_lo_m: float,
+    window_hi_m: float,
+) -> tuple[float, float] | None:
+    """Like project_point_to_polyline, but restricted to [window_lo_m, window_hi_m] (FA-12).
+
+    Same per-segment search and tie-break as project_point_to_polyline (lowest-index wins),
+    but a segment is only considered when its own projected point's dist_along_m falls inside
+    the window - this is what stops a live observation from ever being matched to a distant,
+    geometrically-close pass of a loop/out-and-back shape outside its own neighboring scheduled
+    stops, even after FA-10/FA-11 corrected the stop anchors themselves.
+
+    Mirrors interpolate.resolve_stop_distances_for_pattern's own segment-selection pattern
+    (cheap pre-filter via cumulative distance, then a straddling-segment re-check against the
+    actual projected point - a segment whose far endpoint is inside the window can still project
+    onto its own outside-the-window portion) generalized from one bound (backward-only) to two.
+
+    Returns None - never raises, never falls back itself - when no segment's projected point
+    lands inside the window at all; the caller decides the fallback (today's unrestricted
+    project_point_to_polyline), same "never a hard error" convention FA-11 established.
+    """
+    best_perp_m = math.inf
+    best_dist_along_m: float | None = None
+
+    for i in range(len(polyline) - 1):
+        if cumulative[i + 1] < window_lo_m or cumulative[i] > window_hi_m:
+            continue
+        lat1, lon1 = polyline[i]
+        lat2, lon2 = polyline[i + 1]
+        dist_along_m, perp_m = _project_onto_segment(lat, lon, lat1, lon1, lat2, lon2, cumulative[i])
+        if dist_along_m < window_lo_m or dist_along_m > window_hi_m:
+            continue
+        if perp_m < best_perp_m:
+            best_perp_m = perp_m
+            best_dist_along_m = dist_along_m
+
+    if best_dist_along_m is None:
+        return None
+    return best_dist_along_m, best_perp_m
+
+
+def _bracket_window_for_sequence(
+    anchors: list[tuple[int, str, float]], current_seq: int
+) -> tuple[float, float]:
+    """Window [dist(stop[idx-1]), dist(stop[idx+1])] for a current_stop_sequence value (FA-12).
+
+    anchors is one trip's own resolved stop anchor list (see
+    interpolate.resolve_all_trip_stop_anchors), sorted ascending by stop_sequence. idx is the
+    anchor position whose stop_sequence matches current_seq; when current_seq isn't an exact
+    match (a real feed's RT producer numbering doesn't perfectly track its own static
+    stop_sequence, or a gap - PRD Ograniczenia: consecutive snapshots can jump e.g. 15->17),
+    idx defensively clamps to the nearest bracketing position via bisect rather than raising.
+
+    PRD FA-12 point 4: the stop_sequence numbering base (0- vs 1-indexed) must be derived per
+    feed, never hardcoded - confirmed empirically: Poznań is 0-indexed, Prague is 1-indexed.
+    This lookup satisfies that without any explicit base arithmetic at all: it always searches
+    for the real stop_sequence *value* via bisect, never treats current_seq as a raw list index
+    into anchors - so a 0-indexed and a 1-indexed feed both work correctly unchanged (see
+    test_match_snapshots_windowing_works_for_0_indexed_and_1_indexed_stop_sequence).
+    """
+    seqs = [seq for seq, _stop_id, _dist in anchors]
+    idx = bisect.bisect_left(seqs, current_seq)
+    if idx >= len(seqs):
+        idx = len(seqs) - 1
+    lo_idx = max(idx - 1, 0)
+    hi_idx = min(idx + 1, len(anchors) - 1)
+    return anchors[lo_idx][2], anchors[hi_idx][2]
+
+
+def _bracket_window_for_stop_id(
+    anchors: list[tuple[int, str, float]],
+    stop_id: str,
+    last_confirmed_seq: int | None,
+) -> tuple[tuple[float, float], int] | None:
+    """Window + chosen stop_sequence for a stop_id signal observation (FA-12).
+
+    A stop_id can legitimately occur more than once in one trip's stop_sequence on a loop/
+    out-and-back shape (PRD Ograniczenia point 5) - a naive stop_id -> index lookup would be
+    ambiguous, exactly the class of bug this whole FA-10..FA-12 series exists to fix. Among all
+    occurrences, picks the smallest stop_sequence that is >= last_confirmed_seq (monotonic
+    continuation of this same trip's own prior confirmed position in time order), or the first
+    occurrence if this trip has no prior confirmed state yet. Falls back to the last occurrence
+    only in the degenerate case where every occurrence is already behind last_confirmed_seq
+    (implausible in practice; never an arbitrary first/last pick in the normal case).
+
+    Returns None if stop_id is not part of this trip's pattern at all - signals the caller to
+    fall back to unrestricted matching for this observation.
+    """
+    occurrences = [(seq, dist) for seq, sid, dist in anchors if sid == stop_id]
+    if not occurrences:
+        return None
+
+    if last_confirmed_seq is None:
+        chosen_seq, _chosen_dist = occurrences[0]
+    else:
+        candidates = [(seq, dist) for seq, dist in occurrences if seq >= last_confirmed_seq]
+        chosen_seq, _chosen_dist = candidates[0] if candidates else occurrences[-1]
+
+    return _bracket_window_for_sequence(anchors, chosen_seq), chosen_seq
+
+
 # ---------------------------------------------------------------------------
 # Snapshot decoder + matcher
 # ---------------------------------------------------------------------------
@@ -482,12 +599,45 @@ def snapshot_feed_timestamp(path: Path) -> datetime | None:
     return datetime.fromtimestamp(feed.header.timestamp, tz=timezone.utc)
 
 
+def observed_trip_ids(snapshot_paths: list[Path]) -> set[str]:
+    """Every distinct non-empty vehicle.trip.trip_id seen across snapshot_paths (FA-12).
+
+    A cheap, geometry-free decode pass (a real static feed's own trip roster can be tens of
+    thousands of trips, e.g. Gdańsk: ~93,600 - but any single day's RT feed only ever reports
+    the small subset of trips actually running, typically a few hundred to a few thousand
+    distinct trip_ids). Used by the CLI to restrict interpolate.resolve_all_trip_stop_anchors to
+    only the trips this match run could possibly need a window for, instead of eagerly resolving
+    every trip in the entire static feed regardless of whether it was ever observed - the latter
+    made 'match' (which never touched stop_times.txt at all before FA-12) pay a whole-feed cost
+    proportional to static feed size rather than RT data volume.
+
+    Corrupt/unreadable snapshots are silently skipped here (this is a sampling pass, not the
+    real matching pass - match_snapshots's own decode pass is what counts a "corrupt_snapshot"
+    rejection).
+    """
+    trip_ids: set[str] = set()
+    for path in snapshot_paths:
+        try:
+            feed = _decode_snapshot(path.read_bytes())
+        except Exception:  # noqa: BLE001 - corrupt/unreadable snapshot, skip
+            continue
+        for entity in feed.entity:
+            if not entity.HasField("vehicle"):
+                continue
+            trip_id = entity.vehicle.trip.trip_id
+            if trip_id:
+                trip_ids.add(trip_id)
+    return trip_ids
+
+
 def match_snapshots(
     snapshot_paths: list[Path],
     trip_shapes: dict[str, str],
     shapes: dict[str, list[tuple[float, float]]],
     max_perpendicular_dist_m: float = 100.0,
     shape_cumulative_dist: dict[str, list[float]] | None = None,
+    trip_stop_anchors: dict[str, list[tuple[int, str, float]]] | None = None,
+    position_signal_coverage_threshold: float = DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD,
 ) -> pd.DataFrame:
     """Map-match VehiclePosition entities across all snapshot_paths onto shapes.
 
@@ -505,6 +655,28 @@ def match_snapshots(
     distance_along_shape_m on the same axis as a shape_dist_traveled-anchored
     stop. Omitted (the default) or missing an entry for a given shape_id
     falls back to geometric (haversine) projection exactly as before.
+
+    *trip_stop_anchors* (FA-12): optional trip_id -> this trip's own resolved
+    stop anchor list (see interpolate.resolve_all_trip_stop_anchors), each a
+    [(stop_sequence, stop_id, distance_along_shape_m), ...] sorted by
+    stop_sequence - the already-corrected FA-10/FA-11 anchors. When given
+    (non-empty), a per-day capability is detected once from a single decode
+    pass over every VehiclePosition with a non-empty trip_id: the fraction
+    with a usable current_stop_sequence (proto HasField-checkable) and,
+    separately, with a non-empty stop_id, each compared against
+    *position_signal_coverage_threshold*. Priority: current_stop_sequence,
+    then stop_id, else "none" (today's fully unrestricted behaviour) - see
+    _bracket_window_for_sequence/_bracket_window_for_stop_id. This decision is
+    per-day (one match_snapshots call = one recording session, per cli.py's
+    own per-directory loop), never per-observation: a single observation
+    missing the day's chosen signal field simply falls back to unrestricted
+    matching for that one observation, without changing the day's decision.
+    Omitting *trip_stop_anchors* (the default) or passing {} reproduces
+    today's behaviour exactly, zero windowing, same "empty ⇒ no trust data"
+    convention shape_dist.evaluate_shape_trust already established.
+    current_status is never read anywhere in this module - GTFS-RT marks it
+    optional and real feeds were found to leave it unset/default almost
+    always, so no window logic depends on it.
 
     Columns: trip_id, timestamp (UTC datetime64), distance_along_shape_m,
     perpendicular_dist_m. One row per accepted observation, sorted by
@@ -528,7 +700,10 @@ def match_snapshots(
     `df.attrs["snapshots_processed"]` — pandas' documented mechanism for
     frame-level metadata — since the return type is fixed to a plain
     DataFrame by this function's public contract. Callers (the CLI) read
-    these attrs to print a summary.
+    these attrs to print a summary. FA-12 adds `df.attrs["position_signal"]`
+    ("sequence" | "stop_id" | "none") and `df.attrs["position_signal_coverage"]`
+    ({"sequence": float, "stop_id": float}, both 0.0 when trip_stop_anchors was
+    omitted) for the same reason.
 
     Snapshots are re-sorted by filename internally (chronological, given
     FA-1's snapshot_YYYYmmdd-HHMMSS.pb naming), independent of the order
@@ -542,8 +717,19 @@ def match_snapshots(
         "corrupt_snapshot": 0,
         "too_far_from_route": 0,
     }
-    rows: list[tuple[str, datetime, float, float]] = []
 
+    # Pass 1: decode every snapshot exactly once into an in-memory record list. Replaces (not
+    # duplicates) what used to be the whole loop body - the two extra fields read here
+    # (current_stop_sequence/stop_id) cost nothing extra file-I/O-wise, and this same in-memory
+    # list is reused below both for FA-12's capability sampling and for the actual matching pass,
+    # so a whole day's snapshots are still only ever decoded once.
+    #
+    # FA-12's per-trip last_confirmed_seq (below) relies on records for the same trip_id being
+    # encountered here in time order - true given ordered_paths' filename sort (FA-1's
+    # snapshot_YYYYmmdd-HHMMSS.pb naming) and one entity per vehicle per snapshot instant, same
+    # assumption the rest of this function already makes (see this docstring's "Snapshots are
+    # re-sorted..." paragraph and interpolate_stop_time's own chronological-scan design).
+    records: list[tuple[str, datetime, float, float, bool, int, str]] = []
     for path in ordered_paths:
         try:
             feed = _decode_snapshot(path.read_bytes())
@@ -561,23 +747,95 @@ def match_snapshots(
                 rejects["no_trip_id"] += 1
                 continue
 
-            shape_id = trip_shapes.get(trip_id)
-            polyline = shapes.get(shape_id) if shape_id is not None else None
-            if polyline is None:
-                rejects["unknown_shape"] += 1
-                continue
-
             lat = vp.position.latitude
             lon = vp.position.longitude
-            cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
+            ts = datetime.fromtimestamp(vp.timestamp, tz=timezone.utc)
+            has_seq = vp.HasField("current_stop_sequence")
+            seq_val = vp.current_stop_sequence if has_seq else 0
+            stop_id_val = vp.stop_id
+            records.append((trip_id, ts, lat, lon, has_seq, seq_val, stop_id_val))
+
+    # FA-12: per-day capability detection. trip_stop_anchors omitted/empty short-circuits to
+    # "none" immediately - zero behaviour change, same convention as
+    # shape_dist.evaluate_shape_trust's empty-dict case.
+    signal = "none"
+    coverage_seq = 0.0
+    coverage_stop_id = 0.0
+    if trip_stop_anchors:
+        total = len(records)
+        if total:
+            coverage_seq = sum(1 for r in records if r[4]) / total
+            coverage_stop_id = sum(1 for r in records if r[6]) / total
+        if coverage_seq >= position_signal_coverage_threshold:
+            signal = "sequence"
+        elif coverage_stop_id >= position_signal_coverage_threshold:
+            signal = "stop_id"
+        logger.info(
+            "matcher.py: FA-12 position signal=%s (sequence coverage=%.1f%%, stop_id "
+            "coverage=%.1f%%, threshold=%.1f%%, %d entities sampled).",
+            signal, coverage_seq * 100, coverage_stop_id * 100,
+            position_signal_coverage_threshold * 100, total,
+        )
+
+    rows: list[tuple[str, datetime, float, float]] = []
+    last_confirmed_seq: dict[str, int] = {}
+
+    for trip_id, ts, lat, lon, has_seq, seq_val, stop_id_val in records:
+        shape_id = trip_shapes.get(trip_id)
+        polyline = shapes.get(shape_id) if shape_id is not None else None
+        if polyline is None:
+            rejects["unknown_shape"] += 1
+            continue
+
+        cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
+        if cumulative is None:
+            cumulative = cumulative_distances(polyline)
+
+        anchors = trip_stop_anchors.get(trip_id) if (signal != "none" and trip_stop_anchors) else None
+        window: tuple[float, float] | None = None
+        confirmed_seq: int | None = None
+
+        if anchors:
+            if signal == "sequence" and has_seq:
+                window = _bracket_window_for_sequence(anchors, seq_val)
+                confirmed_seq = seq_val
+            elif signal == "stop_id" and stop_id_val:
+                bracket = _bracket_window_for_stop_id(anchors, stop_id_val, last_confirmed_seq.get(trip_id))
+                if bracket is not None:
+                    window, confirmed_seq = bracket
+
+        dist_along_m: float | None = None
+        perp_m: float | None = None
+        if window is not None:
+            window_lo_m, window_hi_m = window
+            windowed = project_point_to_polyline_windowed(
+                lat, lon, polyline, cumulative, window_lo_m, window_hi_m
+            )
+            if windowed is None:
+                logger.warning(
+                    "matcher.py: FA-12 windowed search found nothing for trip_id=%s within "
+                    "[%.1fm, %.1fm] - falling back to unrestricted search.",
+                    trip_id, window_lo_m, window_hi_m,
+                )
+            else:
+                dist_along_m, perp_m = windowed
+
+        if dist_along_m is None:
             dist_along_m, perp_m = project_point_to_polyline(lat, lon, polyline, cumulative=cumulative)
 
-            if perp_m > max_perpendicular_dist_m:
-                rejects["too_far_from_route"] += 1
-                continue
+        # Deliberately updated before the too-far-from-route check below: the vehicle's own
+        # current_stop_sequence/stop_id is a claim about its position in the trip, independent
+        # of this observation's geometric match quality - an observation that gets rejected as
+        # too far from the route still genuinely represents the trip having reached (at least)
+        # this stop_sequence, and future stop_id disambiguation on this trip should account for it.
+        if confirmed_seq is not None:
+            last_confirmed_seq[trip_id] = confirmed_seq
 
-            ts = datetime.fromtimestamp(vp.timestamp, tz=timezone.utc)
-            rows.append((trip_id, ts, dist_along_m, perp_m))
+        if perp_m > max_perpendicular_dist_m:
+            rejects["too_far_from_route"] += 1
+            continue
+
+        rows.append((trip_id, ts, dist_along_m, perp_m))
 
     df = pd.DataFrame(rows, columns=_MATCHED_COLUMNS)
     if not df.empty:
@@ -586,4 +844,6 @@ def match_snapshots(
 
     df.attrs["reject_counts"] = rejects
     df.attrs["snapshots_processed"] = len(ordered_paths)
+    df.attrs["position_signal"] = signal
+    df.attrs["position_signal_coverage"] = {"sequence": coverage_seq, "stop_id": coverage_stop_id}
     return df

@@ -15,6 +15,7 @@ import argparse
 import pytest
 from google.transit import gtfs_realtime_pb2
 
+from family_a import matcher
 from family_a.cli import _cmd_build, _cmd_match, _cmd_record, _duration_minutes, build_parser
 from family_a.recorder import SnapshotFetchError
 
@@ -49,6 +50,16 @@ def test_match_defaults():
     assert args.func is _cmd_match
     assert args.max_perpendicular_dist_m == 100.0
     assert args.positions_dir == ["pos"]
+    assert args.position_signal_coverage_threshold == matcher.DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD
+
+
+def test_match_position_signal_coverage_threshold_override():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["match", "--positions-dir", "pos", "--static", "gtfs.zip", "--out", "out.csv",
+         "--position-signal-coverage-threshold", "0.9"]
+    )
+    assert args.position_signal_coverage_threshold == 0.9
 
 
 def test_match_positions_dir_accepts_multiple_values():
@@ -270,6 +281,7 @@ def _make_match_args(tmp_path, **overrides):
         out = None
         max_perpendicular_dist_m = 100.0
         exclude_route_id = []
+        position_signal_coverage_threshold = matcher.DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD
 
     ns = _NS()
     for key, value in overrides.items():
@@ -298,6 +310,83 @@ def test_cmd_match_end_to_end_writes_csv(tmp_path, capsys):
     assert "Observations matched" in captured.out
     assert "Directories merged: 1" in captured.out
     assert "Recording date range: 2026-01-01 to 2026-01-01" in captured.out
+
+
+def test_cmd_match_missing_stop_times_disables_fa12_windowing_with_warning(tmp_path, capsys):
+    # _make_gtfs_zip has no stop_times.txt (match has never required it when shapes.txt
+    # is present) - FA-12's own static-index load must degrade gracefully (no crash,
+    # a clear warning, trip_stop_anchors={}) rather than newly hard-failing 'match' for
+    # a static feed shape it previously supported.
+    gtfs = _make_gtfs_zip(tmp_path)
+    _write_snapshot(tmp_path)
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(tmp_path, static=str(gtfs), out=str(out_path))
+    result = _cmd_match(args)
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "FA-12 live-position windowing disabled" in captured.err
+    assert "Position signal (FA-12)" in captured.out
+    assert "none" in captured.out
+
+
+def _make_gtfs_zip_with_stop_times(tmp_path):
+    """Like _make_gtfs_zip, plus stops.txt/stop_times.txt so FA-12 can resolve stop anchors."""
+    path = tmp_path / "gtfs_fa12.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,shape_id\ntrip1,routeA,shape1\n")
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+            "shape1,0.0,0.0,0\n"
+            "shape1,0.01,0.0,1\n"
+            "shape1,0.02,0.0,2\n",
+        )
+        zf.writestr(
+            "stops.txt",
+            "stop_id,stop_lat,stop_lon\n"
+            "s0,0.0,0.0\n"
+            "s1,0.01,0.0\n"
+            "s2,0.02,0.0\n",
+        )
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,stop_id,stop_sequence\n"
+            "trip1,s0,0\n"
+            "trip1,s1,1\n"
+            "trip1,s2,2\n",
+        )
+    return path
+
+
+def test_cmd_match_end_to_end_reports_position_signal(tmp_path, capsys):
+    gtfs = _make_gtfs_zip_with_stop_times(tmp_path)
+    feed = gtfs_realtime_pb2.FeedMessage(
+        header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
+        entity=[
+            gtfs_realtime_pb2.FeedEntity(
+                id="e1",
+                vehicle=gtfs_realtime_pb2.VehiclePosition(
+                    trip=gtfs_realtime_pb2.TripDescriptor(trip_id="trip1"),
+                    position=gtfs_realtime_pb2.Position(latitude=0.005, longitude=0.0),
+                    timestamp=1_700_000_000,
+                    current_stop_sequence=0,
+                ),
+            )
+        ],
+    )
+    (tmp_path / "snapshot_20260101-000000.pb").write_bytes(feed.SerializeToString())
+    out_path = tmp_path / "matched.csv"
+
+    args = _make_match_args(tmp_path, static=str(gtfs), out=str(out_path))
+    result = _cmd_match(args)
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "FA-12 live-position windowing disabled" not in captured.err
+    assert "Position signal (FA-12)" in captured.out
+    assert "sequence" in captured.out
 
 
 def test_cmd_match_no_snapshots_found_returns_1(tmp_path, capsys):
