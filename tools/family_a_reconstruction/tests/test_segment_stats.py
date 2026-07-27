@@ -188,6 +188,86 @@ def test_collect_one_sided_interpolation_failure_is_a_gap():
     assert counts["segments_observed"] == 0
 
 
+def test_collect_wide_bracket_gap_excludes_only_that_stop_pair():
+    """FA-14, PRD §7 #10: a widely-time-spaced bracket rejects only the affected
+    stop pair (B->C) - the sibling pair in the same trip (A->B) is unaffected.
+    """
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 0), (2, "B", 100, 100), (3, "C", 300, 300)]},
+    )
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0), "C": (0.02, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+    d_c = stop_distance_along_shape(0.02, 0.0, _STRAIGHT_LINE)
+
+    # A->B bracketed by (t0, t50): 50s gap, accepted. B->C bracketed by (t50, t450):
+    # 400s gap, rejected (> DEFAULT_MAX_BRACKET_GAP_S = 300s).
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(50), d_b),
+        ("t1", _t(450), d_c),
+    ])
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+    )
+
+    key_ab = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
+    key_bc = ("R1", "0", "B", "C", "WEEKDAY", time_bucket_for_seconds(0, 120))
+    assert segment_times[key_ab] == pytest.approx([50.0])
+    assert key_bc not in segment_times
+    assert counts["segments_observed"] == 1
+    assert counts["interpolation_gaps"] == 1
+    assert counts["bracket_gap_rejected"] == 1
+
+
+def test_collect_bracket_gap_rejected_not_incremented_under_threshold():
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(100), d_b),
+    ])
+
+    _segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+    )
+    assert counts["bracket_gap_rejected"] == 0
+
+
+def test_collect_custom_max_bracket_gap_s_threading():
+    """A gap that passes the default (300s) but is rejected under a stricter
+    caller-supplied threshold - proves max_bracket_gap_s reaches interpolate_stop_time.
+    With only 2 observations, the same single bracketing pair is used to resolve both
+    d_from (A, at the series' first point) and d_to (B, at the series' second point),
+    so the rejection is counted twice - once per interpolate_stop_time call.
+    """
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(200), d_b),
+    ])
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
+        max_bracket_gap_s=60.0,
+    )
+    assert segment_times == {}
+    assert counts["bracket_gap_rejected"] == 2
+    assert counts["interpolation_gaps"] == 1
+
+
 def test_collect_trip_with_no_resolvable_shape_is_skipped():
     idx = _two_stop_static_index()
     trip_shapes: dict[str, str] = {}  # no shape for t1
@@ -238,13 +318,19 @@ def test_collect_rejects_implausible_segment_time():
     stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
     d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
 
-    # 3 hours between the two observations -> derived segment time > 7200s.
+    # 3 hours between the two observations -> derived segment time > 7200s. Disables
+    # FA-14's bracket-gap check (max_bracket_gap_s=None) to isolate this test to the
+    # seg_time sanity filter specifically - a 3h bracket gap would otherwise be caught
+    # by that earlier check first (see test_collect_wide_bracket_gap_excludes_only_that_stop_pair
+    # for a bracket-gap-specific test).
     matched = _matched_df([
         ("t1", _t(0), 0.0),
         ("t1", _t(3 * 3600), d_b),
     ])
 
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", max_bracket_gap_s=None
+    )
 
     assert segment_times == {}
     assert counts["rejected_seg_time"] == 1

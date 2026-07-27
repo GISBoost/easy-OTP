@@ -25,6 +25,7 @@ from family_a.build_gtfs import SegmentKey, segment_key_for
 from family_a.calendar_scope import day_type_for_date, time_bucket_for_seconds
 from family_a.interpolate import (
     DEFAULT_BACKWARD_TOLERANCE_M,
+    DEFAULT_MAX_BRACKET_GAP_S,
     interpolate_stop_time,
     resolve_stop_distances_for_pattern,
     stop_distance_along_shape,
@@ -51,6 +52,7 @@ def collect_segment_observations(
     shape_cumulative_dist: dict[str, list[float]] | None = None,
     trusted_stop_dist: dict[tuple[str, int], float] | None = None,
     backward_tolerance_m: float = DEFAULT_BACKWARD_TOLERANCE_M,
+    max_bracket_gap_s: float | None = DEFAULT_MAX_BRACKET_GAP_S,
 ) -> tuple[dict[SegmentKey, list[float]], dict[str, int]]:
     """For each trip's matched position series, interpolate every consecutive
     scheduled stop pair's crossing time and derive an observed segment
@@ -89,8 +91,22 @@ def collect_segment_observations(
       the derived travel time passed the sanity filter.
     - interpolation_gaps: both stops had a known location, but at least one
       crossing time couldn't be interpolated (the vehicle wasn't observed
-      in that part of the route within the recording window) - a data
-      density issue, not a data quality issue.
+      in that part of the route within the recording window, OR its
+      bracketing pair was rejected for a too-wide time gap - see
+      bracket_gap_rejected below) - a data density issue, not a data
+      quality issue.
+    - bracket_gap_rejected (FA-14, PRD §7 open question #10): counts individual
+      interpolate_stop_time CALLS (not stop pairs) rejected because the
+      bracketing pair of real GPS observations they found was spaced wider
+      than max_bracket_gap_s in time (sparse sampling at that point of the
+      route, not an actual gap in coverage). Each stop pair makes up to two
+      such calls (one for its "from" stop, one for its "to" stop), so this
+      counter is NOT a subset of interpolation_gaps and can exceed it
+      numerically - interpolation_gaps only increments once per stop pair
+      (when at least one of the two calls returns None, for any reason),
+      while bracket_gap_rejected increments once per rejected call, so a
+      single gap-affected stop pair can contribute up to 2 here but only 1
+      there.
     - missing_stop_location: at least one of the pair's stop_ids has no
       entry in stops.txt - a static-feed data quality issue, distinct from
       interpolation_gaps.
@@ -126,6 +142,7 @@ def collect_segment_observations(
         "trips_skipped_unresolvable": 0,
         "segments_observed": 0,
         "interpolation_gaps": 0,
+        "bracket_gap_rejected": 0,
         "missing_stop_location": 0,
         "rejected_seg_time": 0,
     }
@@ -191,8 +208,12 @@ def collect_segment_observations(
                 d_from = pattern_dist[seq_from]
                 d_to = pattern_dist[seq_to]
 
-            t_from = interpolate_stop_time(position_series, d_from)
-            t_to = interpolate_stop_time(position_series, d_to)
+            t_from = interpolate_stop_time(
+                position_series, d_from, max_bracket_gap_s=max_bracket_gap_s, counts=counts
+            )
+            t_to = interpolate_stop_time(
+                position_series, d_to, max_bracket_gap_s=max_bracket_gap_s, counts=counts
+            )
             if t_from is None or t_to is None:
                 counts["interpolation_gaps"] += 1
                 continue

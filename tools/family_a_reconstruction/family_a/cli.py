@@ -6,7 +6,7 @@ cmd.exe/PowerShell; see each subcommand's own --help for a copy-pasteable exampl
 
     py -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> [--duration-min N] [--interval-sec N]
     py -m family_a.cli match --positions-dir <dir> [<dir> ...] --static <gtfs.zip> --out <table> [--max-perpendicular-dist-m N]
-    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N]
+    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N] [--max-bracket-gap-seconds N]
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import pandas as pd
 
 from family_a.build_gtfs import load_static_index, rebuild_stop_times, repackage_gtfs
 from family_a.calendar_scope import load_service_day_types, resolve_agency_timezone
-from family_a.interpolate import resolve_all_trip_stop_anchors
+from family_a.interpolate import DEFAULT_MAX_BRACKET_GAP_S, resolve_all_trip_stop_anchors
 from family_a.matcher import (
     DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD,
     load_shape_dist_traveled,
@@ -471,6 +471,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         args.time_bucket_minutes,
         shape_cumulative_dist=shape_cumulative_dist,
         trusted_stop_dist=trusted_stop_dist,
+        max_bracket_gap_s=args.max_bracket_gap_seconds,
     )
     segment_times, dropped_count = filter_min_observations(
         segment_times, args.min_observations_per_segment
@@ -494,6 +495,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
     print(f"  - skipped (no resolvable shape or fewer than 2 stops): {collect_counts['trips_skipped_unresolvable']}")
     print(f"Segment observations collected: {collect_counts['segments_observed']}")
     print(f"  - interpolation gaps (vehicle not observed at that point of the route): {collect_counts['interpolation_gaps']}")
+    print(
+        f"    - bracket time-gap rejections (> {args.max_bracket_gap_seconds:.0f}s between the two "
+        f"real GPS observations used to interpolate a crossing; counts individual crossing "
+        f"attempts, not stop pairs, so this can exceed the interpolation gaps count above): "
+        f"{collect_counts['bracket_gap_rejected']}"
+    )
     print(f"  - missing stop location (stop_id absent from stops.txt): {collect_counts['missing_stop_location']}")
     print(f"  - rejected (implausible segment time): {collect_counts['rejected_seg_time']}")
     print(f"Segments dropped (fewer than {args.min_observations_per_segment} observations): {dropped_count}")
@@ -671,6 +678,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Time-of-day bucket width in minutes for segment correction scoping "
             "(default: 120, i.e. 2-hour blocks)."
+        ),
+    )
+    p_build.add_argument(
+        "--max-bracket-gap-seconds",
+        type=float,
+        default=DEFAULT_MAX_BRACKET_GAP_S,
+        help=(
+            "Reject an interpolated stop crossing when its bracketing pair of real GPS "
+            "observations is spaced further apart in time than this many seconds - a wide "
+            "gap means sparse sampling, not a real travel time (FA-14, PRD §7 open "
+            f"question #10; default: {DEFAULT_MAX_BRACKET_GAP_S:.0f})."
         ),
     )
     p_build.set_defaults(func=_cmd_build)

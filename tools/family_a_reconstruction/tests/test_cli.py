@@ -17,6 +17,7 @@ from google.transit import gtfs_realtime_pb2
 
 from family_a import matcher
 from family_a.cli import _cmd_build, _cmd_match, _cmd_record, _duration_minutes, build_parser
+from family_a.interpolate import DEFAULT_MAX_BRACKET_GAP_S
 from family_a.recorder import SnapshotFetchError
 
 
@@ -40,6 +41,16 @@ def test_build_defaults():
     assert args.func is _cmd_build
     assert args.min_observations_per_segment == 2
     assert args.time_bucket_minutes == 120
+    assert args.max_bracket_gap_seconds == DEFAULT_MAX_BRACKET_GAP_S
+
+
+def test_build_max_bracket_gap_seconds_override():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["build", "--matched", "matched.csv", "--static", "gtfs.zip", "--out-prefix", "out",
+         "--max-bracket-gap-seconds", "600"]
+    )
+    assert args.max_bracket_gap_seconds == 600.0
 
 
 def test_match_defaults():
@@ -842,6 +853,7 @@ def _make_build_args(tmp_path, **overrides):
         out_prefix = None
         min_observations_per_segment = 1
         time_bucket_minutes = 120
+        max_bracket_gap_seconds = DEFAULT_MAX_BRACKET_GAP_S
 
     ns = _NS()
     for key, value in overrides.items():

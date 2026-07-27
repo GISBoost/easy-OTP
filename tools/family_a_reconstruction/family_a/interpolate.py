@@ -38,6 +38,20 @@ logger = logging.getLogger(__name__)
 # him per FA-11's acceptance criteria before treating it as final.
 DEFAULT_BACKWARD_TOLERANCE_M = 50.0
 
+# PRD "open questions" (docs/prd/PR_easy-OTP_family-a-matching-accuracy.md), §7 item #10:
+# found during FA-11's own real-data verification (Poznan 07-18, route 196, stop pair
+# 1467->156 "Rondo Rataje") - a geometrically correct anchor still produced an inflated
+# P50 because interpolate_stop_time's bracketing pair of real GPS observations was
+# widely spaced in time (sparse sampling at that point of that run), so the derived
+# segment time measures recording sparsity, not vehicle speed, yet still passes every
+# existing filter (positive, under _MAX_PLAUSIBLE_SEG_TIME_S).
+#
+# NOT YET CONFIRMED BY MICHAL - the PRD itself leaves this "to be determined
+# empirically ('kilka minut')". 300s (5 minutes) is a documented starting point, not an
+# empirically-tuned value. Report the real-data threshold-sensitivity sweep (Poznan
+# 07-18, per FA-14's acceptance criteria) back to him before treating it as final.
+DEFAULT_MAX_BRACKET_GAP_S = 300.0
+
 
 def stop_distance_along_shape(
     stop_lat: float,
@@ -272,6 +286,8 @@ def resolve_all_trip_stop_anchors(
 def interpolate_stop_time(
     position_series: list[tuple[datetime, float]],
     stop_distance_m: float,
+    max_bracket_gap_s: float | None = DEFAULT_MAX_BRACKET_GAP_S,
+    counts: dict[str, int] | None = None,
 ) -> datetime | None:
     """Linearly interpolate the timestamp at which distance == stop_distance_m.
 
@@ -288,9 +304,23 @@ def interpolate_stop_time(
     resolves to t0.
 
     Returns None if stop_distance_m falls outside the observed range, no
-    bracketing pair is found, or fewer than 2 observations exist - this is
+    bracketing pair is found, fewer than 2 observations exist, or the winning
+    bracketing pair is rejected for a too-wide time gap (see below) - this is
     FA-3's "gap", handled the same way as an unobserved segment in RT-3: the
     stop keeps its scheduled time.
+
+    max_bracket_gap_s (FA-14, PRD §7 open question #10, default
+    DEFAULT_MAX_BRACKET_GAP_S): once a bracketing pair is found (either
+    branch above), reject it and return None instead if t1 - t0 exceeds this
+    many seconds - a pair this widely spaced in time means the interpolated
+    crossing is really measuring GPS recording sparsity at that point of the
+    route, not vehicle speed. Pass None to disable this check and reproduce
+    pre-FA-14 behaviour exactly. The first-bracket-wins convention above is
+    preserved: a gap-rejected pair does NOT fall through to scan later pairs.
+
+    counts (optional, mutated in place like collect_segment_observations's
+    own counts dict): when a bracket is rejected for a too-wide gap,
+    increments counts["bracket_gap_rejected"] if counts is provided.
 
     Known limitation (MVP, same spirit as the backward-jump note above): a
     large transient FORWARD mismatch (e.g. the map-matcher briefly locking
@@ -309,6 +339,12 @@ def interpolate_stop_time(
 
         if not (min(d0, d1) <= stop_distance_m <= max(d0, d1)):
             continue
+
+        gap_s = (t1 - t0).total_seconds()
+        if max_bracket_gap_s is not None and gap_s > max_bracket_gap_s:
+            if counts is not None:
+                counts["bracket_gap_rejected"] += 1
+            return None
 
         if d0 == d1:
             return t0

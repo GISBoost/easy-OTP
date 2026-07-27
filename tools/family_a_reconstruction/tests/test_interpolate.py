@@ -381,3 +381,60 @@ def test_interpolate_non_monotonic_series_does_not_crash():
     # A target only reachable via the final (90 -> 200) climb, past the blip.
     result = interpolate_stop_time(series, 150.0)
     assert result == _t(20) + timedelta(seconds=5 * (60.0 / 110.0))
+
+
+# ---------------------------------------------------------------------------
+# interpolate_stop_time - bracket time-gap rejection (FA-14, PRD §7 #10)
+# ---------------------------------------------------------------------------
+
+
+def test_interpolate_wide_bracket_gap_rejected_at_default_threshold():
+    # Bracketing pair spans 400s (> DEFAULT_MAX_BRACKET_GAP_S = 300s), even though the
+    # target distance is well within the observed range - sparse GPS sampling at this
+    # point of the route, not a real crossing measurement.
+    series = [(_t(0), 0.0), (_t(400), 100.0)]
+    assert interpolate_stop_time(series, 50.0) is None
+
+
+def test_interpolate_narrow_bracket_gap_accepted_under_threshold():
+    # Same shape, gap under the default threshold - normal interpolation, unchanged.
+    series = [(_t(0), 0.0), (_t(200), 100.0)]
+    assert interpolate_stop_time(series, 50.0) == _t(100)
+
+
+def test_interpolate_max_bracket_gap_s_none_disables_check():
+    series = [(_t(0), 0.0), (_t(400), 100.0)]
+    assert interpolate_stop_time(series, 50.0, max_bracket_gap_s=None) == _t(200)
+
+
+def test_interpolate_custom_max_bracket_gap_s_threshold():
+    series = [(_t(0), 0.0), (_t(120), 100.0)]
+    assert interpolate_stop_time(series, 50.0, max_bracket_gap_s=60.0) is None
+    assert interpolate_stop_time(series, 50.0, max_bracket_gap_s=180.0) == _t(60)
+
+
+def test_interpolate_degenerate_equal_distance_pair_wide_gap_rejected():
+    # d0 == d1 branch gets the same gap check as the normal linear-interpolation branch.
+    series = [(_t(0), 50.0), (_t(400), 50.0), (_t(410), 200.0)]
+    assert interpolate_stop_time(series, 50.0) is None
+
+
+def test_interpolate_bracket_gap_rejected_increments_counts():
+    series = [(_t(0), 0.0), (_t(400), 100.0)]
+    counts = {"bracket_gap_rejected": 0}
+    result = interpolate_stop_time(series, 50.0, counts=counts)
+    assert result is None
+    assert counts["bracket_gap_rejected"] == 1
+
+
+def test_interpolate_counts_not_incremented_when_accepted():
+    series = [(_t(0), 0.0), (_t(200), 100.0)]
+    counts = {"bracket_gap_rejected": 0}
+    result = interpolate_stop_time(series, 50.0, counts=counts)
+    assert result == _t(100)
+    assert counts["bracket_gap_rejected"] == 0
+
+
+def test_interpolate_omitted_counts_does_not_raise():
+    series = [(_t(0), 0.0), (_t(400), 100.0)]
+    assert interpolate_stop_time(series, 50.0) is None
