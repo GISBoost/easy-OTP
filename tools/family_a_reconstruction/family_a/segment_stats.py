@@ -40,6 +40,21 @@ if TYPE_CHECKING:
 # against noisy interpolation polluting the percentile stats.
 _MAX_PLAUSIBLE_SEG_TIME_S = 7200.0
 
+# FA-13 (PRD FA-13, "Otwarte kwestie" #5): upper bound on implied average speed for a single
+# stop-to-stop segment - defense-in-depth on top of FA-10/FA-11/FA-12, not a fix for their root
+# cause. CONFIRMED BY MICHAL (PRD #5 answer): 100 km/h for "predkosc komunikacyjna" (commercial/
+# operating speed, i.e. distance / elapsed real time including any incidental slow-downs) vs.
+# 120 km/h for pure driving speed - seg_time here is wall-clock time between two GPS-derived stop
+# crossings, which already absorbs traffic/congestion within the segment, so it is commercial
+# speed -> 100 km/h applies.
+# Known limitation (verified on real data, Poznan/Prague 07-18): a single flat threshold, at
+# either value, still rejects legitimate regional-rail segments in feeds that include them (e.g.
+# Prague's route_type=2 InterCity/rychlik routes routinely exceed 120 km/h) - accepted as a known
+# gap for now; per-route/route_type-aware thresholds are a distinct, larger change, not in scope
+# for FA-13.
+# No lower bound: slow segments (traffic, long dwells) are fully legitimate.
+_MAX_PLAUSIBLE_SPEED_MPS = 100.0 / 3.6  # 100 km/h ~= 27.78 m/s
+
 
 def collect_segment_observations(
     matched: pd.DataFrame,
@@ -111,7 +126,9 @@ def collect_segment_observations(
       entry in stops.txt - a static-feed data quality issue, distinct from
       interpolation_gaps.
     - rejected_seg_time: interpolation succeeded on both stops but the
-      derived segment time was non-positive or implausibly long.
+      derived segment time was non-positive, implausibly long, or implied a
+      physically-impossible average speed (FA-13, safety net - see
+      _MAX_PLAUSIBLE_SPEED_MPS).
 
     *shape_cumulative_dist*/*trusted_stop_dist* (FA-10, both optional, both
     default to today's fully-geometric behaviour when omitted): see
@@ -219,7 +236,11 @@ def collect_segment_observations(
                 continue
 
             seg_time = (t_to - t_from).total_seconds()
-            if seg_time <= 0 or seg_time > _MAX_PLAUSIBLE_SEG_TIME_S:
+            seg_distance_m = abs(d_to - d_from)
+            implausible_speed = (
+                seg_time > 0 and seg_distance_m / seg_time > _MAX_PLAUSIBLE_SPEED_MPS
+            )
+            if seg_time <= 0 or seg_time > _MAX_PLAUSIBLE_SEG_TIME_S or implausible_speed:
                 counts["rejected_seg_time"] += 1
                 continue
 

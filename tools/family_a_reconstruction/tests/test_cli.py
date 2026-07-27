@@ -897,7 +897,7 @@ def test_cmd_build_end_to_end_writes_both_zips(tmp_path, capsys):
     assert "Trips processed" in captured.out
     assert "Segment observations collected" in captured.out
     assert "interpolation gaps" in captured.out
-    assert "rejected (implausible segment time)" in captured.out
+    assert "rejected (implausible segment time or speed, FA-13)" in captured.out
     assert "Segments corrected: 1" in captured.out
     assert "P50 output written to" in captured.out
     assert "P85 output written to" in captured.out
@@ -957,14 +957,17 @@ def test_cmd_build_uses_trusted_shape_dist_traveled_end_to_end(tmp_path, capsys)
     matched_path = tmp_path / "matched.csv"
     # 07:00 UTC = 08:00 local Europe/Warsaw (same alignment as the plain
     # end-to-end test above). Positions bracket the trusted B distance
-    # (1112.0, at 07:00:30) BEFORE the geometric B distance (~2224.0, at
-    # 07:01:00) - if the trusted value is used, B's corrected travel time is
-    # 30s; if a bug silently fell back to geometric anchoring, it would be 60s.
+    # (1112.0, at 07:01:00) BEFORE the geometric B distance (~2224.0, at
+    # 07:02:00) - if the trusted value is used, B's corrected travel time is
+    # 60s; if a bug silently fell back to geometric anchoring, it would be
+    # 120s. Timings (vs. an earlier 30s/60s version) are chosen to keep the
+    # implied speed under FA-13's _MAX_PLAUSIBLE_SPEED_MPS (100 km/h ~= 27.78 m/s) - both the
+    # trusted and geometric distances imply ~18.5 m/s here.
     matched_path.write_text(
         "trip_id,timestamp,distance_along_shape_m,perpendicular_dist_m\n"
         "t1,2026-01-01T07:00:00Z,0.0,0.0\n"
-        "t1,2026-01-01T07:00:30Z,1112.0,0.0\n"
-        "t1,2026-01-01T07:01:00Z,2224.0,0.0\n",
+        "t1,2026-01-01T07:01:00Z,1112.0,0.0\n"
+        "t1,2026-01-01T07:02:00Z,2224.0,0.0\n",
         encoding="utf-8",
     )
 
@@ -980,7 +983,7 @@ def test_cmd_build_uses_trusted_shape_dist_traveled_end_to_end(tmp_path, capsys)
     with zipfile.ZipFile(f"{out_prefix}_p50.zip") as zf:
         stop_times_content = zf.read("stop_times.txt").decode("utf-8")
     b_row = next(line for line in stop_times_content.splitlines() if ",B," in line)
-    assert "08:00:30" in b_row
+    assert "08:01:00" in b_row
 
 
 def test_cmd_build_reads_matched_csv_produced_by_cmd_match_with_recording_date(tmp_path, capsys):
@@ -1047,11 +1050,14 @@ def test_cmd_build_reads_matched_csv_produced_by_cmd_match_with_recording_date(t
     positions_dir = tmp_path / "recording"
     positions_dir.mkdir()
     ts1 = int(datetime(2026, 1, 1, 7, 0, 0, tzinfo=timezone.utc).timestamp())
-    ts2 = int(datetime(2026, 1, 1, 7, 0, 50, tzinfo=timezone.utc).timestamp())
+    # 70s, not 50s: 0.015 degrees (~1668m) in 50s implies ~33.4 m/s, over FA-13's
+    # _MAX_PLAUSIBLE_SPEED_MPS (100 km/h ~= 27.78 m/s) - 70s keeps the implied speed
+    # (~23.8 m/s) safely under it while still landing well past B.
+    ts2 = int(datetime(2026, 1, 1, 7, 1, 10, tzinfo=timezone.utc).timestamp())
     (positions_dir / "snapshot_20260101-070000.pb").write_bytes(
         _feed("t1", 0.0, 0.0, ts1).SerializeToString()
     )
-    (positions_dir / "snapshot_20260101-070050.pb").write_bytes(
+    (positions_dir / "snapshot_20260101-070110.pb").write_bytes(
         _feed("t1", 0.015, 0.0, ts2).SerializeToString()  # past B, well within margin
     )
 

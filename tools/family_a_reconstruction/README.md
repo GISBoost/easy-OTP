@@ -235,9 +235,9 @@ Output: two GTFS zips, byte-identical to the input static feed except for correc
 `arrival_time`/`departure_time` values in `stop_times.txt` (P50 = typical/median observed
 travel time per segment, P85 = pessimistic/85th-percentile). The command prints the resolved
 agency timezone (`Agency timezone resolved: ...`), counts for trips processed/skipped, segments
-observed/corrected/dropped, interpolation gaps, missing stop locations, and rejected
-implausible segment times — use these to judge how much of the recording actually corrected the
-schedule versus fell back to planned times.
+observed/corrected/dropped, interpolation gaps, missing stop locations, and segments rejected for
+an implausible time or speed (FA-13 safety net) — use these to judge how much of the recording
+actually corrected the schedule versus fell back to planned times.
 
 Family A has no trip-cancellation signal (unlike RT-3, which can read `ScheduleRelationship`
 from `TripUpdate`s) — every trip in the static feed is reconstructed, cancelled or not.

@@ -502,7 +502,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         f"{collect_counts['bracket_gap_rejected']}"
     )
     print(f"  - missing stop location (stop_id absent from stops.txt): {collect_counts['missing_stop_location']}")
-    print(f"  - rejected (implausible segment time): {collect_counts['rejected_seg_time']}")
+    print(f"  - rejected (implausible segment time or speed, FA-13): {collect_counts['rejected_seg_time']}")
     print(f"Segments dropped (fewer than {args.min_observations_per_segment} observations): {dropped_count}")
     print(f"Segments corrected: {corrected_count}")
     # gap_count spans every trip in the static feed (all routes, all service

@@ -337,6 +337,83 @@ def test_collect_rejects_implausible_segment_time():
     assert counts["segments_observed"] == 0
 
 
+def test_collect_rejects_implausible_speed():
+    """FA-13: a segment covering ~1111m (A->B, see d_b) in 10s implies ~111 m/s -
+    far above _MAX_PLAUSIBLE_SPEED_MPS (100 km/h ~= 27.78 m/s) - even though its duration alone is
+    well under _MAX_PLAUSIBLE_SEG_TIME_S and its bracket gap is well under
+    DEFAULT_MAX_BRACKET_GAP_S, so this isolates the new speed check specifically.
+    """
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(10), d_b),
+    ])
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+    )
+
+    assert segment_times == {}
+    assert counts["rejected_seg_time"] == 1
+    assert counts["segments_observed"] == 0
+
+
+def test_collect_normal_urban_speed_passes_unchanged():
+    """~9 m/s (typical urban bus/tram) must pass through unaffected by FA-13."""
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(123), d_b),
+    ])
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+    )
+
+    key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
+    assert segment_times[key] == pytest.approx([123.0])
+    assert counts["rejected_seg_time"] == 0
+    assert counts["segments_observed"] == 1
+
+
+def test_collect_very_slow_segment_not_rejected_no_lower_bound():
+    """FA-13 has no lower speed bound - heavy traffic / a long dwell producing
+    <1 m/s must NOT be rejected. Uses max_bracket_gap_s=None since a 20-minute
+    gap between the two real GPS observations would otherwise be caught by
+    FA-14's bracket-gap check first (unrelated to the speed check under test
+    here) - same isolation technique as test_collect_rejects_implausible_segment_time.
+    """
+    idx = _two_stop_static_index()
+    trip_shapes = {"t1": "shape1"}
+    shapes = {"shape1": _STRAIGHT_LINE}
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+
+    matched = _matched_df([
+        ("t1", _t(0), 0.0),
+        ("t1", _t(1200), d_b),
+    ])
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", max_bracket_gap_s=None
+    )
+
+    key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
+    assert segment_times[key] == pytest.approx([1200.0])
+    assert counts["rejected_seg_time"] == 0
+    assert counts["segments_observed"] == 1
+
+
 def test_collect_empty_matched_dataframe():
     idx = _two_stop_static_index()
     matched = _matched_df([])
@@ -511,9 +588,12 @@ def test_collect_fully_trusted_trip_never_calls_resolve_stop_distances_for_patte
     stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
     trusted_d_b = 5000.0  # deliberately far from the geometric value
 
+    # 200s, not 100s: 5000m in 100s implies 50 m/s, over FA-13's
+    # _MAX_PLAUSIBLE_SPEED_MPS (100 km/h ~= 27.78 m/s) - 200s keeps the implied speed
+    # (25 m/s) under it, unrelated to what this test actually guards (the resolver call).
     matched = _matched_df([
         ("t1", _t(0), 0.0),
-        ("t1", _t(100), trusted_d_b),
+        ("t1", _t(200), trusted_d_b),
     ])
 
     trusted_stop_dist = {("t1", 1): 0.0, ("t1", 2): trusted_d_b}
@@ -523,7 +603,7 @@ def test_collect_fully_trusted_trip_never_calls_resolve_stop_distances_for_patte
     )
 
     key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
-    assert segment_times[key] == pytest.approx([100.0])
+    assert segment_times[key] == pytest.approx([200.0])
     assert counts["segments_observed"] == 1
 
 
