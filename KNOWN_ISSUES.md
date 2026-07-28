@@ -244,6 +244,149 @@ and would reproduce the defect if pointed at a numeric-`trip_id` city. Every thr
 with them (FA-13/FA-14/FA-15) used only cities at 0% numeric `trip_id`s, so those results are
 unaffected — but add `dtype={"trip_id": str}` before reusing them on Boston or Rome.
 
+## 32. `family_a`: Poznań stop pair `1467`→`156` stays inflated after three separate fixes
+
+**Severity:** medium (one route/stop pair). · **Tracker:** [#32](../../issues/32)
+
+Route 196, "Rondo Rataje": reports a P50 up to ~3340 s against a scheduled 120 s. Three
+hypotheses tested and **falsified**: stop-anchor ambiguity (FA-11 made the anchor more correct and
+it stayed inflated), sparse GPS bracketing (FA-14 finds the brackets already tightly spaced), and
+origin-terminus layover (stop `1467` is a middle stop in 740 of 740 trips). Passes every current
+filter, so it reaches the published P50.
+
+**Status:** Under investigation, cause unknown. Next step: a per-trip trace of a representative
+trip.
+
+## 33. `family_a`: FA-12 windowing degrades Vilnius, traced to route `A62`
+
+**Severity:** medium (one city). · **Tracker:** [#33](../../issues/33)
+
+Vilnius is the only monitored city with 0% `current_stop_sequence`, so it relies on `stop_id`
+alone — and FA-12 makes it consistently worse (+13% to +26% more >300 s segments across three
+days). Ruled out by measurement: one-day fluke, thin samples (the effect *grows* under stricter
+filtering), `backward_tolerance_m`, hourly coverage collapse, and the repeated-`stop_id`
+disambiguation logic. Every one of the top-30 largest per-observation jumps, on all three days,
+belongs to route `A62`.
+
+**Workaround:** set `--position-signal-coverage-threshold` above 1.0 for Vilnius to reproduce
+pre-FA-12 behaviour exactly.
+
+**Status:** Under investigation — narrowed to A62's shape geometry.
+
+## 34. `family_a`: Poznań builds use a static feed not yet valid for the recorded day
+
+**Severity:** high (roughly 1 day in 3). · **Tracker:** [#34](../../issues/34)
+
+ZTM Poznań publishes the next period's static GTFS several days early, and Poznań renumbers
+`trip_id` per period — so on those days almost nothing matches. Two of six sampled days had a feed
+whose validity starts *after* the recording date, and `pct_changed` collapses to 3.2% / 12.8%
+against 22–71% on valid days. On 2026-07-17, **76.91% of observations** carried a `trip_id` the
+static had never heard of. On 07-25/07-26, no published static of the period matched at all
+(best: 4.8% / 2.1%).
+
+**Status:** Detection done in `family_a` (FA-15 warns); the fix — selecting a feed actually valid
+for the recording date — belongs in `GISBoost/easy-GTFS-RT`'s build workflow.
+
+## 35. `family_a`: flat 100 km/h plausibility filter rejects legitimate regional rail
+
+**Severity:** medium (Prague rail only). · **Tracker:** [#35](../../issues/35)
+
+FA-13's single flat speed threshold cannot distinguish a genuinely fast rail segment from a
+matching artifact. On Prague 2026-07-18 it drops **2,187 of 123,833 segment keys**, almost all
+`route_type=2` (R9/R16/R17). Ordinary urban networks stay in the intended 0.01–0.8% band.
+Prague's rail is therefore under-corrected relative to its trams and buses.
+
+**Status:** Known, deliberately accepted — a per-`route_type` threshold is a distinct, larger
+change.
+
+## 36. `family_a`: one bad GPS ping invalidates several neighbouring stop pairs
+
+**Severity:** low (filter handles it correctly). · **Tracker:** [#36](../../issues/36)
+
+Because every stop whose distance falls inside the same bracketing pair shares it, one anomalous
+raw position contaminates several consecutive stop pairs. Measured on Bucharest 2026-07-17:
+**1,414 anomalous raw pairs explain 3,613 rejected segment observations — 2.56x amplification**.
+Ruled out as a geometry bug; it is isolated raw telemetry glitches, and Bucharest's raw glitch
+rate is genuinely ~6–8x Poznań's or Łódź's.
+
+**Status:** Known, deliberately not fixed — only 62 of 40,897 keys lose all data, and the more
+surgical fix would reintroduce #35's flat-threshold problem one layer earlier.
+
+## 37. `family_a`: routes whose `shape_id` has no geometry are silently invisible
+
+**Severity:** high (whole routes unmeasurable). · **Tracker:** [#37](../../issues/37)
+
+`resolve_trip_shapes` falls back to straight-line shapes only when `shapes.txt` is missing
+*entirely*, so a partially-broken `shapes.txt` leaves the affected trips unmatched. Łódź is
+affected on **every archived day** — route `R9` is 100% dangling every time — and on 2026-07-24
+it reached **9.11% of all trips**, with route `603` producing 7,478 observations of which **100%
+were rejected** while the whole-run rejection share was an unremarkable 9.53%.
+
+**Status:** Visible since FA-15 (a route with observations but none accepted is now named);
+measurable only with a per-trip fallback, which does not exist yet.
+
+## 38. `family_a`: multi-day pooling breaks across a `trip_id` republication boundary
+
+**Severity:** medium (affects opt-in pooling only). · **Tracker:** [#38](../../issues/38)
+
+`match --positions-dir dir1 dir2 ...` assumes one static feed's `trip_id` numbering resolves every
+pooled day. Łódź renumbers every 1–3 days: pooling 07-20..07-24 against one static gave a **62.7%
+`unknown_shape` rejection rate**, three incompatible eras in one week. `route_id`/`stop_id` are
+stable, which is why per-era matching merged at the segment-key level works as a workaround.
+
+**Status:** Detected downstream since FA-16 (`build` reports unrecognised trip_ids); `match` still
+does not check its own inputs.
+
+## 39. Turin: `VehiclePositions` feed omits `trip_id`, producing empty builds
+
+**Severity:** high (that city's data). · **Tracker:** [#39](../../issues/39)
+
+Upstream defect, not a pipeline bug. 2026-07-20: **335,257 of 337,023 observations had no
+`trip_id`**, and the build published anyway — **217 corrected rows out of 1,416,230**, with a
+chart, reading as near-perfect punctuality. 2026-07-22: all 344,449 lacked it, and no release was
+produced.
+
+**Status:** Upstream. Flagged loudly since FA-15; nothing here can recover a field that was never
+published.
+
+## 40. `family_a`: reported delay is a running total, so it rises along a trip
+
+**Severity:** medium (affects interpretation of every delay figure). · **Tracker:** [#40](../../issues/40)
+
+`rebuild_stop_times` anchors each trip to its *scheduled* first departure and only accumulates;
+an unobserved segment carries the accumulated error forward unchanged. Median delay by position
+within a trip rises monotonically in **every city measured** (Łódź 6.0x, Vilnius 3.9x, Gdańsk
+2.4x, Poznań 1.7x, Prague 1.5x). In Prague the effect is mode-independent and **even the metro
+shows +158 s**, which is not credible for a closed right-of-way.
+
+**Status:** By design — re-anchoring would need the actual departure time, which is what the
+pipeline is inferring. Documented for data consumers in `easy-GTFS-RT`'s `HOW-IT-WORKS.md`.
+
+## 41. `family_a`: `day_type` uses the local calendar date, not the GTFS service day
+
+**Severity:** low (little data in the affected window today). · **Tracker:** [#41](../../issues/41)
+
+An after-midnight trip is filed under the next calendar date's `day_type`, while GTFS attributes
+it to the previous service day. Public holidays are not modelled either — a holiday running
+Sunday-style service is treated as whatever weekday it falls on.
+
+**Status:** Known, deliberately deferred since 2026-07-10. Recording runs ~06:00–22:00, so almost
+no data currently falls in the affected window.
+
+## 42. `family_a`: Prague's constant baseline delay offset is unexplained
+
+**Severity:** high (the original symptom, still open). · **Tracker:** [#42](../../issues/42)
+
+The anomaly that started this whole investigation. A large offset is **already present at the
+second stop of a trip**, before accumulation (#40) can contribute. Falsified so far: the
+loop-anchoring bug (FA-10 fixed it completely; mean delay went *up*, 211.3 s → 304.4 s),
+live-position ambiguity (FA-12 moved Prague 2.8%), sparse bracketing (FA-14), and dwell
+double-counting (mechanism real, magnitude negligible — Gdańsk has ~zero encoded dwell and
++191.1 s). Mode-independent, metro included.
+
+**Status:** Under investigation — the longest-standing open question here. Prague's absolute delay
+figures should not be read as measured punctuality until this is explained.
+
 ---
 
 This list is not exhaustive. If you hit something not listed here, please open a GitHub issue.
