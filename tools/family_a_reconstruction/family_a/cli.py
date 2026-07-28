@@ -212,7 +212,17 @@ def _validate_static_gtfs_for_match(path: str) -> str | None:
 # docs/handoffs/family-a-matching-accuracy_handoff.md): Łódź route 603 (7,478 observations, 100%
 # rejected, while that day's whole-run reject share was an unremarkable 9.53%), Poznań 2026-07-17
 # (79.19% of observations rejected outright), and Turin 2026-07-20 (217 corrected stop_times rows
-# out of 1,416,230). None of them warned about anything.
+# out of 1,416,230 - and, normalised against what was correctable at all that day, 0.0% of the
+# 52.2% of rows and 0.9% of the 99.1% of routes whose service actually ran). None of them warned
+# about anything.
+#
+# That normalisation matters and is easy to get wrong: a raw "% of stop_times rows changed" is NOT
+# a performance measure, because a recording covers one day while the static feed is valid for
+# weeks, so most rows were never correctable. Healthy cities land at 66-82% of what was achievable
+# on their day (Łódź, for instance, could only ever have corrected 35.4% of its rows). None of the
+# diagnostics below use that confounded ratio: the match-side ones are computed purely over
+# observations seen in the RT feed, and the build-side one is normalised by routes actually
+# observed, never by the static feed's own row count.
 #
 # Everything below is reporting only. It never changes an accept/reject decision, a matched row,
 # or a corrected time.

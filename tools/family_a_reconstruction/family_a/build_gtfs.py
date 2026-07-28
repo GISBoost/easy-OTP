@@ -43,11 +43,11 @@ SegmentKey = tuple[str, str, str, str, str, int]
 # perfect the recording is). Normalising by what was actually observed removes that confound.
 #
 # NOT YET CONFIRMED BY MICHAŁ - a documented starting point, not an empirically-tuned value. The
-# real case it must catch is Turin 2026-07-20 (217 changed stop_times rows out of 1,416,230, i.e.
-# essentially no route corrected at all, published like any normal day); healthy days measured on
-# 2026-07-24 leave 70-92% of routes changed even using an over-large whole-feed denominator, so the
-# true observed-route figure is higher still. Report this value's real-data effect back before
-# treating it as final.
+# real case it must catch is Turin 2026-07-20: 217 changed stop_times rows out of 1,416,230,
+# published like any normal day - and that is not a calendar artifact, since 99.1% of that day's
+# routes had service running and only 0.9% of them saw any change. Measured healthy runs sit far
+# above the threshold on this metric (Łódź 07-24: 93.3%, Poznań 07-18: 87.9%). Report this value's
+# real-data effect back before treating it as final.
 DEFAULT_MIN_CORRECTED_ROUTE_SHARE = 0.50
 
 

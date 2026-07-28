@@ -252,10 +252,12 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   of the routes actually *observed* in the matched table end up with any corrected segment — the
   signature of a build that is mostly just the static schedule and will read as near-perfect
   punctuality downstream (measured: Turin 2026-07-20 published 217 corrected rows out of
-  1,416,230). The default is a documented starting point, **not yet validated** against that
-  Turin-class case on real data. Note the denominator is observed routes, not the whole static
-  feed: `corrected/(corrected+gap)` over the whole feed is capped by how much of the feed's
-  validity window one recording day can cover, so it isn't comparable between cities or days.
+  1,416,230, on a day when 99.1% of its routes were running — so not a calendar artifact). The
+  default is a documented starting point, **not yet validated** against that Turin-class case on
+  real data. Note the denominator is observed routes, not the whole static feed: a raw
+  `corrected/(corrected+gap)` over the whole feed is capped by how much of the feed's validity
+  window one recording day can cover — Łódź, for example, could only ever correct 35.4% of its
+  rows on a single weekday — so it is not comparable between cities or days and is not used here.
 - `--diagnostics-csv` (off by default) — **FA-15.** Also write a per-route breakdown
   (`corrected_segments`, `gap_segments`, `corrected_share_full_feed`). Read that last column as
   "how much of this route's whole published timetable got corrected", never as "how well was
