@@ -111,6 +111,24 @@ py -m family_a.cli match --positions-dir day1_recording day2_recording day3_reco
 - `--max-perpendicular-dist-m` (default `100`) — observations projected farther than this from
   the matched shape are rejected (likely off-route, GPS error, or a `trip_id` that resolves to
   the wrong shape).
+- `--max-reject-share` (default `0.25`) — **FA-15.** Warn when more than this fraction of the
+  run's observations were rejected. The usual cause is a static feed from a different
+  publication period than the recording, whose `trip_id` namespace doesn't match (measured:
+  Poznań 2026-07-17 rejects 79.19%, against 0.97–11.83% on healthy city-days).
+- `--min-observations-for-route-alert` (default `50`) — **FA-15.** How many observations a route
+  needs before a "100% rejected" verdict is reported for it, so a route glimpsed once or twice
+  doesn't generate noise.
+- `--diagnostics-csv` (off by default) — **FA-15.** Also write a per-route breakdown
+  (`observations`, `accepted`, `unknown_shape`, `too_far_from_route`, `rejected_share`).
+- `--fail-on-low-yield` (off by default) — **FA-15.** Exit non-zero when the run is flagged.
+  Off by default so an automated daily pipeline keeps running and reporting rather than halting
+  on something it can't fix itself; the output table is always written first either way.
+
+**Why the FA-15 flags exist.** Before them, rejections were only ever reported as one whole-run
+total, so a route whose every observation was rejected silently kept its scheduled times and was
+downstream indistinguishable from a route that ran perfectly on time. Real example: Łódź route
+`603` on 2026-07-24 had 7,478 observations, 100% of them rejected (its `shape_id` has no points
+in `shapes.txt`), while that day's whole-run reject share was an unremarkable 9.53%.
 
 Output columns: `trip_id`, `timestamp` (UTC; pandas' default tz-aware format in CSV, e.g.
 `2026-07-05 20:37:26+00:00` — space-separated, not literal ISO-8601 `T`-separated),
@@ -230,6 +248,26 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   trusted.
 - `--time-bucket-minutes` (default `120`) — time-of-day bucket width in minutes for segment
   correction scoping (see below); 12 buckets/day at the default 2-hour width.
+- `--min-corrected-route-share` (default `0.50`) — **FA-15.** Warn when fewer than this fraction
+  of the routes actually *observed* in the matched table end up with any corrected segment — the
+  signature of a build that is mostly just the static schedule and will read as near-perfect
+  punctuality downstream (measured: Turin 2026-07-20 published 217 corrected rows out of
+  1,416,230). The default is a documented starting point, **not yet validated** against that
+  Turin-class case on real data. Note the denominator is observed routes, not the whole static
+  feed: `corrected/(corrected+gap)` over the whole feed is capped by how much of the feed's
+  validity window one recording day can cover, so it isn't comparable between cities or days.
+- `--diagnostics-csv` (off by default) — **FA-15.** Also write a per-route breakdown
+  (`corrected_segments`, `gap_segments`, `corrected_share_full_feed`). Read that last column as
+  "how much of this route's whole published timetable got corrected", never as "how well was
+  this route observed" — it is diluted by the feed's validity window, per the note above.
+- `--fail-on-low-yield` (off by default) — **FA-15.** Exit non-zero when the build is flagged.
+  Both realized zips are always written first regardless.
+
+**Known limitation of the `build` gate** (measured, not theoretical): it does *not* catch a
+wrong-static-feed failure. Observations rejected during `match` never reach the matched table, so
+the "routes observed" denominator shrinks along with them — Poznań 2026-07-17 (a badly broken day)
+builds at 87.5% corrected-route coverage, against healthy 07-18's 87.9%. That failure class is
+`match`'s `--max-reject-share` gate to catch, and it does.
 
 Output: two GTFS zips, byte-identical to the input static feed except for corrected
 `arrival_time`/`departure_time` values in `stop_times.txt` (P50 = typical/median observed

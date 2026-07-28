@@ -12,6 +12,7 @@ cmd.exe/PowerShell; see each subcommand's own --help for a copy-pasteable exampl
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
 import time
 import zipfile
@@ -21,13 +22,21 @@ from pathlib import Path
 
 import pandas as pd
 
-from family_a.build_gtfs import load_static_index, rebuild_stop_times, repackage_gtfs
+from family_a.build_gtfs import (
+    DEFAULT_MIN_CORRECTED_ROUTE_SHARE,
+    load_static_index,
+    rebuild_stop_times,
+    repackage_gtfs,
+)
 from family_a.calendar_scope import load_service_day_types, resolve_agency_timezone
 from family_a.interpolate import DEFAULT_MAX_BRACKET_GAP_S, resolve_all_trip_stop_anchors
 from family_a.matcher import (
+    DEFAULT_MAX_REJECT_SHARE,
+    DEFAULT_MIN_OBSERVATIONS_FOR_ROUTE_ALERT,
     DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD,
     load_shape_dist_traveled,
     load_stop_locations,
+    load_trip_route_index,
     match_snapshots,
     observed_trip_ids,
     resolve_trip_shapes,
@@ -192,6 +201,262 @@ def _validate_static_gtfs_for_match(path: str) -> str | None:
     return _validate_static_gtfs(path, required_files=required)
 
 
+# ---------------------------------------------------------------------------
+# FA-15: per-route diagnostics and low-yield reporting
+# ---------------------------------------------------------------------------
+#
+# Why this exists: before FA-15 both commands only ever reported whole-run totals, so a route
+# whose every observation was rejected produced a realized GTFS byte-identical to its static
+# schedule - downstream, indistinguishable from a route that ran perfectly on time. Three real
+# failures reached published releases that way (see the 2026-07-28 audit section of
+# docs/handoffs/family-a-matching-accuracy_handoff.md): Łódź route 603 (7,478 observations, 100%
+# rejected, while that day's whole-run reject share was an unremarkable 9.53%), Poznań 2026-07-17
+# (79.19% of observations rejected outright), and Turin 2026-07-20 (217 corrected stop_times rows
+# out of 1,416,230). None of them warned about anything.
+#
+# Everything below is reporting only. It never changes an accept/reject decision, a matched row,
+# or a corrected time.
+
+
+def _merge_route_counts(
+    total: dict[str, dict[str, int]], new: dict[str, dict[str, int]]
+) -> None:
+    """Accumulate one directory's per-route tally into the run-wide one, in place."""
+    for route_id, counts in new.items():
+        bucket = total.setdefault(route_id, {})
+        for key, value in counts.items():
+            bucket[key] = bucket.get(key, 0) + value
+
+
+def _write_diagnostics_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
+    """Write the per-route breakdown, degrading to a warning if the path is unwritable.
+
+    A diagnostic must never be able to fail the command it is reporting on: by the time this
+    runs, 'match' has already written its output table and 'build' both realized zips, so
+    raising here would abort with a traceback and a non-zero exit code purely because of an
+    optional side file - breaking this milestone's own "reporting only, never changes an exit
+    code outside --fail-on-low-yield" contract.
+    """
+    try:
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+    except OSError as exc:
+        print(f"Warning: could not write per-route diagnostics CSV to {path} ({exc}).", file=sys.stderr)
+        return
+    print(f"Per-route diagnostics CSV written to: {path} ({len(rows)} route(s))")
+
+
+def _report_match_diagnostics(
+    by_route: dict[str, dict[str, int]],
+    unattributable: int,
+    reject_counts: dict[str, int],
+    accepted: int,
+    excluded_route_ids: set[str],
+    max_reject_share: float,
+    min_observations_for_route_alert: int,
+    diagnostics_csv: str | None,
+) -> bool:
+    """Print the per-route breakdown; return True if this run looks low-yield.
+
+    Two things are deliberately kept OUT of the reject share, for different reasons:
+
+    - corrupt_snapshot counts FILES that failed to decode, not observations, so folding it into
+      an observation-level ratio would produce a number that is not a fraction of anything.
+    - Observations belonging to routes the caller excluded via --exclude-route-id are rejected
+      BY DESIGN, not by failure. Counting them would let a large excluded route (e.g. Bucharest's
+      Metrorex) push the share over the threshold and trigger a warning whose text confidently
+      blames a static/RT publication mismatch - a wrong diagnosis stated with certainty, which is
+      precisely the failure mode this milestone exists to eliminate.
+
+    no_trip_id IS counted, but is reported on its own line rather than folded into the
+    unattributable total, because the two are different phenomena and the printed figures have to
+    reconcile: a vehicle with no trip_id at all (a depot move, a non-service run) is rejected in
+    the decode pass before any route could be looked up, so it appears in NEITHER the per-route
+    breakdown nor the unattributable count. Without its own line the printed numbers would
+    silently fail to add up to `attempted`.
+    """
+    excluded_accepted = sum(
+        counts.get("accepted", 0)
+        for route_id, counts in by_route.items()
+        if route_id in excluded_route_ids
+    )
+    excluded_rejects = sum(
+        counts.get("unknown_shape", 0) + counts.get("too_far_from_route", 0)
+        for route_id, counts in by_route.items()
+        if route_id in excluded_route_ids
+    )
+    no_trip_id = reject_counts.get("no_trip_id", 0)
+    observation_rejects = (
+        no_trip_id
+        + reject_counts.get("unknown_shape", 0)
+        + reject_counts.get("too_far_from_route", 0)
+        - excluded_rejects
+    )
+    attempted = (accepted - excluded_accepted) + observation_rejects
+    reject_share = observation_rejects / attempted if attempted else 0.0
+
+    rows = []
+    for route_id, counts in by_route.items():
+        observations = (
+            counts.get("accepted", 0)
+            + counts.get("unknown_shape", 0)
+            + counts.get("too_far_from_route", 0)
+        )
+        rows.append(
+            {
+                "route_id": route_id,
+                "observations": observations,
+                "accepted": counts.get("accepted", 0),
+                "unknown_shape": counts.get("unknown_shape", 0),
+                "too_far_from_route": counts.get("too_far_from_route", 0),
+                "rejected_share": round(
+                    (observations - counts.get("accepted", 0)) / observations, 4
+                )
+                if observations
+                else 0.0,
+            }
+        )
+    rows.sort(key=lambda r: (-r["rejected_share"], -r["observations"]))
+
+    print(f"Observation reject share (FA-15): {reject_share * 100:.2f}% of {attempted} attempted")
+    print(
+        "  - not attributable to any route (trip_id absent from the static feed's trips.txt): "
+        f"{unattributable}"
+    )
+    print(f"  - no trip_id at all (counted above, but never attributable to a route): {no_trip_id}")
+    if excluded_rejects or excluded_accepted:
+        print(
+            f"  - excluded from the share entirely (--exclude-route-id, rejected by design): "
+            f"{excluded_rejects + excluded_accepted}"
+        )
+    print(f"Routes observed (FA-15): {len(rows)}")
+
+    # A route is only reported as silently invisible when it has enough observations to mean
+    # something - see DEFAULT_MIN_OBSERVATIONS_FOR_ROUTE_ALERT. Routes the caller excluded on
+    # purpose are not a finding: they are rejected by design, not by failure.
+    invisible = [
+        r
+        for r in rows
+        if r["accepted"] == 0
+        and r["observations"] >= min_observations_for_route_alert
+        and r["route_id"] not in excluded_route_ids
+    ]
+    print(
+        f"  - routes with >={min_observations_for_route_alert} observations and NOT ONE accepted: "
+        f"{len(invisible)}"
+    )
+
+    if diagnostics_csv:
+        _write_diagnostics_csv(
+            Path(diagnostics_csv),
+            ["route_id", "observations", "accepted", "unknown_shape", "too_far_from_route", "rejected_share"],
+            rows,
+        )
+
+    low_yield = False
+    if reject_share > max_reject_share:
+        low_yield = True
+        print(
+            f"WARNING (FA-15): {reject_share * 100:.1f}% of observations were rejected, above the "
+            f"{max_reject_share * 100:.0f}% threshold. If most of them are unattributable "
+            f"({unattributable}), the static feed is most likely from a different publication "
+            "period than this recording (its trip_id namespace does not match) - check the "
+            "static feed's own validity window against the recording date before trusting "
+            "anything built from this table.",
+            file=sys.stderr,
+        )
+    if invisible:
+        low_yield = True
+        named = ", ".join(f"{r['route_id']} ({r['observations']} obs)" for r in invisible[:10])
+        more = f", and {len(invisible) - 10} more" if len(invisible) > 10 else ""
+        print(
+            f"WARNING (FA-15): {len(invisible)} route(s) had observations but not one was "
+            f"accepted, so they will silently keep their scheduled times and look perfectly "
+            f"on time downstream: {named}{more}.",
+            file=sys.stderr,
+        )
+    return low_yield
+
+
+def _report_build_diagnostics(
+    route_counts: dict[str, dict[str, int]],
+    observed_routes: set[str],
+    min_corrected_route_share: float,
+    diagnostics_csv: str | None,
+) -> bool:
+    """Print per-route correction coverage; return True if this build looks low-yield.
+
+    Note on the CSV's own corrected_share column: unlike this function's low-yield metric, that
+    per-route ratio is NOT normalised by what the recording observed. rebuild_stop_times walks
+    the whole static feed - every trip, every service day inside the feed's validity window - so
+    a perfectly healthy route recorded for one day out of a nine-day feed still shows a small
+    corrected_share. Read that column as "how much of this route's whole published timetable got
+    corrected", never as "how well was this route observed".
+    """
+    rows = []
+    for route_id in sorted(observed_routes):
+        counts = route_counts.get(route_id, {})
+        corrected = counts.get("corrected", 0)
+        gap = counts.get("gap", 0)
+        rows.append(
+            {
+                "route_id": route_id,
+                "corrected_segments": corrected,
+                "gap_segments": gap,
+                "corrected_share_full_feed": round(corrected / (corrected + gap), 4)
+                if corrected + gap
+                else 0.0,
+            }
+        )
+
+    uncorrected = [r for r in rows if r["corrected_segments"] == 0]
+    covered_share = (
+        (len(rows) - len(uncorrected)) / len(rows) if rows else 0.0
+    )
+    print(f"Routes observed in the matched table (FA-15): {len(rows)}")
+    print(
+        f"  - of those, with at least one corrected segment: {len(rows) - len(uncorrected)} "
+        f"({covered_share * 100:.1f}%)"
+    )
+
+    if diagnostics_csv:
+        _write_diagnostics_csv(
+            Path(diagnostics_csv),
+            ["route_id", "corrected_segments", "gap_segments", "corrected_share_full_feed"],
+            rows,
+        )
+
+    if not rows:
+        # The worst case of all, and it must never be silent: not one observed route reached
+        # this build. An empty matched table (a day the RT feed died, or every observation
+        # rejected upstream) and a --static that isn't the feed 'match' ran against both land
+        # here, and both produce a realized GTFS identical to the schedule. Reported separately
+        # because a share is undefined with no routes to take it over - guarding the ratio
+        # without saying anything would turn the loudest possible signal into silence.
+        print(
+            "WARNING (FA-15): not one route from the matched table reached this build, so the "
+            "realized feed is the static schedule verbatim and will read as perfect punctuality "
+            "downstream. Either the matched table is empty, or --static is not the feed 'match' "
+            "was run against.",
+            file=sys.stderr,
+        )
+        return True
+
+    if covered_share < min_corrected_route_share:
+        print(
+            f"WARNING (FA-15): only {covered_share * 100:.1f}% of the {len(rows)} routes observed "
+            f"in this run got any correction at all, below the "
+            f"{min_corrected_route_share * 100:.0f}% threshold. The realized feed is mostly just "
+            "the static schedule - it will look like near-perfect punctuality downstream. Check "
+            "the match step's own reject counts before publishing this build.",
+            file=sys.stderr,
+        )
+        return True
+    return False
+
+
 def _cmd_match(args: argparse.Namespace) -> int:
     positions_dirs = [Path(p) for p in args.positions_dir]
 
@@ -297,11 +562,31 @@ def _cmd_match(args: argparse.Namespace) -> int:
         )
         trip_stop_anchors = {}
 
+    # FA-15: trip_id -> route_id for the per-route reject breakdown. Loaded separately from (and
+    # deliberately unfiltered relative to) load_trip_shape_index - see load_trip_route_index's
+    # docstring for why both differences matter.
+    #
+    # Guarded the same way FA-12's anchor resolution below is: _validate_static_gtfs_for_match
+    # only checks that trips.txt EXISTS in the zip, not that it has the columns this reads, so a
+    # malformed-but-previously-workable feed must not start hard-failing 'match' because of a
+    # purely diagnostic index. Degrading to {} loses the breakdown for that run and nothing else.
+    try:
+        trip_routes = load_trip_route_index(args.static)
+    except (KeyError, OSError, ValueError) as exc:
+        print(
+            f"Warning: could not read trip_id -> route_id from the static GTFS ({exc}) - FA-15 "
+            "per-route diagnostics disabled for this run.",
+            file=sys.stderr,
+        )
+        trip_routes = {}
+
     agency_tz = resolve_agency_timezone(args.static)
     zone = zoneinfo.ZoneInfo(agency_tz)
 
     frames: list[pd.DataFrame] = []
     total_reject_counts: dict[str, int] = {}
+    total_by_route: dict[str, dict[str, int]] = {}
+    total_unattributable = 0
     total_snapshots_processed = 0
     recording_dates: list[date] = []
 
@@ -339,6 +624,7 @@ def _cmd_match(args: argparse.Namespace) -> int:
             shape_cumulative_dist=shape_cumulative_dist,
             trip_stop_anchors=trip_stop_anchors,
             position_signal_coverage_threshold=args.position_signal_coverage_threshold,
+            trip_routes=trip_routes,
         )
         # Scalar broadcast: recording_date identifies which recording SESSION
         # a row came from, not a per-observation calendar date - unlike
@@ -357,6 +643,8 @@ def _cmd_match(args: argparse.Namespace) -> int:
 
         for reason, count in df.attrs.get("reject_counts", {}).items():
             total_reject_counts[reason] = total_reject_counts.get(reason, 0) + count
+        _merge_route_counts(total_by_route, df.attrs.get("reject_counts_by_route", {}))
+        total_unattributable += df.attrs.get("unattributable_observations", 0)
         total_snapshots_processed += df.attrs.get("snapshots_processed", len(snapshot_paths))
         frames.append(df)
 
@@ -395,7 +683,27 @@ def _cmd_match(args: argparse.Namespace) -> int:
         print(f"  - {reason}: {total_reject_counts.get(reason, 0)}")
     print(f"Fallback shapes used (shapes.txt missing): {'yes' if fallback_used else 'no'}")
     print(f"Shapes trustworthy for shape_dist_traveled (FA-10): {len(shape_cumulative_dist)}/{len(shape_dist_raw)}")
+
+    low_yield = _report_match_diagnostics(
+        total_by_route,
+        total_unattributable,
+        total_reject_counts,
+        accepted=len(df),
+        excluded_route_ids=set(args.exclude_route_id),
+        max_reject_share=args.max_reject_share,
+        min_observations_for_route_alert=args.min_observations_for_route_alert,
+        diagnostics_csv=args.diagnostics_csv,
+    )
+
     print(f"Output written to: {out_path}")
+    # The output table is always written first: --fail-on-low-yield is about refusing to let a
+    # bad run pass silently, not about withholding the evidence needed to diagnose it.
+    if low_yield and args.fail_on_low_yield:
+        print(
+            "Failing because --fail-on-low-yield was passed and the run was flagged above.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -478,8 +786,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
     )
     p50_stats, p85_stats = aggregate_segments(segment_times)
 
+    # FA-15: per-route split of corrected/gap, taken from the P50 pass only - P85 rebuilds the
+    # same trips against the same segment keys, so counting it too would just double every number.
+    route_counts: dict[str, dict[str, int]] = {}
     corrections_p50, corrected_count, gap_count = rebuild_stop_times(
-        static_index, p50_stats, service_day_types, args.time_bucket_minutes
+        static_index, p50_stats, service_day_types, args.time_bucket_minutes,
+        route_counts=route_counts,
     )
     corrections_p85, _corrected_p85, _gap_p85 = rebuild_stop_times(
         static_index, p85_stats, service_day_types, args.time_bucket_minutes
@@ -515,8 +827,31 @@ def _cmd_build(args: argparse.Namespace) -> int:
     trusted_trip_count = len({trip_id for trip_id, _seq in trusted_stop_dist})
     print(f"Shapes trustworthy for shape_dist_traveled (FA-10): {len(shape_cumulative_dist)}/{len(shape_dist_raw)}")
     print(f"Trips using shape_dist_traveled for stop anchoring (FA-10): {trusted_trip_count}/{len(static_index.trip_stops)}")
+
+    # FA-15: which routes this run actually observed - the only defensible denominator for "did
+    # this build produce anything". rebuild_stop_times walks the WHOLE static feed (every route,
+    # every service day), so measuring against it would mostly measure how long the static feed's
+    # validity window is, not how the recording went.
+    observed_routes = {
+        static_index.trip_route[trip_id][0]
+        for trip_id in matched["trip_id"].unique()
+        if trip_id in static_index.trip_route
+    }
+    low_yield = _report_build_diagnostics(
+        route_counts,
+        observed_routes,
+        min_corrected_route_share=args.min_corrected_route_share,
+        diagnostics_csv=args.diagnostics_csv,
+    )
+
     print(f"P50 output written to: {out_p50}")
     print(f"P85 output written to: {out_p85}")
+    if low_yield and args.fail_on_low_yield:
+        print(
+            "Failing because --fail-on-low-yield was passed and the build was flagged above.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -642,6 +977,49 @@ def build_parser() -> argparse.ArgumentParser:
             f"(default: {DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD})."
         ),
     )
+    p_match.add_argument(
+        "--max-reject-share",
+        type=float,
+        default=DEFAULT_MAX_REJECT_SHARE,
+        help=(
+            # NOTE: argparse %-formats help strings, so every literal percent sign here must be
+            # written %% or it is silently parsed as a format spec (which mangled this very
+            # option's help into a raw dict dump until it was caught by running --help).
+            "FA-15: warn when more than this fraction (0-1) of a run's observations are "
+            "rejected. The classic cause is a static feed from a different publication period "
+            "than the recording, whose trip_id namespace does not match (Poznań 2026-07-17: "
+            f"79.19%% rejected, against 0.97-11.83%% on healthy city-days; default: "
+            f"{DEFAULT_MAX_REJECT_SHARE})."
+        ),
+    )
+    p_match.add_argument(
+        "--min-observations-for-route-alert",
+        type=_positive_int,
+        default=DEFAULT_MIN_OBSERVATIONS_FOR_ROUTE_ALERT,
+        help=(
+            "FA-15: how many observations a route needs before a '100%% rejected' verdict is "
+            "reported for it, so a route glimpsed once or twice does not generate noise "
+            f"(default: {DEFAULT_MIN_OBSERVATIONS_FOR_ROUTE_ALERT})."
+        ),
+    )
+    p_match.add_argument(
+        "--diagnostics-csv",
+        default=None,
+        metavar="PATH",
+        help=(
+            "FA-15: also write a per-route breakdown (observations, accepted, unknown_shape, "
+            "too_far_from_route, rejected_share) to this path. Off by default."
+        ),
+    )
+    p_match.add_argument(
+        "--fail-on-low-yield",
+        action="store_true",
+        help=(
+            "FA-15: exit non-zero when the run is flagged as low-yield. Off by default so an "
+            "automated daily pipeline keeps running and reporting rather than halting on a "
+            "problem it cannot fix on its own."
+        ),
+    )
     p_match.set_defaults(func=_cmd_match)
 
     p_build = sub.add_parser(
@@ -689,6 +1067,37 @@ def build_parser() -> argparse.ArgumentParser:
             "observations is spaced further apart in time than this many seconds - a wide "
             "gap means sparse sampling, not a real travel time (FA-14, PRD §7 open "
             f"question #10; default: {DEFAULT_MAX_BRACKET_GAP_S:.0f})."
+        ),
+    )
+    p_build.add_argument(
+        "--min-corrected-route-share",
+        type=float,
+        default=DEFAULT_MIN_CORRECTED_ROUTE_SHARE,
+        help=(
+            "FA-15: warn when fewer than this fraction (0-1) of the routes actually observed in "
+            "the matched table end up with any corrected segment - the signature of a build that "
+            "is mostly just the static schedule and will read as near-perfect punctuality "
+            "downstream (Turin 2026-07-20: 217 corrected rows out of 1,416,230). The default "
+            f"({DEFAULT_MIN_CORRECTED_ROUTE_SHARE}) is a documented starting point, NOT yet "
+            "validated against that Turin-class case on real data - see the PRD's open "
+            "question #11."
+        ),
+    )
+    p_build.add_argument(
+        "--diagnostics-csv",
+        default=None,
+        metavar="PATH",
+        help=(
+            "FA-15: also write a per-route breakdown (corrected_segments, gap_segments, "
+            "corrected_share) to this path. Off by default."
+        ),
+    )
+    p_build.add_argument(
+        "--fail-on-low-yield",
+        action="store_true",
+        help=(
+            "FA-15: exit non-zero when the build is flagged as low-yield. Off by default, same "
+            "rationale as 'match' - both realized GTFS zips are always written first regardless."
         ),
     )
     p_build.set_defaults(func=_cmd_build)

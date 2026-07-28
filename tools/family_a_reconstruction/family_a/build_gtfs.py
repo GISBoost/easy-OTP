@@ -31,6 +31,25 @@ from family_a.calendar_scope import time_bucket_for_seconds
 # segment_key = (route_id, direction_id, from_stop_id, to_stop_id, day_type, time_bucket)
 SegmentKey = tuple[str, str, str, str, str, int]
 
+# FA-15: fraction of the routes actually OBSERVED in a run's matched data that must end up with at
+# least one corrected segment before the build is treated as normal. Below this, the build is
+# reported as low-yield.
+#
+# The denominator is deliberately "routes observed in the RT data", not "corrected segments out of
+# all segments in the static feed". The latter is what `build` already prints, and it is not
+# comparable between cities or even between days of one city: it is capped by how much of the
+# static feed's own validity window a single recording day can possibly cover (a feed valid for 9
+# days, recorded for 1, cannot exceed roughly the share of days sharing that day_type no matter how
+# perfect the recording is). Normalising by what was actually observed removes that confound.
+#
+# NOT YET CONFIRMED BY MICHAŁ - a documented starting point, not an empirically-tuned value. The
+# real case it must catch is Turin 2026-07-20 (217 changed stop_times rows out of 1,416,230, i.e.
+# essentially no route corrected at all, published like any normal day); healthy days measured on
+# 2026-07-24 leave 70-92% of routes changed even using an over-large whole-feed denominator, so the
+# true observed-route figure is higher still. Report this value's real-data effect back before
+# treating it as final.
+DEFAULT_MIN_CORRECTED_ROUTE_SHARE = 0.50
+
 
 def segment_key_for(
     route_id: str,
@@ -154,6 +173,7 @@ def rebuild_stop_times(
     segment_stats: dict[SegmentKey, float],
     service_day_types: dict[str, set[str]],
     bucket_minutes: int = 120,
+    route_counts: dict[str, dict[str, int]] | None = None,
 ) -> tuple[dict[tuple[str, int], tuple[int, int]], int, int]:
     """Compute corrected arrival/departure times for every stop in every trip.
 
@@ -162,6 +182,16 @@ def rebuild_stop_times(
     observed - see calendar_scope.py. A trip whose service_id has no known active dates maps
     to an empty day_type set, which never matches any segment_stats key - it always falls back
     to the scheduled time, by design (never "matches everything").
+
+    *route_counts* (FA-15, optional, mutated in place - same convention as
+    interpolate_stop_time's own counts dict): when given, accumulates
+    route_id -> {"corrected": int, "gap": int}, the per-route split of the two whole-feed totals
+    this function already returns. Passed in rather than returned so the function's existing
+    3-tuple contract - and every existing caller and test - is untouched.
+
+    Deliberately computed here rather than by a second function re-deriving which segment keys
+    matched: segment_key_for exists precisely so two code paths cannot silently disagree about
+    key construction, and a parallel re-derivation would be exactly that risk.
 
     Returns:
       corrections: (trip_id, stop_sequence) -> (new_arr_sec, new_dep_sec)
@@ -177,6 +207,14 @@ def rebuild_stop_times(
             continue
 
         route_id, direction_id = static_index.trip_route.get(trip_id, ("", "0"))
+        # Resolved once per trip rather than per stop_time: this loop runs over every row of the
+        # whole static feed (millions on a large city), and setdefault's dict literal would
+        # otherwise be allocated on every iteration just to be thrown away.
+        route_bucket = (
+            route_counts.setdefault(route_id, {"corrected": 0, "gap": 0})
+            if route_counts is not None
+            else None
+        )
         service_id = static_index.trip_service_id.get(trip_id, "")
         trip_day_types = service_day_types.get(service_id, set())
         # Anchor the reconstructed timetable to the first stop's scheduled departure
@@ -207,9 +245,13 @@ def rebuild_stop_times(
 
                 if travel is not None:
                     corrected_count += 1
+                    if route_bucket is not None:
+                        route_bucket["corrected"] += 1
                 else:
                     travel = sched_travel
                     gap_count += 1
+                    if route_bucket is not None:
+                        route_bucket["gap"] += 1
 
                 new_arr = running_time + travel
                 new_arr = max(new_arr, running_time)  # monotonic clamp

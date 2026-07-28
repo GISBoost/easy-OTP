@@ -18,6 +18,7 @@ from family_a.matcher import (
     load_shape_dist_traveled,
     load_shapes,
     load_stop_locations,
+    load_trip_route_index,
     load_trip_shape_index,
     match_snapshots,
     observed_trip_ids,
@@ -971,3 +972,206 @@ def test_snapshot_feed_timestamp_returns_none_for_corrupt_snapshot(tmp_path):
     path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", b"\xff\xfenot-a-feed")
 
     assert snapshot_feed_timestamp(path) is None
+
+
+# ---------------------------------------------------------------------------
+# FA-15 — per-route reject diagnostics
+# ---------------------------------------------------------------------------
+
+
+def _make_dangling_shape_gtfs_zip(tmp_path: Path) -> Path:
+    """A feed reproducing the Łódź 2026-07-24 route-603 defect in miniature.
+
+    shapes.txt EXISTS and is fine for routeA, but routeB's trips reference a shape_id that has
+    zero points in it. resolve_trip_shapes' stops-fallback only triggers when shapes.txt is
+    missing entirely, so routeB's observations can never match - and, before FA-15, that was
+    invisible: the whole-run unknown_shape rate stays low while one route is 100% dead.
+    """
+    path = tmp_path / "dangling.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "trips.txt",
+            "trip_id,route_id,shape_id\n"
+            "tripA,routeA,shape1\n"
+            "tripB,routeB,shape_missing\n"
+            "tripC,routeC,\n",
+        )
+        zf.writestr("stops.txt", "stop_id,stop_lat,stop_lon\ns1,0.0,0.0\n")
+        zf.writestr("stop_times.txt", "trip_id,stop_id,stop_sequence\ntripA,s1,0\n")
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+            "shape1,0.0,0.0,0\n"
+            "shape1,0.01,0.0,1\n"
+            "shape1,0.02,0.0,2\n",
+        )
+    return path
+
+
+def test_load_trip_route_index_keeps_every_trip(tmp_path):
+    gtfs = _make_dangling_shape_gtfs_zip(tmp_path)
+
+    trip_routes = load_trip_route_index(str(gtfs))
+
+    assert trip_routes == {"tripA": "routeA", "tripB": "routeB", "tripC": "routeC"}
+    # load_trip_shape_index drops the blank-shape_id trip; this index deliberately does not.
+    assert "tripC" not in load_trip_shape_index(str(gtfs))
+
+
+def test_match_snapshots_per_route_breakdown_exposes_fully_rejected_route(tmp_path):
+    """Łódź-603 reproduction: one route 100% rejected, whole-run rate unremarkable."""
+    gtfs = _make_dangling_shape_gtfs_zip(tmp_path)
+    trip_shapes, shapes, _fallback = resolve_trip_shapes(str(gtfs))
+    trip_routes = load_trip_route_index(str(gtfs))
+
+    # 8 healthy routeA observations, 2 routeB observations that can never resolve a shape.
+    entities = [
+        _vehicle_entity(f"a{i}", "tripA", 0.005, 0.0, 1_700_000_000 + i) for i in range(8)
+    ]
+    entities += [
+        _vehicle_entity(f"b{i}", "tripB", 0.005, 0.0, 1_700_000_000 + i) for i in range(2)
+    ]
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", _make_feed_message(entities))
+
+    df = match_snapshots([path], trip_shapes, shapes, trip_routes=trip_routes)
+
+    by_route = df.attrs["reject_counts_by_route"]
+    assert by_route["routeA"] == {"accepted": 8, "unknown_shape": 0, "too_far_from_route": 0}
+    assert by_route["routeB"] == {"accepted": 0, "unknown_shape": 2, "too_far_from_route": 0}
+    # The whole-run figure alone would not draw anyone's attention - that is the point.
+    assert df.attrs["reject_counts"]["unknown_shape"] == 2
+    assert len(df) == 8
+    # routeB's trips ARE known to the static feed, so nothing is unattributable here.
+    assert df.attrs["unattributable_observations"] == 0
+
+
+def test_match_snapshots_counts_unknown_trip_ids_as_unattributable(tmp_path):
+    """Poznań "Bug 1" reproduction: the static feed is from another publication period."""
+    gtfs = _make_dangling_shape_gtfs_zip(tmp_path)
+    trip_shapes, shapes, _fallback = resolve_trip_shapes(str(gtfs))
+    trip_routes = load_trip_route_index(str(gtfs))
+
+    entities = [
+        _vehicle_entity("ok", "tripA", 0.005, 0.0, 1_700_000_000),
+        _vehicle_entity("x1", "trip_from_another_feed", 0.005, 0.0, 1_700_000_001),
+        _vehicle_entity("x2", "trip_from_another_feed_2", 0.005, 0.0, 1_700_000_002),
+    ]
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", _make_feed_message(entities))
+
+    df = match_snapshots([path], trip_shapes, shapes, trip_routes=trip_routes)
+
+    assert df.attrs["unattributable_observations"] == 2
+    # Critically, they are never silently filed under some route.
+    assert set(df.attrs["reject_counts_by_route"]) == {"routeA"}
+    assert df.attrs["reject_counts"]["unknown_shape"] == 2
+
+
+def test_match_snapshots_attributes_too_far_from_route_per_route(tmp_path):
+    gtfs = _make_dangling_shape_gtfs_zip(tmp_path)
+    trip_shapes, shapes, _fallback = resolve_trip_shapes(str(gtfs))
+    trip_routes = load_trip_route_index(str(gtfs))
+
+    # 0.01 deg of longitude off the north-south line is ~1.1km - well past the 100m default.
+    entities = [
+        _vehicle_entity("near", "tripA", 0.005, 0.0, 1_700_000_000),
+        _vehicle_entity("far", "tripA", 0.005, 0.01, 1_700_000_001),
+    ]
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", _make_feed_message(entities))
+
+    df = match_snapshots([path], trip_shapes, shapes, trip_routes=trip_routes)
+
+    assert df.attrs["reject_counts_by_route"]["routeA"] == {
+        "accepted": 1,
+        "unknown_shape": 0,
+        "too_far_from_route": 1,
+    }
+
+
+def test_match_snapshots_without_trip_routes_is_byte_identical(tmp_path):
+    """FA-15 is reporting-only: passing trip_routes must not move a single matched value."""
+    gtfs = _make_dangling_shape_gtfs_zip(tmp_path)
+    trip_shapes, shapes, _fallback = resolve_trip_shapes(str(gtfs))
+    trip_routes = load_trip_route_index(str(gtfs))
+
+    entities = [
+        _vehicle_entity("a", "tripA", 0.005, 0.0, 1_700_000_000),
+        _vehicle_entity("b", "tripB", 0.005, 0.0, 1_700_000_001),
+        _vehicle_entity("c", "trip_unknown", 0.005, 0.0, 1_700_000_002),
+    ]
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", _make_feed_message(entities))
+
+    without = match_snapshots([path], trip_shapes, shapes)
+    with_routes = match_snapshots([path], trip_shapes, shapes, trip_routes=trip_routes)
+
+    assert without.equals(with_routes)
+    assert without.attrs["reject_counts"] == with_routes.attrs["reject_counts"]
+    # Omitting it reproduces the pre-FA-15 "no data" state exactly.
+    assert without.attrs["reject_counts_by_route"] == {}
+    assert without.attrs["unattributable_observations"] == 0
+
+
+def test_match_snapshots_per_route_tallies_reconcile_with_whole_run_totals(tmp_path):
+    """Every observation lands in exactly one bucket - no double-count, no silent hole.
+
+    The FA-15 diagnostic is only trustworthy if its parts add up to the whole-run totals it is
+    printed next to; this is the match-side counterpart of test_build_gtfs.py's own
+    corrected/gap reconciliation assertion.
+    """
+    gtfs = _make_dangling_shape_gtfs_zip(tmp_path)
+    trip_shapes, shapes, _fallback = resolve_trip_shapes(str(gtfs))
+    trip_routes = load_trip_route_index(str(gtfs))
+
+    entities = (
+        [_vehicle_entity(f"a{i}", "tripA", 0.005, 0.0, 1_700_000_000 + i) for i in range(5)]
+        + [_vehicle_entity(f"b{i}", "tripB", 0.005, 0.0, 1_700_000_100 + i) for i in range(3)]
+        + [_vehicle_entity(f"u{i}", f"unknown{i}", 0.005, 0.0, 1_700_000_200 + i) for i in range(4)]
+        + [_vehicle_entity("far", "tripA", 0.005, 0.01, 1_700_000_300)]
+        + [_vehicle_entity("none", "", 0.005, 0.0, 1_700_000_400)]
+    )
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", _make_feed_message(entities))
+
+    df = match_snapshots([path], trip_shapes, shapes, trip_routes=trip_routes)
+
+    rejects = df.attrs["reject_counts"]
+    by_route = df.attrs["reject_counts_by_route"]
+    route_total = sum(sum(c.values()) for c in by_route.values())
+
+    # accepted + rejected, counted two independent ways, must agree.
+    whole_run = (
+        len(df)
+        + rejects["no_trip_id"]
+        + rejects["unknown_shape"]
+        + rejects["too_far_from_route"]
+    )
+    # no_trip_id is rejected before any route lookup, so it belongs to neither per-route bucket.
+    assert route_total + df.attrs["unattributable_observations"] + rejects["no_trip_id"] == whole_run
+    # And the accepted rows are fully accounted for per route.
+    assert sum(c["accepted"] for c in by_route.values()) == len(df)
+
+
+def test_match_snapshots_empty_trip_routes_means_no_data_not_all_unattributable(tmp_path):
+    """An empty dict must mean "no route data", per the documented empty-⇒-no-data convention.
+
+    Reporting every observation as unattributable instead would be a perfect false Bug-1
+    signature on a feed that simply has no trips.
+    """
+    trip_shapes, shapes = _shapes_and_trips()
+    feed = _make_feed_message([_vehicle_entity("e1", "trip1", 0.005, 0.0, 1_700_000_000)])
+    path = _write_pb(tmp_path / "snapshot_20260101-000000.pb", feed)
+
+    df = match_snapshots([path], trip_shapes, shapes, trip_routes={})
+
+    assert df.attrs["unattributable_observations"] == 0
+    assert df.attrs["reject_counts_by_route"] == {}
+
+
+def test_load_trip_route_index_short_row_gets_empty_route_not_none(tmp_path):
+    """csv.DictReader pads a truncated row with None - which must not become a route_id."""
+    path = tmp_path / "short_row.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,shape_id\ntripA,routeA,shape1\ntripB\n")
+
+    trip_routes = load_trip_route_index(str(path))
+
+    assert trip_routes["tripB"] == ""
+    assert trip_routes["tripB"] is not None

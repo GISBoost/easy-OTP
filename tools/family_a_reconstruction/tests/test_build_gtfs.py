@@ -558,3 +558,50 @@ def test_repackage_streaming_matches_buffered_output_byte_for_byte(tmp_path):
     )
     content = _read_zip_member(out_path, "stop_times.txt")
     assert content == expected
+
+
+# ---------------------------------------------------------------------------
+# FA-15 — per-route correction counts
+# ---------------------------------------------------------------------------
+
+
+def test_rebuild_route_counts_out_param_splits_corrected_and_gap():
+    idx = _simple_index()
+    bucket = time_bucket_for_seconds(60, 120)
+    stats = {segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): 90.0}
+
+    route_counts: dict[str, dict[str, int]] = {}
+    _corrections, corrected, gaps = rebuild_stop_times(
+        idx, stats, _DEFAULT_DAY_TYPES, route_counts=route_counts
+    )
+
+    # The per-route split must reconcile exactly with the whole-feed totals it accompanies.
+    assert route_counts == {"R1": {"corrected": 1, "gap": 1}}
+    assert sum(c["corrected"] for c in route_counts.values()) == corrected
+    assert sum(c["gap"] for c in route_counts.values()) == gaps
+
+
+def test_rebuild_route_counts_reports_a_route_with_no_corrections_at_all():
+    """The FA-15 signal: a route whose every segment fell back to the schedule."""
+    idx = _simple_index()
+
+    route_counts: dict[str, dict[str, int]] = {}
+    _corrections, corrected, gaps = rebuild_stop_times(
+        idx, {}, _DEFAULT_DAY_TYPES, route_counts=route_counts
+    )
+
+    assert corrected == 0
+    assert route_counts["R1"]["corrected"] == 0
+    assert route_counts["R1"]["gap"] == gaps
+
+
+def test_rebuild_without_route_counts_is_unchanged():
+    """Omitting the out-param must reproduce the pre-FA-15 behaviour exactly."""
+    idx = _simple_index()
+    bucket = time_bucket_for_seconds(60, 120)
+    stats = {segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): 90.0}
+
+    baseline = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES)
+    with_counts = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES, route_counts={})
+
+    assert baseline == with_counts

@@ -74,6 +74,24 @@ _MATCHED_COLUMNS = ["trip_id", "timestamp", "distance_along_shape_m", "perpendic
 # for the empirical difference this choice makes.
 DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD = 0.60
 
+# FA-15: share of a run's VehiclePosition observations that may be rejected before the run is
+# flagged as low-yield. CONFIRMED WITH MICHAŁ (2026-07-28). Every figure below is this exact
+# metric as printed by cli.py's own "Observation reject share (FA-15)" line - not the raw
+# unknown_shape rate, which is a different (smaller) number:
+#   Poznań 07-17, the recurring static-feed calendar mismatch ("Bug 1"): 79.19% - must trip.
+#   Poznań 07-18 (healthy): 11.83%   Łódź 07-24: 9.53%   Wilno 07-17: 0.97% - must not trip.
+# So the real margin is 11.83% (worst healthy day measured) against 79.19%, and 0.25 sits
+# comfortably between them. This is a REPORTING threshold only - nothing about matching changes
+# when it is crossed.
+DEFAULT_MAX_REJECT_SHARE = 0.25
+
+# FA-15: a route needs at least this many observations before a 100%-rejected verdict is reported
+# for it, so a route glimpsed once or twice (a depot move, a mislabelled vehicle) doesn't generate
+# noise. CONFIRMED WITH MICHAŁ (2026-07-28): 50. The motivating real case, Łódź route 603 on
+# 2026-07-24, has 7,478 observations - far above this - while still being invisible in the
+# whole-run total (that day's reject share is 9.53%, nowhere near DEFAULT_MAX_REJECT_SHARE).
+DEFAULT_MIN_OBSERVATIONS_FOR_ROUTE_ALERT = 50
+
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in metres between two WGS-84 points.
@@ -190,6 +208,48 @@ def load_trip_shape_index(
                 if shape_id:
                     trip_shapes[row["trip_id"]] = shape_id
     return trip_shapes
+
+
+def load_trip_route_index(gtfs_zip_path: str) -> dict[str, str]:
+    """Load trips.txt into trip_id -> route_id (FA-15).
+
+    A deliberately separate, minimal pass from load_trip_shape_index, same
+    "simple, independently testable contract" preference this module already
+    documents for load_shapes/load_trip_shape_index (see resolve_trip_shapes).
+
+    Unlike load_trip_shape_index this keeps EVERY trip in trips.txt - trips
+    with an empty shape_id are kept, and there is deliberately no
+    exclude_route_ids parameter. Both differences are load-bearing for the
+    diagnostic this feeds (match_snapshots' reject_counts_by_route):
+
+    - A trip with a blank or dangling shape_id is exactly the case the
+      per-route breakdown exists to expose (Łódź route 603, 2026-07-24: 7,478
+      observations, every one of them rejected as "unknown_shape" because the
+      agency's own trips.txt references 18 shape_ids that have zero points in
+      shapes.txt). Dropping such trips here would hide them from the report
+      that is supposed to find them.
+    - Filtering excluded routes out here would misfile their observations as
+      "unknown to the static feed" - i.e. as the signature of a static/RT
+      publication mismatch - when they were in fact deliberately excluded.
+      Keeping them lets a caller tell the two apart; suppressing warnings for
+      routes it excluded on purpose is the caller's job (see cli.py).
+
+    So "trip_id absent from this index" means one thing only: the static feed
+    has never heard of this trip. That is the signal of a static-vs-RT
+    publication mismatch (Poznań "Bug 1": 76.9% of 2026-07-17's observations,
+    5,785 distinct trip_ids).
+    """
+    trip_routes: dict[str, str] = {}
+    with zipfile.ZipFile(gtfs_zip_path) as zf:
+        with zf.open("trips.txt") as fh:
+            reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
+            for row in reader:
+                # `or ""` rather than a get() default: csv.DictReader fills missing fields of a
+                # short row with None, so a truncated trips.txt line would otherwise store a None
+                # route_id - which match_snapshots would read as "the static feed has never heard
+                # of this trip", i.e. a false publication-mismatch signal.
+                trip_routes[row["trip_id"]] = row.get("route_id") or ""
+    return trip_routes
 
 
 def load_fallback_shapes_from_stops(
@@ -638,6 +698,7 @@ def match_snapshots(
     shape_cumulative_dist: dict[str, list[float]] | None = None,
     trip_stop_anchors: dict[str, list[tuple[int, str, float]]] | None = None,
     position_signal_coverage_threshold: float = DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD,
+    trip_routes: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Map-match VehiclePosition entities across all snapshot_paths onto shapes.
 
@@ -695,6 +756,27 @@ def match_snapshots(
     - its snapshot file fails to decode ("corrupt_snapshot" — one bad file
       does not abort the whole run).
 
+    *trip_routes* (FA-15): optional trip_id -> route_id index (see
+    load_trip_route_index). When given, the same accept/reject decisions made
+    above are ALSO tallied per route into
+    `df.attrs["reject_counts_by_route"]`, and observations whose trip_id the
+    static feed has never heard of are counted separately in
+    `df.attrs["unattributable_observations"]`. This is purely additive
+    bookkeeping: it never changes which observations are accepted, which are
+    rejected, or the values written to any output column - a run with and
+    without it produces a byte-identical matched table. Omitting it (the
+    default) leaves the breakdown empty, same "empty ⇒ no data" convention
+    shape_dist.evaluate_shape_trust and FA-12 already established.
+
+    The separate unattributable bucket is load-bearing, not cosmetic. Both
+    failure modes this diagnostic exists to expose collapse into the same
+    whole-run "unknown_shape" total today, but they are different problems
+    needing different fixes: a trip_id the static feed knows, whose shape_id
+    has no points (Łódź 603 - a per-route data gap), versus a trip_id the
+    static feed has never heard of (Poznań "Bug 1" - the whole static feed is
+    from the wrong publication period, so there is no route to attribute it
+    to at all).
+
     Rejection counts and the number of snapshots processed are attached to
     the returned DataFrame via `df.attrs["reject_counts"]` and
     `df.attrs["snapshots_processed"]` — pandas' documented mechanism for
@@ -703,7 +785,11 @@ def match_snapshots(
     these attrs to print a summary. FA-12 adds `df.attrs["position_signal"]`
     ("sequence" | "stop_id" | "none") and `df.attrs["position_signal_coverage"]`
     ({"sequence": float, "stop_id": float}, both 0.0 when trip_stop_anchors was
-    omitted) for the same reason.
+    omitted) for the same reason. FA-15 adds
+    `df.attrs["reject_counts_by_route"]` (route_id -> {"accepted": int,
+    "unknown_shape": int, "too_far_from_route": int}) and
+    `df.attrs["unattributable_observations"]` (int), both empty/0 when
+    trip_routes was omitted.
 
     Snapshots are re-sorted by filename internally (chronological, given
     FA-1's snapshot_YYYYmmdd-HHMMSS.pb naming), independent of the order
@@ -780,11 +866,33 @@ def match_snapshots(
     rows: list[tuple[str, datetime, float, float]] = []
     last_confirmed_seq: dict[str, int] = {}
 
+    # FA-15: per-route tally of the exact same decisions taken below, plus a separate count for
+    # observations no route can be attributed to at all. Purely additive - nothing here feeds
+    # back into any accept/reject decision.
+    by_route: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"accepted": 0, "unknown_shape": 0, "too_far_from_route": 0}
+    )
+    unattributable = 0
+    # Decided once, and used for BOTH the lookup and the unattributable tally below - an empty
+    # dict has to mean "no route data available", exactly like None, per this function's own
+    # documented "empty ⇒ no data" convention. Testing `if trip_routes` in one place and
+    # `is not None` in the other would make an empty dict report every single observation as
+    # unattributable, i.e. as a perfect Bug-1 signature, on a feed that simply has no trips.
+    track_routes = bool(trip_routes)
+
     for trip_id, ts, lat, lon, has_seq, seq_val, stop_id_val in records:
+        route_id = trip_routes.get(trip_id) if track_routes else None
+        if track_routes and route_id is None:
+            # trip_id is non-empty (records only holds those) but absent from the static feed's
+            # own trips.txt - no route exists to attribute this observation to.
+            unattributable += 1
+
         shape_id = trip_shapes.get(trip_id)
         polyline = shapes.get(shape_id) if shape_id is not None else None
         if polyline is None:
             rejects["unknown_shape"] += 1
+            if route_id is not None:
+                by_route[route_id]["unknown_shape"] += 1
             continue
 
         cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
@@ -833,9 +941,13 @@ def match_snapshots(
 
         if perp_m > max_perpendicular_dist_m:
             rejects["too_far_from_route"] += 1
+            if route_id is not None:
+                by_route[route_id]["too_far_from_route"] += 1
             continue
 
         rows.append((trip_id, ts, dist_along_m, perp_m))
+        if route_id is not None:
+            by_route[route_id]["accepted"] += 1
 
     df = pd.DataFrame(rows, columns=_MATCHED_COLUMNS)
     if not df.empty:
@@ -846,4 +958,9 @@ def match_snapshots(
     df.attrs["snapshots_processed"] = len(ordered_paths)
     df.attrs["position_signal"] = signal
     df.attrs["position_signal_coverage"] = {"sequence": coverage_seq, "stop_id": coverage_stop_id}
+    # dict(): a defaultdict would silently manufacture a zeroed entry for any route_id a caller
+    # happened to look up, which is exactly the kind of "plausible-looking but wrong number" this
+    # milestone exists to prevent.
+    df.attrs["reject_counts_by_route"] = dict(by_route)
+    df.attrs["unattributable_observations"] = unattributable
     return df

@@ -4,6 +4,7 @@ No QGIS, no network, no real wall-clock waits (time.monotonic/time.sleep are
 mocked so the record loop runs instantly). Run: pytest tests/test_cli.py -v
 """
 
+import csv
 import json
 import zipfile
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from google.transit import gtfs_realtime_pb2
 
 from family_a import matcher
 from family_a.cli import _cmd_build, _cmd_match, _cmd_record, _duration_minutes, build_parser
+from family_a.build_gtfs import DEFAULT_MIN_CORRECTED_ROUTE_SHARE
 from family_a.interpolate import DEFAULT_MAX_BRACKET_GAP_S
 from family_a.recorder import SnapshotFetchError
 
@@ -293,6 +295,12 @@ def _make_match_args(tmp_path, **overrides):
         max_perpendicular_dist_m = 100.0
         exclude_route_id = []
         position_signal_coverage_threshold = matcher.DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD
+        # FA-15 defaults, mirroring build_parser's own - so every existing test keeps
+        # exercising _cmd_match with the real production thresholds, not stubbed ones.
+        max_reject_share = matcher.DEFAULT_MAX_REJECT_SHARE
+        min_observations_for_route_alert = matcher.DEFAULT_MIN_OBSERVATIONS_FOR_ROUTE_ALERT
+        diagnostics_csv = None
+        fail_on_low_yield = False
 
     ns = _NS()
     for key, value in overrides.items():
@@ -854,6 +862,10 @@ def _make_build_args(tmp_path, **overrides):
         min_observations_per_segment = 1
         time_bucket_minutes = 120
         max_bracket_gap_seconds = DEFAULT_MAX_BRACKET_GAP_S
+        # FA-15 defaults, mirroring build_parser's own.
+        min_corrected_route_share = DEFAULT_MIN_CORRECTED_ROUTE_SHARE
+        diagnostics_csv = None
+        fail_on_low_yield = False
 
     ns = _NS()
     for key, value in overrides.items():
@@ -1211,3 +1223,270 @@ def test_help_epilogs_contain_example_command(command, capsys):
 
     captured = capsys.readouterr()
     assert "py -m family_a.cli" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# FA-15 — per-route diagnostics and low-yield gates
+# ---------------------------------------------------------------------------
+
+
+def _make_two_route_gtfs_zip(tmp_path):
+    """routeA resolves normally; routeB's shape_id has zero points in shapes.txt.
+
+    Miniature of the Łódź 2026-07-24 route-603 defect - see
+    matcher tests' _make_dangling_shape_gtfs_zip.
+    """
+    path = tmp_path / "gtfs_two_route.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "trips.txt",
+            "trip_id,route_id,shape_id\ntrip1,routeA,shape1\ntrip2,routeB,shape_missing\n",
+        )
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+            "shape1,0.0,0.0,0\n"
+            "shape1,0.01,0.0,1\n",
+        )
+    return path
+
+
+def _write_multi_entity_snapshot(tmp_path, trip_ids, filename="snapshot_20260101-000000.pb"):
+    feed = gtfs_realtime_pb2.FeedMessage(
+        header=gtfs_realtime_pb2.FeedHeader(gtfs_realtime_version="2.0"),
+        entity=[
+            gtfs_realtime_pb2.FeedEntity(
+                id=f"e{i}",
+                vehicle=gtfs_realtime_pb2.VehiclePosition(
+                    trip=gtfs_realtime_pb2.TripDescriptor(trip_id=trip_id),
+                    position=gtfs_realtime_pb2.Position(latitude=0.005, longitude=0.0),
+                    timestamp=1_700_000_000 + i,
+                ),
+            )
+            for i, trip_id in enumerate(trip_ids)
+        ],
+    )
+    path = tmp_path / filename
+    path.write_bytes(feed.SerializeToString())
+    return path
+
+
+def test_cmd_match_warns_about_a_fully_rejected_route(tmp_path, capsys):
+    gtfs = _make_two_route_gtfs_zip(tmp_path)
+    # 60 routeB observations (above the 50 alert floor), 200 healthy routeA ones - so the
+    # WHOLE-RUN reject share stays at 23%, under the 25% gate, and only the per-route rule fires.
+    _write_multi_entity_snapshot(tmp_path, ["trip1"] * 200 + ["trip2"] * 60)
+    args = _make_match_args(tmp_path, static=str(gtfs), out=str(tmp_path / "m.csv"))
+
+    assert _cmd_match(args) == 0
+
+    captured = capsys.readouterr()
+    assert "routeB" in captured.err
+    assert "not one was" in captured.err
+    # The whole-run gate must NOT have fired - this is exactly the case it cannot see.
+    assert "of observations were rejected" not in captured.err
+
+
+def test_cmd_match_ignores_a_fully_rejected_route_below_the_observation_floor(tmp_path, capsys):
+    gtfs = _make_two_route_gtfs_zip(tmp_path)
+    # Only 3 routeB observations - below DEFAULT_MIN_OBSERVATIONS_FOR_ROUTE_ALERT.
+    _write_multi_entity_snapshot(tmp_path, ["trip1"] * 200 + ["trip2"] * 3)
+    args = _make_match_args(tmp_path, static=str(gtfs), out=str(tmp_path / "m.csv"))
+
+    assert _cmd_match(args) == 0
+    assert "routeB" not in capsys.readouterr().err
+
+
+def test_cmd_match_warns_when_most_observations_are_unattributable(tmp_path, capsys):
+    """Poznań "Bug 1": the static feed is from a different publication period."""
+    gtfs = _make_two_route_gtfs_zip(tmp_path)
+    _write_multi_entity_snapshot(tmp_path, ["trip1"] * 10 + [f"other_feed_trip_{i}" for i in range(90)])
+    args = _make_match_args(tmp_path, static=str(gtfs), out=str(tmp_path / "m.csv"))
+
+    assert _cmd_match(args) == 0
+
+    captured = capsys.readouterr()
+    assert "90.0% of observations were rejected" in captured.err
+    assert "different publication" in captured.err
+    assert "not attributable to any route" in captured.out
+
+
+def test_cmd_match_healthy_run_emits_no_warning(tmp_path, capsys):
+    """Guards against false alarms, not just against missed ones."""
+    gtfs = _make_two_route_gtfs_zip(tmp_path)
+    _write_multi_entity_snapshot(tmp_path, ["trip1"] * 100)
+    args = _make_match_args(tmp_path, static=str(gtfs), out=str(tmp_path / "m.csv"))
+
+    assert _cmd_match(args) == 0
+    assert "WARNING (FA-15)" not in capsys.readouterr().err
+
+
+def test_cmd_match_does_not_warn_about_deliberately_excluded_routes(tmp_path, capsys):
+    gtfs = _make_two_route_gtfs_zip(tmp_path)
+    _write_multi_entity_snapshot(tmp_path, ["trip1"] * 200 + ["trip2"] * 60)
+    args = _make_match_args(
+        tmp_path, static=str(gtfs), out=str(tmp_path / "m.csv"), exclude_route_id=["routeB"]
+    )
+
+    assert _cmd_match(args) == 0
+    assert "routeB" not in capsys.readouterr().err
+
+
+def test_cmd_match_fail_on_low_yield_returns_1_but_still_writes_output(tmp_path):
+    gtfs = _make_two_route_gtfs_zip(tmp_path)
+    _write_multi_entity_snapshot(tmp_path, ["trip1"] * 10 + [f"other_{i}" for i in range(90)])
+    out_path = tmp_path / "m.csv"
+    args = _make_match_args(
+        tmp_path, static=str(gtfs), out=str(out_path), fail_on_low_yield=True
+    )
+
+    assert _cmd_match(args) == 1
+    # The evidence needed to diagnose the failure must survive the failure.
+    assert out_path.exists()
+
+
+def test_cmd_match_writes_per_route_diagnostics_csv(tmp_path):
+    gtfs = _make_two_route_gtfs_zip(tmp_path)
+    _write_multi_entity_snapshot(tmp_path, ["trip1"] * 8 + ["trip2"] * 2)
+    diag = tmp_path / "diag.csv"
+    args = _make_match_args(
+        tmp_path, static=str(gtfs), out=str(tmp_path / "m.csv"), diagnostics_csv=str(diag)
+    )
+
+    assert _cmd_match(args) == 0
+
+    rows = {r["route_id"]: r for r in csv.DictReader(diag.open(encoding="utf-8"))}
+    assert rows["routeA"]["accepted"] == "8"
+    assert rows["routeB"]["unknown_shape"] == "2"
+    assert rows["routeB"]["rejected_share"] == "1.0"
+
+
+def test_cmd_build_warns_when_almost_no_route_gets_corrected(tmp_path, capsys):
+    """Turin 2026-07-20: a build that is essentially just the static schedule."""
+    gtfs = _make_build_static_zip(tmp_path)
+    matched_path = tmp_path / "matched.csv"
+    # A single observation at the trip's start only - never enough to interpolate a crossing
+    # of stop B, so the one observed route ends up with zero corrected segments.
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m\n"
+        "t1,2026-01-01T07:00:00Z,0.0\n",
+        encoding="utf-8",
+    )
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=str(tmp_path / "out"),
+    )
+
+    assert _cmd_build(args) == 0
+
+    captured = capsys.readouterr()
+    assert "0.0% of the 1 routes observed" in captured.err
+    assert "just the static schedule" in captured.err
+
+
+def test_cmd_build_healthy_run_emits_no_warning_and_writes_diagnostics(tmp_path, capsys):
+    from family_a.matcher import project_point_to_polyline
+
+    gtfs = _make_build_static_zip(tmp_path)
+    d_b = project_point_to_polyline(0.01, 0.0, [(0.0, 0.0), (0.01, 0.0)])[0]
+    matched_path = tmp_path / "matched.csv"
+    # 4 minutes apart, deliberately under FA-14's 300s bracket-gap limit - a wider pair would be
+    # rejected before it could ever become a correction.
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m\n"
+        "t1,2026-01-01T07:00:00Z,0.0\n"
+        f"t1,2026-01-01T07:04:00Z,{d_b}\n",
+        encoding="utf-8",
+    )
+    diag = tmp_path / "diag_build.csv"
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=str(tmp_path / "out"), diagnostics_csv=str(diag),
+    )
+
+    assert _cmd_build(args) == 0
+    assert "WARNING (FA-15)" not in capsys.readouterr().err
+
+    rows = {r["route_id"]: r for r in csv.DictReader(diag.open(encoding="utf-8"))}
+    assert int(rows["R1"]["corrected_segments"]) >= 1
+
+
+def test_cmd_build_warns_loudly_when_no_observed_route_reaches_the_build(tmp_path, capsys):
+    """The worst case of all - it must never be silent.
+
+    An empty matched table, or a --static that is not the feed 'match' ran against, produces a
+    realized GTFS identical to the schedule. A guard that merely avoids dividing by zero would
+    turn the loudest possible signal into a calm "0 routes observed" line and exit 0.
+    """
+    gtfs = _make_build_static_zip(tmp_path)
+    matched_path = tmp_path / "matched.csv"
+    # Well-formed, but every trip_id belongs to some other publication of the feed.
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m\n"
+        "trip_from_another_feed,2026-01-01T07:00:00Z,0.0\n"
+        "trip_from_another_feed,2026-01-01T07:02:00Z,500.0\n",
+        encoding="utf-8",
+    )
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=str(tmp_path / "out"),
+    )
+
+    assert _cmd_build(args) == 0
+
+    err = capsys.readouterr().err
+    assert "not one route from the matched table reached this build" in err
+
+
+def test_cmd_build_fail_on_low_yield_returns_1_but_still_writes_both_zips(tmp_path):
+    gtfs = _make_build_static_zip(tmp_path)
+    matched_path = tmp_path / "matched.csv"
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m\n"
+        "t1,2026-01-01T07:00:00Z,0.0\n",
+        encoding="utf-8",
+    )
+    out_prefix = str(tmp_path / "out")
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=out_prefix, fail_on_low_yield=True,
+    )
+
+    assert _cmd_build(args) == 1
+    # Both realized feeds must survive the failure - they are the evidence.
+    assert Path(f"{out_prefix}_p50.zip").exists()
+    assert Path(f"{out_prefix}_p85.zip").exists()
+
+
+def test_cmd_match_excluded_route_is_kept_out_of_the_whole_run_reject_share(tmp_path, capsys):
+    """A deliberately excluded route must not be able to trigger a false Bug-1 diagnosis.
+
+    Without excluding it from the ratio, routeB's 300 by-design rejections would put the share at
+    60% and produce a warning confidently blaming a static/RT publication mismatch.
+    """
+    gtfs = _make_two_route_gtfs_zip(tmp_path)
+    _write_multi_entity_snapshot(tmp_path, ["trip1"] * 200 + ["trip2"] * 300)
+    args = _make_match_args(
+        tmp_path, static=str(gtfs), out=str(tmp_path / "m.csv"), exclude_route_id=["routeB"]
+    )
+
+    assert _cmd_match(args) == 0
+
+    captured = capsys.readouterr()
+    assert "WARNING (FA-15)" not in captured.err
+    assert "Observation reject share (FA-15): 0.00%" in captured.out
+    assert "excluded from the share entirely" in captured.out
+
+
+def test_cmd_match_reports_no_trip_id_separately_so_the_figures_reconcile(tmp_path, capsys):
+    gtfs = _make_two_route_gtfs_zip(tmp_path)
+    _write_multi_entity_snapshot(tmp_path, ["trip1"] * 10 + [""] * 5)
+    args = _make_match_args(tmp_path, static=str(gtfs), out=str(tmp_path / "m.csv"))
+
+    assert _cmd_match(args) == 0
+
+    out = capsys.readouterr().out
+    assert "no trip_id at all" in out
+    # 5 of 15 attempted = 33.33%, and the 5 belong to neither the per-route breakdown nor the
+    # unattributable count - which is exactly why they need their own line.
+    assert "Observation reject share (FA-15): 33.33% of 15 attempted" in out
