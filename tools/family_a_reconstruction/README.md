@@ -253,7 +253,7 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   signature of a build that is mostly just the static schedule and will read as near-perfect
   punctuality downstream (measured: Turin 2026-07-20 published 217 corrected rows out of
   1,416,230, on a day when 99.1% of its routes were running — so not a calendar artifact). The
-  default is **calibrated on real data**: 17 healthy builds measured 61.1–100% on this metric
+  default is **calibrated on real data**: 18 healthy builds measured 61.1–100% on this metric
   against 0% and 20% for two broken ones, leaving a clean 20–61% gap; `0.40` is the maximin point
   of that gap (≈20 points of margin on each side). Note the denominator is observed routes, not
   the whole static feed: a raw

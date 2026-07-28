@@ -43,13 +43,13 @@ SegmentKey = tuple[str, str, str, str, str, int]
 # perfect the recording is). Normalising by what was actually observed removes that confound.
 #
 # CALIBRATED ON REAL DATA (2026-07-28), replacing the initial 0.50 starting point. Measured this
-# metric across two populations - 17 builds that produced a normal realized feed, and 2 that
+# metric across two populations - 18 builds that produced a normal realized feed, and 2 that
 # produced essentially nothing (Turin 2026-07-20, published anyway with 217 changed stop_times
 # rows out of 1,416,230; Turin 2026-07-22, which never published at all). Both Turin days turned
 # out to have the same cause: its VehiclePositions feed emitted almost no trip_id (99.5% and 100%
 # of observations respectively).
 #
-#   healthy (n=17): min 61.1%, median 95.4%, max 100%   (the 61.1% floor is Prague 07-18, a
+#   healthy (n=18): min 61.1%, median 94.8%, max 100%   (the 61.1% floor is Prague 07-18, a
 #                   Saturday; the next lowest is 86.8%)
 #   broken  (n=2):  0.0% and 20.0%
 #
