@@ -202,6 +202,48 @@ the archive's message-shape sample shows a median of <= 1 `StopTimeUpdate` per
 `Segments observed: 0` — see `docs/prd/PR_easy-OTP_v07.md` §RT3-6 and milestone 0.6.7 in
 `docs/prompts/easy-OTP_v07_prompts_for-claude-code.md`.
 
+## 31. `family_a` build silently dropped numeric `trip_id`s from the matched CSV ✅ Fixed
+
+**Severity:** high (silent data loss). · **Tracker:** [#31](../../issues/31)
+
+Applies to `tools/family_a_reconstruction/` (the standalone Family A CLI), not the QGIS plugin.
+
+~~`build` read its `--matched` CSV with `pandas.read_csv` and no explicit dtype. For a feed whose
+`trip_id`s are purely numeric, pandas infers the column type per chunk and returns most values as
+`int`; every downstream lookup keys `trip_id` against the static feed's *string* keys, so those
+trips resolved to nothing and were dropped as "unresolvable" — with no warning.~~
+
+Measured on Boston 2026-07-19 (same matched table, dtype the only difference): 629 → **8,470**
+trips processed, 7,842 → **0** skipped, 14,404 → **192,219** segments corrected. Only 7.4% of
+distinct `trip_id`s matched as read. Exposure across the 13 monitored cities: Boston 91.6% numeric
+`trip_id`s, Rome 5.0%, the other 11 at 0.0% — and the defect was non-deterministic, since Rome
+escaped it only through how its rows happened to chunk.
+
+**Consequence for published data — this is a biased subset, not a uniform under-count.** Which
+trips survived was decided by pandas' per-chunk type inference over a `trip_id`-sorted file: a
+chunk containing any non-numeric id stayed textual and kept its numeric neighbours too, while
+all-numeric chunks did not. On Boston 2026-07-19 the 629 survivors are 62.8% numeric themselves,
+and they cover only **25 of the 126 observed routes** — clustered, arbitrary, and not correctable
+by scaling. **Boston realized feeds built before this fix must not be compared against later runs,
+nor treated as ~8% of the truth uniformly.** Historical releases are deliberately *not* recomputed
+(fix-forward only).
+
+**Workaround (pre-fix):** use a Parquet matched table (`--out matched.parquet`, needs `pyarrow`) —
+Parquet carries dtypes, so it was never affected.
+
+**Status:** **Fixed by FA-16 in the `family_a` CLI** — `build` reads the matched table with
+`dtype={"trip_id": str}` (at read time, never a post-hoc `astype`, which would corrupt leading-zero
+ids), and additionally reports the share of matched `trip_id`s the static feed does not recognise
+(`--max-unknown-trip-share`), so a mismatched matched/static pair can no longer pass silently
+either. Verified byte-identical realized output on all eight unaffected cities. See
+`docs/prd/PR_easy-OTP_family-a-matching-accuracy.md` §FA-16.
+
+**Scope of that fix:** the shipped CLI only. The ad hoc analysis scripts under
+`gtfs-manual-test/` (gitignored, not part of the tool) read matched tables the same unguarded way
+and would reproduce the defect if pointed at a numeric-`trip_id` city. Every threshold calibrated
+with them (FA-13/FA-14/FA-15) used only cities at 0% numeric `trip_id`s, so those results are
+unaffected — but add `dtype={"trip_id": str}` before reusing them on Boston or Rome.
+
 ---
 
 This list is not exhaustive. If you hit something not listed here, please open a GitHub issue.

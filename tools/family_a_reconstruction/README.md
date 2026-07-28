@@ -260,12 +260,31 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   `corrected/(corrected+gap)` over the whole feed is capped by how much of the feed's validity
   window one recording day can cover — Łódź, for example, could only ever correct 35.4% of its
   rows on a single weekday — so it is not comparable between cities or days and is not used here.
+- `--max-unknown-trip-share` (default `0.20`) — **FA-16.** Warn when more than this fraction of
+  the matched table's `trip_id`s are unknown to `--static`. `match` only emits a row once the
+  `trip_id` resolved through that same static feed's `trips.txt`, so for a correctly paired run
+  this is **0 by construction** — anything above zero means the matched table and `--static` come
+  from different publications, and every unmatched trip is silently dropped. The default is loose
+  on purpose: a real mismatch is never subtle (Łódź renumbers its whole `trip_id` namespace every
+  1–3 days, ~99% unknown; Poznań per publication period, 67–98%).
 - `--diagnostics-csv` (off by default) — **FA-15.** Also write a per-route breakdown
   (`corrected_segments`, `gap_segments`, `corrected_share_full_feed`). Read that last column as
   "how much of this route's whole published timetable got corrected", never as "how well was
   this route observed" — it is diluted by the feed's validity window, per the note above.
-- `--fail-on-low-yield` (off by default) — **FA-15.** Exit non-zero when the build is flagged.
-  Both realized zips are always written first regardless.
+- `--fail-on-low-yield` (off by default) — **FA-15/FA-16.** Exit non-zero when the build is
+  flagged — either as low-yield (`--min-corrected-route-share`) **or** because the matched table
+  and `--static` are not the same publication (`--max-unknown-trip-share`). Both realized zips are
+  always written first regardless.
+
+**Feeds with purely numeric `trip_id`s** (FA-16): `build` reads the matched table's `trip_id`
+column as text explicitly. Without that, pandas infers the column's type per chunk and such a feed
+comes back with most values as integers, which then match nothing in the static feed — silently
+discarding the bulk of a healthy match. Boston, whose `trip_id`s are 91.6% numeric, was processing
+629 of 8,471 trips and correcting 14,404 segments instead of 192,219. What survived was decided by
+where the chunk boundaries fell in a `trip_id`-sorted file, so it is an **arbitrary, clustered
+subset — 25 of 126 observed routes — not a uniform sample**. **Boston output published before this
+fix must not be compared against later runs, and cannot be rescaled into agreement with them.**
+Rome (5.0% numeric) happened to escape it, but only by luck of how its rows chunked.
 
 **Known limitation of the `build` gate** (measured, not theoretical): it does *not* catch a
 wrong-static-feed failure. Observations rejected during `match` never reach the matched table, so

@@ -64,6 +64,21 @@ SegmentKey = tuple[str, str, str, str, str, int]
 # (99.5%/100% reject share) than this one did - this is the secondary detector, not the primary.
 DEFAULT_MIN_CORRECTED_ROUTE_SHARE = 0.40
 
+# FA-16: share of the matched table's distinct trip_ids that the static feed may fail to
+# recognise before `build` reports that its two inputs do not belong together.
+#
+# The invariant this rests on: `match` only ever emits a row once the trip_id resolved through
+# trip_shapes, which is derived from the very same static feed's trips.txt - so when `build` is
+# handed that same feed, the unknown share is ZERO by construction. Anything above zero means the
+# matched table and --static came from different publications.
+#
+# CONFIRMED WITH MICHAŁ (2026-07-28): 0.20. Deliberately loose relative to a zero invariant,
+# because once the numeric-trip_id defect above is fixed, the only remaining way to trip this is a
+# genuinely mismatched pair - and that is never subtle: Łódź renumbers its whole trip_id namespace
+# every 1-3 days (~99% unknown), Poznań per publication period (67-98%). Accepted gap: a partial
+# corruption below 20% would pass unreported - immaterial, since the dtype fix removes its cause.
+DEFAULT_MAX_UNKNOWN_TRIP_SHARE = 0.20
+
 
 def segment_key_for(
     route_id: str,

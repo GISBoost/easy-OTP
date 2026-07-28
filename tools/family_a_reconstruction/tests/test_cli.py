@@ -13,12 +13,13 @@ from unittest import mock
 
 import argparse
 
+import pandas as pd
 import pytest
 from google.transit import gtfs_realtime_pb2
 
 from family_a import matcher
 from family_a.cli import _cmd_build, _cmd_match, _cmd_record, _duration_minutes, build_parser
-from family_a.build_gtfs import DEFAULT_MIN_CORRECTED_ROUTE_SHARE
+from family_a.build_gtfs import DEFAULT_MAX_UNKNOWN_TRIP_SHARE, DEFAULT_MIN_CORRECTED_ROUTE_SHARE
 from family_a.interpolate import DEFAULT_MAX_BRACKET_GAP_S
 from family_a.recorder import SnapshotFetchError
 
@@ -44,6 +45,23 @@ def test_build_defaults():
     assert args.min_observations_per_segment == 2
     assert args.time_bucket_minutes == 120
     assert args.max_bracket_gap_seconds == DEFAULT_MAX_BRACKET_GAP_S
+    # Every _cmd_build test builds its args by hand, so without these two the whole
+    # --max-unknown-trip-share / --min-corrected-route-share wiring through build_parser is
+    # untested - deleting or renaming either flag would surface only as a user-facing
+    # AttributeError, never as a red test.
+    assert args.max_unknown_trip_share == DEFAULT_MAX_UNKNOWN_TRIP_SHARE
+    assert args.min_corrected_route_share == DEFAULT_MIN_CORRECTED_ROUTE_SHARE
+    assert args.fail_on_low_yield is False
+    assert args.diagnostics_csv is None
+
+
+def test_build_input_fit_threshold_override():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["build", "--matched", "matched.csv", "--static", "gtfs.zip", "--out-prefix", "out",
+         "--max-unknown-trip-share", "0.5"]
+    )
+    assert args.max_unknown_trip_share == 0.5
 
 
 def test_build_max_bracket_gap_seconds_override():
@@ -819,15 +837,64 @@ def test_cmd_match_duplicate_positions_dir_detected_via_different_relative_paths
 # ---------------------------------------------------------------------------
 
 
-def _make_build_static_zip(tmp_path):
+def _make_multi_trip_build_static_zip(tmp_path, trip_ids):
+    """Same shape as _make_build_static_zip but with several trips on one route (FA-16).
+
+    Needed to exercise the MIDDLE of the unknown-trip-share range. With a single trip the share
+    can only ever be 0% or 100%, and at 100% the FA-15 gate already fires on its own (no observed
+    route survives) - so a single-trip test cannot tell whether the FA-16 check is wired into the
+    exit path at all, nor which denominator or threshold it uses.
+    """
+    path = tmp_path / "gtfs_build_multi.zip"
+    trips = "".join(f"{t},R1,0,shape1,svc1\n" for t in trip_ids)
+    stop_times = "".join(
+        f"{t},08:00:00,08:00:00,A,1\n{t},08:10:00,08:10:00,B,2\n" for t in trip_ids
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("trips.txt", "trip_id,route_id,direction_id,shape_id,service_id\n" + trips)
+        zf.writestr("stops.txt", "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.01,0.0\n")
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n" + stop_times,
+        )
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+            "shape1,0.0,0.0,0\n"
+            "shape1,0.01,0.0,1\n",
+        )
+        zf.writestr(
+            "calendar.txt",
+            "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,"
+            "start_date,end_date\n"
+            "svc1,1,1,1,1,1,0,0,20260101,20261231\n",
+        )
+    return path
+
+
+def _write_multi_trip_matched(path, trip_ids, *, d_b):
+    rows = "".join(
+        f"{t},2026-01-01T07:00:00Z,0.0\n{t},2026-01-01T07:04:00Z,{d_b}\n" for t in trip_ids
+    )
+    path.write_text(
+        "trip_id,timestamp,distance_along_shape_m\n" + rows, encoding="utf-8"
+    )
+
+
+def _make_build_static_zip(tmp_path, *, trip_id="t1"):
     # service_id + calendar.txt (svc1 active weekdays, 2026-01-01 is a
     # Thursday) so FA-5's day-type gating resolves this trip to a non-empty
     # day_type set instead of degenerating into "always a gap".
+    #
+    # *trip_id* (FA-16) is parameterised so the same fixture covers a feed whose trip_ids are
+    # purely numeric (Boston: 91.6% of them) or numeric with a leading zero - both cases where
+    # reading the matched table without an explicit dtype silently loses the join key.
     path = tmp_path / "gtfs_build.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr(
             "trips.txt",
-            "trip_id,route_id,direction_id,shape_id,service_id\nt1,R1,0,shape1,svc1\n",
+            "trip_id,route_id,direction_id,shape_id,service_id\n"
+            f"{trip_id},R1,0,shape1,svc1\n",
         )
         zf.writestr(
             "stops.txt",
@@ -836,8 +903,8 @@ def _make_build_static_zip(tmp_path):
         zf.writestr(
             "stop_times.txt",
             "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
-            "t1,08:00:00,08:00:00,A,1\n"
-            "t1,08:10:00,08:10:00,B,2\n",
+            f"{trip_id},08:00:00,08:00:00,A,1\n"
+            f"{trip_id},08:10:00,08:10:00,B,2\n",
         )
         zf.writestr(
             "shapes.txt",
@@ -866,6 +933,8 @@ def _make_build_args(tmp_path, **overrides):
         min_corrected_route_share = DEFAULT_MIN_CORRECTED_ROUTE_SHARE
         diagnostics_csv = None
         fail_on_low_yield = False
+        # FA-16 default, likewise.
+        max_unknown_trip_share = DEFAULT_MAX_UNKNOWN_TRIP_SHARE
 
     ns = _NS()
     for key, value in overrides.items():
@@ -1490,3 +1559,243 @@ def test_cmd_match_reports_no_trip_id_separately_so_the_figures_reconcile(tmp_pa
     # 5 of 15 attempted = 33.33%, and the 5 belong to neither the per-route breakdown nor the
     # unattributable count - which is exactly why they need their own line.
     assert "Observation reject share (FA-15): 33.33% of 15 attempted" in out
+
+
+# ---------------------------------------------------------------------------
+# FA-16 — numeric trip_id round-trip, and matched/static input fit
+# ---------------------------------------------------------------------------
+
+
+def _write_two_point_matched(path, trip_id, *, d_b):
+    """A minimal matched table: one trip crossing stop A then stop B, 4 minutes apart.
+
+    4 minutes is deliberately inside FA-14's 300s bracket-gap limit - a wider pair would be
+    rejected before it could ever become a correction, masking what these tests measure.
+    """
+    path.write_text(
+        "trip_id,timestamp,distance_along_shape_m\n"
+        f"{trip_id},2026-01-01T07:00:00Z,0.0\n"
+        f"{trip_id},2026-01-01T07:04:00Z,{d_b}\n",
+        encoding="utf-8",
+    )
+
+
+def _d_b():
+    from family_a.matcher import project_point_to_polyline
+
+    return project_point_to_polyline(0.01, 0.0, [(0.0, 0.0), (0.01, 0.0)])[0]
+
+
+def test_cmd_build_resolves_purely_numeric_trip_ids(tmp_path, capsys):
+    """Regression test for FA-16.
+
+    Boston's trip_ids are 91.6% purely numeric. Read without an explicit dtype, pandas infers
+    int for most of them (per chunk, mixed within one column) and they then never match the
+    static feed's string keys - silently discarding 92% of a perfectly healthy match. Before the
+    fix this test fails with 0 trips processed and 0 corrections.
+    """
+    gtfs = _make_build_static_zip(tmp_path, trip_id="76132151")
+    matched_path = tmp_path / "matched.csv"
+    _write_two_point_matched(matched_path, "76132151", d_b=_d_b())
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
+    )
+
+    assert _cmd_build(args) == 0
+
+    out = capsys.readouterr().out
+    assert "Trips processed: 1" in out
+    assert "skipped (no resolvable shape or fewer than 2 stops): 0" in out
+    assert "Segments corrected: 1" in out
+
+
+def test_cmd_build_preserves_leading_zero_trip_ids(tmp_path, capsys):
+    """Guards the *shape* of the fix, not just its effect.
+
+    The join key must be preserved by reading with dtype=str, never by converting after the
+    fact: a post-hoc .astype(str) turns "007" into 7 into "7" and breaks the very lookup it was
+    meant to repair. Verified against pandas directly - astype(str) yields '7', dtype= yields
+    '007' - so this test fails for the wrong-shaped fix while passing for the right one.
+    """
+    gtfs = _make_build_static_zip(tmp_path, trip_id="007")
+    matched_path = tmp_path / "matched.csv"
+    _write_two_point_matched(matched_path, "007", d_b=_d_b())
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
+    )
+
+    assert _cmd_build(args) == 0
+    assert "Segments corrected: 1" in capsys.readouterr().out
+
+
+def test_cmd_build_numeric_trip_ids_round_trip_through_parquet(tmp_path, capsys):
+    """Parquet carries dtypes, so it was never affected - pin that it stays that way."""
+    pytest.importorskip("pyarrow")
+    gtfs = _make_build_static_zip(tmp_path, trip_id="76132151")
+    matched_path = tmp_path / "matched.parquet"
+    pd.DataFrame(
+        {
+            "trip_id": ["76132151", "76132151"],
+            "timestamp": pd.to_datetime(
+                ["2026-01-01T07:00:00Z", "2026-01-01T07:04:00Z"], utc=True
+            ),
+            "distance_along_shape_m": [0.0, _d_b()],
+        }
+    ).to_parquet(matched_path)
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
+    )
+
+    assert _cmd_build(args) == 0
+    assert "Segments corrected: 1" in capsys.readouterr().out
+
+
+def test_cmd_build_missing_trip_id_column_still_reports_a_clear_error(tmp_path, capsys):
+    """The dtype= key names a column that may be absent - the readable error must survive.
+
+    pandas ignores a dtype entry for a column the file does not contain (verified on the
+    installed version), so this stays a clean message rather than becoming a raw traceback.
+    """
+    gtfs = _make_build_static_zip(tmp_path)
+    matched_path = tmp_path / "matched.csv"
+    matched_path.write_text(
+        "timestamp,distance_along_shape_m\n2026-01-01T07:00:00Z,0.0\n", encoding="utf-8"
+    )
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
+    )
+
+    assert _cmd_build(args) == 1
+    assert "missing required column(s): trip_id" in capsys.readouterr().err
+
+
+def test_cmd_build_warns_when_matched_table_does_not_fit_the_static(tmp_path, capsys):
+    """Passing build a different static than match ran against must not pass silently.
+
+    Real cause this exists for: Łódź republishes with a completely renumbered trip_id namespace
+    every 1-3 days, and Poznań per publication period - so a plausible-looking pairing can share
+    zero trip_ids.
+    """
+    gtfs = _make_build_static_zip(tmp_path, trip_id="t1")
+    matched_path = tmp_path / "matched.csv"
+    _write_two_point_matched(matched_path, "trip_from_another_publication", d_b=_d_b())
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
+    )
+
+    assert _cmd_build(args) == 0
+
+    err = capsys.readouterr().err
+    assert "WARNING (FA-16)" in err
+    assert "100.0%" in err
+
+
+def test_cmd_build_no_input_fit_warning_when_the_pair_matches(tmp_path, capsys):
+    """Guards against a false alarm, not just against a missed one."""
+    gtfs = _make_build_static_zip(tmp_path, trip_id="t1")
+    matched_path = tmp_path / "matched.csv"
+    _write_two_point_matched(matched_path, "t1", d_b=_d_b())
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
+    )
+
+    assert _cmd_build(args) == 0
+
+    captured = capsys.readouterr()
+    assert "WARNING (FA-16)" not in captured.err
+    assert "1/1 (100.0% of distinct trips)" in captured.out
+
+
+def test_cmd_build_input_mismatch_counts_towards_fail_on_low_yield(tmp_path):
+    gtfs = _make_build_static_zip(tmp_path, trip_id="t1")
+    matched_path = tmp_path / "matched.csv"
+    _write_two_point_matched(matched_path, "trip_from_another_publication", d_b=_d_b())
+    out_prefix = str(tmp_path / "out")
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=out_prefix, fail_on_low_yield=True,
+    )
+
+    assert _cmd_build(args) == 1
+    # Both realized feeds still get written - they are the evidence for diagnosing the mismatch.
+    assert Path(f"{out_prefix}_p50.zip").exists()
+    assert Path(f"{out_prefix}_p85.zip").exists()
+
+
+def test_cmd_build_input_fit_warns_in_the_middle_of_the_range_where_fa15_stays_silent(
+    tmp_path, capsys
+):
+    """The only band where FA-16 adds anything over FA-15 - and the only one that pins it.
+
+    4 known trips (all corrected, so FA-15's corrected-route share is 100% and it says nothing)
+    plus 2 unknown ones = 33% unknown, over the 0.20 default. If the check counted observations
+    instead of distinct trips, compared against min_corrected_route_share, or used a different
+    threshold, this is the test that notices.
+    """
+    known = ["t1", "t2", "t3", "t4"]
+    gtfs = _make_multi_trip_build_static_zip(tmp_path, known)
+    matched_path = tmp_path / "matched.csv"
+    _write_multi_trip_matched(matched_path, known + ["ghost1", "ghost2"], d_b=_d_b())
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
+    )
+
+    assert _cmd_build(args) == 0
+
+    captured = capsys.readouterr()
+    assert "4/6 (66.7% of distinct trips)" in captured.out
+    assert "WARNING (FA-16)" in captured.err
+    assert "33.3%" in captured.err
+    # FA-15 must stay quiet here, otherwise this test would pass for the wrong reason.
+    assert "WARNING (FA-15)" not in captured.err
+
+
+def test_cmd_build_input_fit_silent_just_below_the_threshold(tmp_path, capsys):
+    """1 unknown of 6 = 16.7%, under the 0.20 default - no warning, and no exit-code change."""
+    known = ["t1", "t2", "t3", "t4", "t5"]
+    gtfs = _make_multi_trip_build_static_zip(tmp_path, known)
+    matched_path = tmp_path / "matched.csv"
+    _write_multi_trip_matched(matched_path, known + ["ghost1"], d_b=_d_b())
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=str(tmp_path / "out"), fail_on_low_yield=True,
+    )
+
+    assert _cmd_build(args) == 0
+
+    captured = capsys.readouterr()
+    assert "5/6 (83.3% of distinct trips)" in captured.out
+    assert "WARNING (FA-16)" not in captured.err
+
+
+def test_cmd_build_input_mismatch_alone_drives_fail_on_low_yield(tmp_path, capsys):
+    """Pins the wiring itself: FA-15 is silent here, so only FA-16 can produce the exit code."""
+    known = ["t1", "t2", "t3", "t4"]
+    gtfs = _make_multi_trip_build_static_zip(tmp_path, known)
+    matched_path = tmp_path / "matched.csv"
+    _write_multi_trip_matched(matched_path, known + ["ghost1", "ghost2"], d_b=_d_b())
+    out_prefix = str(tmp_path / "out")
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=out_prefix, fail_on_low_yield=True,
+    )
+
+    assert _cmd_build(args) == 1
+    assert "WARNING (FA-15)" not in capsys.readouterr().err
+    assert Path(f"{out_prefix}_p50.zip").exists()
+    assert Path(f"{out_prefix}_p85.zip").exists()
+
+
+def test_cmd_build_input_fit_threshold_is_configurable(tmp_path, capsys):
+    """Raising the threshold above the measured share must silence it - pins the value's use."""
+    known = ["t1", "t2", "t3", "t4"]
+    gtfs = _make_multi_trip_build_static_zip(tmp_path, known)
+    matched_path = tmp_path / "matched.csv"
+    _write_multi_trip_matched(matched_path, known + ["ghost1", "ghost2"], d_b=_d_b())
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=str(tmp_path / "out"), max_unknown_trip_share=0.5,
+    )
+
+    assert _cmd_build(args) == 0
+    assert "WARNING (FA-16)" not in capsys.readouterr().err

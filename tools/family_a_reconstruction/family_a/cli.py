@@ -19,10 +19,12 @@ import zipfile
 import zoneinfo
 from datetime import date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from family_a.build_gtfs import (
+    DEFAULT_MAX_UNKNOWN_TRIP_SHARE,
     DEFAULT_MIN_CORRECTED_ROUTE_SHARE,
     load_static_index,
     rebuild_stop_times,
@@ -57,6 +59,9 @@ from family_a.segment_stats import (
     filter_min_observations,
 )
 from family_a.shape_dist import evaluate_shape_trust, evaluate_trip_trust
+
+if TYPE_CHECKING:
+    from family_a.build_gtfs import StaticIndex
 
 
 def _cmd_record(args: argparse.Namespace) -> int:
@@ -202,7 +207,7 @@ def _validate_static_gtfs_for_match(path: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# FA-15: per-route diagnostics and low-yield reporting
+# FA-15 / FA-16: per-route diagnostics, input-fit check, and low-yield reporting
 # ---------------------------------------------------------------------------
 #
 # Why this exists: before FA-15 both commands only ever reported whole-run totals, so a route
@@ -388,6 +393,77 @@ def _report_match_diagnostics(
             file=sys.stderr,
         )
     return low_yield
+
+
+def _report_matched_static_fit(
+    matched: pd.DataFrame,
+    static_index: "StaticIndex",
+    max_unknown_trip_share: float,
+) -> bool:
+    """Check that the matched table and --static are the same publication (FA-16).
+
+    Returns True when they demonstrably are not. `match` only emits a row once the trip_id
+    resolved through a static feed's own trips.txt, so handing `build` that same feed leaves a
+    zero unknown share for any healthy feed - see DEFAULT_MAX_UNKNOWN_TRIP_SHARE.
+
+    "Healthy" rather than "by construction", because the two files this spans are not the same
+    set in both directions:
+    - a trip listed in trips.txt with a valid shape_id but with NO rows in stop_times.txt does
+      produce matched rows and would be counted unknown here - a narrow false-alarm vector, and a
+      genuine feed defect when it happens;
+    - conversely, on the no-shapes.txt fallback path resolve_trip_shapes keys pseudo-shapes by
+      trip_ids taken from stop_times.txt, so `match` can emit rows for a trip absent from
+      trips.txt - which this check correctly does NOT flag.
+
+    Checked against static_index.trip_stops (stop_times.txt) rather than trip_route (trips.txt),
+    because trip_stops is the lookup collect_segment_observations actually fails on, so this
+    reports the condition that will really cost corrections.
+
+    Computed directly rather than read off collect_segment_observations' existing
+    trips_skipped_unresolvable counter: that counter merges three unrelated causes (no shape, a
+    trip with fewer than two stops, and a trip the static feed has never heard of), so it could
+    not distinguish a mismatched pair from an ordinary short trip, and the message would not be
+    actionable.
+    """
+    # dropna(): with dtype=str a blank trip_id field reads back as NaN (a float), which would
+    # otherwise land in `distinct` and be counted as an unknown trip. `match` never writes one,
+    # but a hand-edited table could.
+    distinct = set(matched["trip_id"].dropna().unique())
+    if not distinct:
+        print(
+            "Trips in the matched table the static feed recognises (FA-16): 0/0 - the matched "
+            "table has no usable trip_id at all."
+        )
+        return False
+
+    known = {t for t in distinct if t in static_index.trip_stops}
+    known_share = len(known) / len(distinct)
+    # "distinct trips" is spelled out because the FA-15 line above reports a share of
+    # OBSERVATIONS - two percentages with different denominators sitting next to each other.
+    print(
+        f"Trips in the matched table the static feed recognises (FA-16): "
+        f"{len(known)}/{len(distinct)} ({known_share * 100:.1f}% of distinct trips)"
+    )
+
+    if (1.0 - known_share) > max_unknown_trip_share:
+        print(
+            f"WARNING (FA-16): the static feed does not recognise "
+            f"{(1.0 - known_share) * 100:.1f}% of the distinct trip_ids in this matched table, so "
+            "--static is almost certainly not the feed 'match' was run against. Every unknown "
+            "trip is dropped, so every count printed below - trips processed, segments "
+            "corrected, and the FA-15 route figures - is computed from whatever fraction "
+            "survived and should not be trusted. Common "
+            # ASCII only in printed output: a Windows console under a non-UTF-8 codepage renders
+            # "Łódź" as mojibake (observed during this milestone's own real-data verification).
+            # Comments and docs keep the proper spelling; anything that reaches stdout/stderr
+            # must survive the terminal it lands in.
+            "causes: an agency that renumbers trip_id on each republication (Lodz does so every "
+            "1-3 days), or a feed downloaded for a different publication period than the "
+            "recording.",
+            file=sys.stderr,
+        )
+        return True
+    return False
 
 
 def _report_build_diagnostics(
@@ -721,9 +797,25 @@ def _cmd_build(args: argparse.Namespace) -> int:
     matched_path = Path(args.matched)
     try:
         if matched_path.suffix.lower() == ".parquet":
+            # Parquet carries dtypes, so trip_id comes back as the str it was written as - the
+            # CSV hazard below cannot arise here.
             matched = pd.read_parquet(matched_path)
         else:
-            matched = pd.read_csv(matched_path)
+            # FA-16: trip_id MUST be read as text. Without this, pandas infers the column's type
+            # per chunk, so a feed whose trip_ids are purely numeric (Boston: 91.6% of them) comes
+            # back with most values as int - and every downstream lookup keys off trip_id against
+            # the static feed's string keys (segment_stats' trip_stops/trip_shapes/trip_route/
+            # trusted_stop_dist, and this command's own observed_routes). The result was a silent
+            # loss of 92% of a perfectly healthy match: Boston 2026-07-19 processed 629 of 8,471
+            # trips and corrected 14,404 segments instead of 192,219.
+            #
+            # It has to be dtype= at READ time, never .astype(str) afterwards: post-hoc conversion
+            # turns a leading-zero id like "007" into 7 into "7" and breaks the very lookup it
+            # means to repair (verified directly against pandas; see test_cmd_build_preserves_
+            # leading_zero_trip_ids). Naming a column that a given file happens to lack is safe -
+            # pandas ignores the entry - so the readable "missing required column(s)" error below
+            # still fires rather than a raw traceback.
+            matched = pd.read_csv(matched_path, dtype={"trip_id": str})
     except ImportError as exc:
         print(
             f"Could not read Parquet input ({exc}). Install pyarrow "
@@ -812,6 +904,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
     repackage_gtfs(args.static, out_p50, corrections_p50)
     repackage_gtfs(args.static, out_p85, corrections_p85)
 
+    # FA-16 is reported FIRST, before any count: if the two inputs are not the same publication,
+    # every number below is computed from a fraction of the data, and its own warning says so.
+    input_mismatch = _report_matched_static_fit(
+        matched, static_index, max_unknown_trip_share=args.max_unknown_trip_share
+    )
+
     print(f"Agency timezone resolved: {agency_tz}")
     print(f"Trips processed: {collect_counts['trips_processed']}")
     print(f"  - skipped (no resolvable shape or fewer than 2 stops): {collect_counts['trips_skipped_unresolvable']}")
@@ -853,6 +951,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         min_corrected_route_share=args.min_corrected_route_share,
         diagnostics_csv=args.diagnostics_csv,
     )
+    low_yield = low_yield or input_mismatch
 
     print(f"P50 output written to: {out_p50}")
     print(f"P85 output written to: {out_p85}")
@@ -997,7 +1096,7 @@ def build_parser() -> argparse.ArgumentParser:
             # option's help into a raw dict dump until it was caught by running --help).
             "FA-15: warn when more than this fraction (0-1) of a run's observations are "
             "rejected. The classic cause is a static feed from a different publication period "
-            "than the recording, whose trip_id namespace does not match (Poznań 2026-07-17: "
+            "than the recording, whose trip_id namespace does not match (Poznan 2026-07-17: "
             f"79.19%% rejected, against 0.97-11.83%% on healthy city-days; default: "
             f"{DEFAULT_MAX_REJECT_SHARE})."
         ),
@@ -1094,6 +1193,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_build.add_argument(
+        "--max-unknown-trip-share",
+        type=float,
+        default=DEFAULT_MAX_UNKNOWN_TRIP_SHARE,
+        help=(
+            "FA-16: warn when more than this fraction (0-1) of the matched table's trip_ids are "
+            "unknown to --static - the signature of a matched table and a static feed from "
+            "different publications, which silently drops every unmatched trip. Should be 0 for "
+            "a correctly paired run, so the default "
+            f"({DEFAULT_MAX_UNKNOWN_TRIP_SHARE}) is loose on purpose: a real mismatch is never "
+            "subtle (Lodz renumbers every 1-3 days, ~99%% unknown)."
+        ),
+    )
+    p_build.add_argument(
         "--diagnostics-csv",
         default=None,
         metavar="PATH",
@@ -1106,8 +1218,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--fail-on-low-yield",
         action="store_true",
         help=(
-            "FA-15: exit non-zero when the build is flagged as low-yield. Off by default, same "
-            "rationale as 'match' - both realized GTFS zips are always written first regardless."
+            "FA-15/FA-16: exit non-zero when the build is flagged - either as low-yield "
+            "(--min-corrected-route-share) or because the matched table and --static are not the "
+            "same publication (--max-unknown-trip-share). Off by default, same rationale as "
+            "'match' - both realized GTFS zips are always written first regardless."
         ),
     )
     p_build.set_defaults(func=_cmd_build)
