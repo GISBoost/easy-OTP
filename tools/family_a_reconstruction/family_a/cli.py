@@ -1088,9 +1088,9 @@ def build_parser() -> argparse.ArgumentParser:
             "the matched table end up with any corrected segment - the signature of a build that "
             "is mostly just the static schedule and will read as near-perfect punctuality "
             "downstream (Turin 2026-07-20: 217 corrected rows out of 1,416,230). The default "
-            f"({DEFAULT_MIN_CORRECTED_ROUTE_SHARE}) is a documented starting point, NOT yet "
-            "validated against that Turin-class case on real data - see the PRD's open "
-            "question #11."
+            f"({DEFAULT_MIN_CORRECTED_ROUTE_SHARE}) is calibrated on real data - 17 healthy builds "
+            "measured 61.1-100%% on this metric against 0%% and 20%% for two broken ones, and this "
+            "value sits at the maximin point of the resulting gap."
         ),
     )
     p_build.add_argument(

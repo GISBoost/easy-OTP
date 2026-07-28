@@ -42,13 +42,27 @@ SegmentKey = tuple[str, str, str, str, str, int]
 # days, recorded for 1, cannot exceed roughly the share of days sharing that day_type no matter how
 # perfect the recording is). Normalising by what was actually observed removes that confound.
 #
-# NOT YET CONFIRMED BY MICHAŁ - a documented starting point, not an empirically-tuned value. The
-# real case it must catch is Turin 2026-07-20: 217 changed stop_times rows out of 1,416,230,
-# published like any normal day - and that is not a calendar artifact, since 99.1% of that day's
-# routes had service running and only 0.9% of them saw any change. Measured healthy runs sit far
-# above the threshold on this metric (Łódź 07-24: 93.3%, Poznań 07-18: 87.9%). Report this value's
-# real-data effect back before treating it as final.
-DEFAULT_MIN_CORRECTED_ROUTE_SHARE = 0.50
+# CALIBRATED ON REAL DATA (2026-07-28), replacing the initial 0.50 starting point. Measured this
+# metric across two populations - 17 builds that produced a normal realized feed, and 2 that
+# produced essentially nothing (Turin 2026-07-20, published anyway with 217 changed stop_times
+# rows out of 1,416,230; Turin 2026-07-22, which never published at all). Both Turin days turned
+# out to have the same cause: its VehiclePositions feed emitted almost no trip_id (99.5% and 100%
+# of observations respectively).
+#
+#   healthy (n=17): min 61.1%, median 95.4%, max 100%   (the 61.1% floor is Prague 07-18, a
+#                   Saturday; the next lowest is 86.8%)
+#   broken  (n=2):  0.0% and 20.0%
+#
+# That leaves a clean 20.0%-61.1% separating gap, so any threshold in [25%, 60%] gives zero false
+# alarms and zero misses on this data. 0.40 is chosen because it maximises the SMALLER of the two
+# margins (20.0 pts above the worst broken run, 21.1 pts below the worst healthy one); 0.50 was
+# valid but lopsided, leaving only 11.1 pts of headroom under Prague's Saturday.
+#
+# Two honest caveats, both worth revisiting if more data turns up: the broken population is n=2 and
+# both points are the same city and the same failure mode, and the 61.1% healthy floor rests on a
+# single Saturday. Note also that the match-side gate caught both broken days far more decisively
+# (99.5%/100% reject share) than this one did - this is the secondary detector, not the primary.
+DEFAULT_MIN_CORRECTED_ROUTE_SHARE = 0.40
 
 
 def segment_key_for(

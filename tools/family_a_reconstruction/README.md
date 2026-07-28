@@ -248,13 +248,15 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   trusted.
 - `--time-bucket-minutes` (default `120`) — time-of-day bucket width in minutes for segment
   correction scoping (see below); 12 buckets/day at the default 2-hour width.
-- `--min-corrected-route-share` (default `0.50`) — **FA-15.** Warn when fewer than this fraction
+- `--min-corrected-route-share` (default `0.40`) — **FA-15.** Warn when fewer than this fraction
   of the routes actually *observed* in the matched table end up with any corrected segment — the
   signature of a build that is mostly just the static schedule and will read as near-perfect
   punctuality downstream (measured: Turin 2026-07-20 published 217 corrected rows out of
   1,416,230, on a day when 99.1% of its routes were running — so not a calendar artifact). The
-  default is a documented starting point, **not yet validated** against that Turin-class case on
-  real data. Note the denominator is observed routes, not the whole static feed: a raw
+  default is **calibrated on real data**: 17 healthy builds measured 61.1–100% on this metric
+  against 0% and 20% for two broken ones, leaving a clean 20–61% gap; `0.40` is the maximin point
+  of that gap (≈20 points of margin on each side). Note the denominator is observed routes, not
+  the whole static feed: a raw
   `corrected/(corrected+gap)` over the whole feed is capped by how much of the feed's validity
   window one recording day can cover — Łódź, for example, could only ever correct 35.4% of its
   rows on a single weekday — so it is not comparable between cities or days and is not used here.
