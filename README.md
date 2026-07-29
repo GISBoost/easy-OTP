@@ -1050,3 +1050,15 @@ A few confirmed limitations to be aware of:
 
 See [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) for the full (non-exhaustive) list and the
 [issue tracker](../../issues) for progress.
+
+## License
+
+**GNU General Public License v3.0 or later** (`GPL-3.0-or-later`) — see [`LICENSE`](LICENSE).
+This satisfies the official QGIS plugin repository's "GPL version 2 or later" requirement.
+
+This covers the plugin and everything under `tools/`, including the standalone
+`family_a_reconstruction` tool. The companion repositories are licensed separately, because
+neither contains code derived from this one:
+[`easy-GTFS-RT`](https://github.com/GISBoost/easy-GTFS-RT) (CI/CD workflows) and
+[`gtfs-dashboard`](https://github.com/GISBoost/gtfs-dashboard) (static site) are MIT — they
+invoke the `family_a` CLI as a separate process rather than incorporating it.
