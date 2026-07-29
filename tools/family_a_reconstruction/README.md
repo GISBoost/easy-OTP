@@ -12,6 +12,14 @@ the position-based map-matching + interpolation method ("Family A": Wessel, Alle
 (`BuildRealizedGtfs`), which is a segment-based ("Family B") approach for cities that do have
 `TripUpdates`.
 
+The **aggregation half** of this tool — travel times pooled per consecutive stop pair per
+time-of-day bucket, summarised as a P50 and a P85 feed, then rebuilt by holding each trip's
+scheduled first departure fixed and accumulating from there — follows Braga, Loureiro & Pereira
+(2023). Note that "Family A / Family B" classifies the *input* (vehicle positions vs
+`TripUpdates`), not the aggregation: Braga et al. feed segment aggregation from raw GPS
+positions, so despite being cited in easy-OTP's PRDs as the basis for RT-3's statistics, their
+data pipeline is Family A and is implemented more directly here than in RT-3.
+
 Because this tool needs `numpy`/`pandas`/`gtfs-realtime-bindings`, it gets its own throwaway
 venv — same precedent as `tools/rt_diagnose` — and is never run inside QGIS.
 
