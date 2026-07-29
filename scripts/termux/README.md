@@ -130,14 +130,11 @@ Phone (Termux)                                   GitHub (GISBoost/easy-GTFS-RT)
                                                           _notify_from_phone.yml downloads that
                                                           city's raw data, builds corrected
                                                           GTFS, publishes
-                                                          "<city>-realized-<date>-phone" release,
-                                                          WhatsApp notify
-                                                   ~22:10 healthcheck (cron, every 15 min, all
-                                                          day, same pattern) reaches the first
-                                                          tick past this city's own window+margin
-                                                          and finds no raw release yet: alerts via
-                                                          WhatsApp once, then stays silent for the
-                                                          rest of the day for that city
+                                                          "<city>-realized-<date>-phone" release
+                                                   (nothing announces success - see "Notifications"
+                                                          below; a failed run does send GitHub's
+                                                          own email, a day that silently produces
+                                                          nothing sends nothing at all)
        (if the dispatch call above itself
        failed - e.g. a network hiccup - the
        next sweep tick retries just that call,
@@ -229,9 +226,25 @@ healthcheck, and TX-7/TX-8's workflow half live in the `easy-GTFS-RT` repo
     comment for why: with cities in different timezones, no single daily trigger time is safe for
     all of them, so the script itself decides per city, per tick, whether it's actually time.
 
-`GH_TOKEN`'s GitHub-side equivalents (`CALLMEBOT_PHONE`, `CALLMEBOT_APIKEY`) already exist in
-`GISBoost/easy-GTFS-RT` from the FA-7/8/9 track - nothing new to configure there. Per-city static
-GTFS URLs live in that repo's `config/cities.json` (versioned, not a Settings variable).
+Nothing needs configuring on the GitHub side: as of 2026-07-29 `GISBoost/easy-GTFS-RT` requires
+no repository secrets at all (the `CALLMEBOT_*` pair went away with the notification steps).
+Per-city static GTFS URLs live in that repo's `config/cities.json` (versioned, not a Settings
+variable). `GH_TOKEN` here is the phone's own token and is still required - it is what authorises
+the raw-release upload and the `repository_dispatch` above.
+
+### Notifications
+
+There are none any more, in either direction:
+
+- **Success** was announced over WhatsApp (CallMeBot) until 2026-07-29. Removed - the free API's
+  quota ran out, and the message only restated what the published Release already said.
+- **Failure** of a build is covered by GitHub's own email for a failed Actions run, which is why
+  the WhatsApp failure message was dropped as duplication rather than replaced.
+- **A phone that silently stops recording is still not detected.** The healthcheck workflow that
+  used to alert on this (`family_a_phone_healthcheck.yml`) was deleted 2026-07-17 for
+  false positives, and nothing replaced it. No upload means no `repository_dispatch`, which means
+  no workflow run, which means no failure email either - the only symptom is a missing Release,
+  and you have to go looking for it.
 
 ## Adding a new city
 
@@ -375,10 +388,12 @@ down`/`up` only needed for files a `family-a-record-<city>` service actually run
   uses it - since TX-7, that includes both the upload calls **and** the `repository_dispatch`
   call, for every city, so an expired token silently disables the fast-build path for all of them
   at once, not just uploads. Failures are logged as a `WARNING:` line (not a crash - the script
-  has no `set -e`), so there's no direct alert. The first visible sign is the healthcheck workflow
-  starting to send a WhatsApp "no raw recording found" alert once daily per affected city (its
-  own dedup marker prevents repeats past the first detection - see the healthcheck bullet above),
-  since the raw release never gets created. Renew at
+  has no `set -e`), so there's no direct alert - and since 2026-07-29 there is no indirect one
+  either. The healthcheck workflow that used to catch this by messaging "no raw recording found"
+  was deleted 2026-07-17, and the WhatsApp channel it used is gone too. **Nothing will tell you.**
+  An expired token produces no upload, therefore no `repository_dispatch`, therefore no workflow
+  run that could fail and email you - just a quiet absence of new Releases. Check the token's
+  expiry date against your calendar rather than waiting for a symptom. Renew at
   [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens),
   same scope (`Contents: Read and write` on `GISBoost/easy-GTFS-RT` only), then update the
   `GH_TOKEN` line in `~/.easy-gtfs-rt-termux.env` on the phone.
