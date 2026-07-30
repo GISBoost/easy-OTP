@@ -140,7 +140,12 @@ in `shapes.txt`), while that day's whole-run reject share was an unremarkable 9.
 
 Output columns: `trip_id`, `timestamp` (UTC; pandas' default tz-aware format in CSV, e.g.
 `2026-07-05 20:37:26+00:00` — space-separated, not literal ISO-8601 `T`-separated),
-`distance_along_shape_m`, `perpendicular_dist_m`, `recording_date` (FA-6) — the calendar date
+`distance_along_shape_m`, `perpendicular_dist_m`, `position_signal` (FA-17 — which FA-12 signal
+this directory resolved to: `sequence`, `stop_id`, or `none`; broadcast onto every row of that
+directory, exactly like `recording_date` below, because two `--positions-dir` values can
+legitimately resolve differently. It travels in the table rather than a sidecar file so an
+archived `matched.csv` stays self-describing: re-running `build` on it later cannot silently lose
+the fact that its positions were never windowed), `recording_date` (FA-6) — the calendar date
 of the recording *session* that observation came from, derived from the **earliest usable
 GTFS-RT `FeedHeader.timestamp` among that `--positions-dir`'s snapshots**, converted to the
 static feed's `agency_timezone` (`agency.txt`, falls back to `Europe/Warsaw` if absent — same
@@ -256,6 +261,21 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   trusted.
 - `--time-bucket-minutes` (default `120`) — time-of-day bucket width in minutes for segment
   correction scoping (see below); 12 buckets/day at the default 2-hour width.
+- `--keep-unwindowed-first-segment` (off by default) — **FA-17.** By default, each trip's **first**
+  stop pair is dropped when the recording carried no FA-12 position signal (`position_signal` is
+  `none`, i.e. the feed publishes neither `current_stop_sequence` nor `stop_id`). Without a window,
+  a vehicle sitting out its layover on the origin terminus keeps projecting onto the first stop, so
+  the interpolated crossing of stop 1 is the moment it *arrived to wait* — and the whole layover
+  ends up inside the first segment's travel time.
+  Measured on **Gdańsk 2026-07-29**, the only monitored city with signal `none`: that pair averages
+  **246 m**, is scheduled at **74 s** (14.0 km/h) and was reconstructed at **477 s** — a median
+  implied speed of **1.8 km/h**, with **34.2%** of them under 1 km/h, i.e. stationary. It alone
+  contributed **+107.6 s of the city's +171.1 s** mean delay. The same measurement at the 8th stop
+  gives 17.8 km/h with 0.1% under 3 km/h, and cities *with* a signal show no such jump (Łódź,
+  `sequence`: +0.2 s; Vilnius, `stop_id`: +36.6 s) — so this is a first-pair, no-window artifact,
+  not a property of the method. Pass this flag to measure the artifact instead of dropping it.
+  No effect on a recording with a position signal, or on a matched table written before FA-17
+  (no `position_signal` column → never skipped).
 - `--min-corrected-route-share` (default `0.40`) — **FA-15.** Warn when fewer than this fraction
   of the routes actually *observed* in the matched table end up with any corrected segment — the
   signature of a build that is mostly just the static schedule and will read as near-perfect

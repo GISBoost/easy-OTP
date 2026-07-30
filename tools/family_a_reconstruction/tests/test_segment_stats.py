@@ -712,3 +712,106 @@ def test_filter_min_observations_keeps_all_when_threshold_is_one():
     filtered, dropped = filter_min_observations(segment_times, min_observations=1)
     assert filtered == segment_times
     assert dropped == 0
+
+
+# ---------------------------------------------------------------------------
+# FA-17: drop the first stop pair when the recording had no FA-12 position signal
+# ---------------------------------------------------------------------------
+
+
+def _three_stop_static_index() -> StaticIndex:
+    return _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 0), (2, "B", 100, 100), (3, "C", 200, 200)]},
+    )
+
+
+def _three_stop_inputs():
+    """Straight-line trip A->B->C with one observation at each stop, 100s apart."""
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0), "C": (0.02, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+    d_c = stop_distance_along_shape(0.02, 0.0, _STRAIGHT_LINE)
+    rows = [("t1", _t(0), 0.0), ("t1", _t(100), d_b), ("t1", _t(200), d_c)]
+    return _three_stop_static_index(), {"t1": "shape1"}, {"shape1": _STRAIGHT_LINE}, stop_locations, rows
+
+
+_BUCKET = time_bucket_for_seconds(0, 120)
+_KEY_AB = ("R1", "0", "A", "B", "WEEKDAY", _BUCKET)
+_KEY_BC = ("R1", "0", "B", "C", "WEEKDAY", _BUCKET)
+
+
+def _collect_with_signal(signal, **kwargs):
+    idx, trip_shapes, shapes, stop_locations, rows = _three_stop_inputs()
+    matched = _matched_df(rows)
+    if signal is not None:
+        matched["position_signal"] = signal
+    return collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", **kwargs
+    )
+
+
+def test_first_segment_skipped_when_position_signal_is_none():
+    segment_times, counts = _collect_with_signal("none")
+
+    assert _KEY_AB not in segment_times  # the layover-contaminated pair
+    assert segment_times[_KEY_BC] == pytest.approx([100.0])  # the rest survives
+    assert counts["first_segment_skipped"] == 1
+    assert counts["segments_observed"] == 1
+
+
+def test_first_segment_kept_when_position_signal_is_usable():
+    for signal in ("sequence", "stop_id"):
+        segment_times, counts = _collect_with_signal(signal)
+
+        assert segment_times[_KEY_AB] == pytest.approx([100.0]), signal
+        assert segment_times[_KEY_BC] == pytest.approx([100.0]), signal
+        assert counts["first_segment_skipped"] == 0, signal
+
+
+def test_first_segment_kept_when_signal_column_absent():
+    """A matched table written before FA-17 must behave exactly as it did then."""
+    segment_times, counts = _collect_with_signal(None)
+
+    assert segment_times[_KEY_AB] == pytest.approx([100.0])
+    assert segment_times[_KEY_BC] == pytest.approx([100.0])
+    assert counts["first_segment_skipped"] == 0
+
+
+def test_first_segment_kept_when_skip_disabled():
+    segment_times, counts = _collect_with_signal("none", skip_unwindowed_first_segment=False)
+
+    assert segment_times[_KEY_AB] == pytest.approx([100.0])
+    assert counts["first_segment_skipped"] == 0
+
+
+def test_first_segment_skipped_when_any_row_of_the_trip_is_unwindowed():
+    """Two --positions-dir values can resolve to different signals; the unwindowed
+    positions are already merged into this trip's series, so "any" is the safe test."""
+    idx, trip_shapes, shapes, stop_locations, rows = _three_stop_inputs()
+    matched = _matched_df(rows)
+    matched["position_signal"] = ["sequence", "none", "sequence"]
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+    )
+
+    assert _KEY_AB not in segment_times
+    assert counts["first_segment_skipped"] == 1
+
+
+def test_two_stop_trip_contributes_nothing_when_unwindowed():
+    """Its only pair IS the first pair - skipping must not raise or emit a segment."""
+    idx = _two_stop_static_index()
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+    matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(100), d_b)])
+    matched["position_signal"] = "none"
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, {"t1": "shape1"}, {"shape1": _STRAIGHT_LINE}, stop_locations, agency_tz="UTC"
+    )
+
+    assert segment_times == {}
+    assert counts["first_segment_skipped"] == 1
+    assert counts["segments_observed"] == 0
+    assert counts["trips_processed"] == 1

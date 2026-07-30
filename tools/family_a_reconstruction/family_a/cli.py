@@ -6,7 +6,7 @@ cmd.exe/PowerShell; see each subcommand's own --help for a copy-pasteable exampl
 
     py -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> [--duration-min N] [--interval-sec N]
     py -m family_a.cli match --positions-dir <dir> [<dir> ...] --static <gtfs.zip> --out <table> [--max-perpendicular-dist-m N]
-    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N] [--max-bracket-gap-seconds N]
+    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N] [--max-bracket-gap-seconds N] [--keep-unwindowed-first-segment]
 """
 
 from __future__ import annotations
@@ -717,6 +717,12 @@ def _cmd_match(args: argparse.Namespace) -> int:
         # day_type (FA-5), which is derived per-observation from its own
         # timestamp for a different purpose.
         df["recording_date"] = recording_date
+        # FA-17: same scalar-broadcast treatment, and per-directory for the same reason the
+        # print below is per-directory - two --positions-dir values can resolve to different
+        # signals, and `build` must be able to tell which rows came from an unwindowed one.
+        # Carried in the table itself rather than a sidecar file so an archived matched.csv
+        # stays self-describing: re-running `build` on it later cannot silently lose the fact.
+        df["position_signal"] = df.attrs.get("position_signal", "none")
 
         # FA-12: capability is decided per-directory/day, so print it per directory rather than
         # only an aggregate - multiple --positions-dir values can legitimately differ.
@@ -882,6 +888,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         shape_cumulative_dist=shape_cumulative_dist,
         trusted_stop_dist=trusted_stop_dist,
         max_bracket_gap_s=args.max_bracket_gap_seconds,
+        skip_unwindowed_first_segment=not args.keep_unwindowed_first_segment,
     )
     segment_times, dropped_count = filter_min_observations(
         segment_times, args.min_observations_per_segment
@@ -923,6 +930,13 @@ def _cmd_build(args: argparse.Namespace) -> int:
     )
     print(f"  - missing stop location (stop_id absent from stops.txt): {collect_counts['missing_stop_location']}")
     print(f"  - rejected (implausible segment time or speed, FA-13): {collect_counts['rejected_seg_time']}")
+    if collect_counts["first_segment_skipped"]:
+        print(
+            f"  - first stop pair skipped, recording had no FA-12 position signal (FA-17): "
+            f"{collect_counts['first_segment_skipped']} trips. Without a window, a vehicle "
+            f"laying over on the origin terminus is read as still travelling, inflating that "
+            f"one pair; pass --keep-unwindowed-first-segment to measure it instead."
+        )
     print(f"Segments dropped (fewer than {args.min_observations_per_segment} observations): {dropped_count}")
     print(f"Segments corrected: {corrected_count}")
     # gap_count spans every trip in the static feed (all routes, all service
@@ -1176,6 +1190,20 @@ def build_parser() -> argparse.ArgumentParser:
             "observations is spaced further apart in time than this many seconds - a wide "
             "gap means sparse sampling, not a real travel time (FA-14, PRD §7 open "
             f"question #10; default: {DEFAULT_MAX_BRACKET_GAP_S:.0f})."
+        ),
+    )
+    p_build.add_argument(
+        "--keep-unwindowed-first-segment",
+        action="store_true",
+        help=(
+            "FA-17: keep correcting each trip's FIRST stop pair even when the recording carried "
+            "no FA-12 position signal. Off by default because that pair then absorbs the "
+            "vehicle's layover on the origin terminus: measured on Gdansk 2026-07-29 (the only "
+            "monitored city with signal \"none\") the first pair is 246 m long, scheduled at 74 s "
+            "but reconstructed at 477 s - a median implied speed of 1.8 km/h, with 34.2%% of them "
+            "under 1 km/h - and it alone accounted for 107.6 s of that city's 171.1 s mean delay. "
+            "Pass this to measure the artifact rather than drop it. No effect on a recording WITH "
+            "a position signal, or on a matched table written before FA-17."
         ),
     )
     p_build.add_argument(

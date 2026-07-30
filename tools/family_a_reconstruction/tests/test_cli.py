@@ -935,6 +935,8 @@ def _make_build_args(tmp_path, **overrides):
         fail_on_low_yield = False
         # FA-16 default, likewise.
         max_unknown_trip_share = DEFAULT_MAX_UNKNOWN_TRIP_SHARE
+        # FA-17 default, likewise: the skip is ON, so this opt-out stays False.
+        keep_unwindowed_first_segment = False
 
     ns = _NS()
     for key, value in overrides.items():
@@ -1149,10 +1151,19 @@ def test_cmd_build_reads_matched_csv_produced_by_cmd_match_with_recording_date(t
     assert _cmd_match(match_args) == 0
     header = matched_path.read_text(encoding="utf-8").splitlines()[0]
     assert "recording_date" in header
+    # FA-17 writes this alongside recording_date; both are scalar-broadcast per directory.
+    assert "position_signal" in header
 
     out_prefix = str(tmp_path / "out_via_match")
+    # keep_unwindowed_first_segment: this fixture's positions carry no
+    # current_stop_sequence/stop_id, so match resolves signal "none", and its trip has exactly
+    # one stop pair - which IS the first pair. Under FA-17's default that pair is dropped and
+    # the correction this test exists to observe never happens. Opting out keeps the test on
+    # its own subject (FA-6's recording_date surviving the CSV round trip); FA-17's own
+    # behaviour is covered in test_segment_stats.py.
     build_args = _make_build_args(
-        tmp_path, matched=str(matched_path), static=str(gtfs_path), out_prefix=out_prefix
+        tmp_path, matched=str(matched_path), static=str(gtfs_path), out_prefix=out_prefix,
+        keep_unwindowed_first_segment=True,
     )
     result = _cmd_build(build_args)
 

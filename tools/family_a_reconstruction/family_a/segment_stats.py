@@ -68,6 +68,7 @@ def collect_segment_observations(
     trusted_stop_dist: dict[tuple[str, int], float] | None = None,
     backward_tolerance_m: float = DEFAULT_BACKWARD_TOLERANCE_M,
     max_bracket_gap_s: float | None = DEFAULT_MAX_BRACKET_GAP_S,
+    skip_unwindowed_first_segment: bool = True,
 ) -> tuple[dict[SegmentKey, list[float]], dict[str, int]]:
     """For each trip's matched position series, interpolate every consecutive
     scheduled stop pair's crossing time and derive an observed segment
@@ -129,6 +130,37 @@ def collect_segment_observations(
       derived segment time was non-positive, implausibly long, or implied a
       physically-impossible average speed (FA-13, safety net - see
       _MAX_PLAUSIBLE_SPEED_MPS).
+    - first_segment_skipped (FA-17): trips whose FIRST stop pair was not even
+      attempted because the recording carried no FA-12 position signal - see
+      *skip_unwindowed_first_segment* below. Counted once per trip group, and
+      those pairs contribute to none of the counters above.
+
+    *skip_unwindowed_first_segment* (FA-17, default on): drop the first stop
+    pair of every trip whose matched rows carry position_signal == "none".
+
+    Why only the first pair, and only for that signal: with no
+    current_stop_sequence/stop_id to window on (FA-12), a vehicle standing on
+    the origin terminus during its layover projects onto the first stop for the
+    entire wait, so interpolate_stop_time reads the moment it ARRIVED to lay
+    over as the moment it crossed stop 1, and the layover lands inside the
+    first segment's travel time. Measured on Gdansk 2026-07-29, the only
+    monitored city with signal "none": first pair 246 m apart, scheduled 74 s
+    (14.0 km/h), reconstructed 477 s (1.8 km/h median), 34.2% of them under
+    1 km/h - i.e. stationary. It contributed +107.6 s of the city's +171.1 s
+    mean delay. The same measurement mid-trip (8th stop) gives 17.8 km/h with
+    0.1% under 3 km/h, and cities WITH a signal show no such jump at all
+    (Lodz, signal "sequence": +0.2 s; Vilnius, signal "stop_id": +36.6 s), so
+    this is squarely a first-pair, no-window artifact rather than a general
+    property of the method.
+
+    Backward compatible in two directions: a matched table with no
+    position_signal column at all (written before FA-17) never triggers the
+    skip, and neither does one whose signal is "sequence"/"stop_id". A trip
+    group whose rows disagree (possible when several --positions-dir values
+    covering the same recording_date resolved to different signals) is treated
+    as unwindowed if ANY row says "none" - by then the unwindowed positions are
+    already merged into this trip's series, so the artifact is present
+    regardless of what the other directory managed to window.
 
     *shape_cumulative_dist*/*trusted_stop_dist* (FA-10, both optional, both
     default to today's fully-geometric behaviour when omitted): see
@@ -162,6 +194,7 @@ def collect_segment_observations(
         "bracket_gap_rejected": 0,
         "missing_stop_location": 0,
         "rejected_seg_time": 0,
+        "first_segment_skipped": 0,
     }
 
     if matched.empty:
@@ -182,6 +215,8 @@ def collect_segment_observations(
     trusted_trip_ids = {tid for tid, _seq in trusted_stop_dist} if trusted_stop_dist else set()
 
     group_cols = ["trip_id", "recording_date"] if "recording_date" in matched.columns else ["trip_id"]
+    # FA-17: absent column -> pre-FA-17 table -> never skip (see docstring).
+    has_signal_col = skip_unwindowed_first_segment and "position_signal" in matched.columns
 
     for group_key, group in matched.groupby(group_cols, sort=False):
         trip_id = group_key[0]  # group_cols is always a list -> always a tuple key
@@ -210,7 +245,13 @@ def collect_segment_observations(
                 pattern_cache, shape_id, trip_id, stops, stop_locations, polyline, cumulative, backward_tolerance_m
             )
 
-        for idx in range(len(stops) - 1):
+        # FA-17: "any row says none" rather than a single representative value - see docstring.
+        first_idx = 0
+        if has_signal_col and (group["position_signal"] == "none").any():
+            first_idx = 1
+            counts["first_segment_skipped"] += 1
+
+        for idx in range(first_idx, len(stops) - 1):
             seq_from, stop_from, _arr_from, _dep_from = stops[idx]
             seq_to, stop_to, _arr_to, _dep_to = stops[idx + 1]
 
