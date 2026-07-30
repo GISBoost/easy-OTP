@@ -387,6 +387,26 @@ double-counting (mechanism real, magnitude negligible — Gdańsk has ~zero enco
 **Status:** Under investigation — the longest-standing open question here. Prague's absolute delay
 figures should not be read as measured punctuality until this is explained.
 
+## 43. `BuildRealizedGtfs` reads blank `stop_times` as midnight
+
+**Severity:** high (corrupt output, silent). · **Tracker:** [#43](../../issues/43)
+
+`gtfsrt_realizer.py:125` resolves a stop time through
+`row.get("arrival_time") or row.get("departure_time") or "0:0:0"`. An empty string is falsy, so a
+stop with **both** fields blank becomes midnight. Blank times at non-timepoint stops are legal
+GTFS the consumer is meant to interpolate. `rebuild_stop_times` then books the *next* timepoint's
+absolute clock time as a travel duration, compounding at every timepoint after a run of blanks —
+measured on Bucharest's TPBI feed at rows of up to **141 hours** (1.93% of rows blank, in 4.6% of
+trips).
+
+The standalone `tools/family_a_reconstruction` fixed this as FA-19 (`interpolate_blank_stop_times`,
+spreading blanks evenly between the surrounding timepoints). `build_gtfs.py` declares itself a
+reimplementation of this module's logic, so the two have diverged and the plugin carries the
+defect. A divergence comment marks the spot in the source.
+
+**Status:** Fix planned — port the FA-19 parsing and interpolation. Feeds without blank times are
+unaffected (11 of 12 monitored feeds have 0.00%).
+
 ---
 
 This list is not exhaustive. If you hit something not listed here, please open a GitHub issue.
