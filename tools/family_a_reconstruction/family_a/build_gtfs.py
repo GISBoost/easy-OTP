@@ -150,7 +150,10 @@ def interpolate_blank_stop_times(
     Interpolation is linear by stop count, not weighted by distance. shape_dist_traveled would be
     the better basis where it exists, but Bucharest - the only affected feed - publishes not one
     value of it in stop_times.txt, so that branch would be dead code testable only synthetically.
-    Revisit if a feed ever turns up with both blanks and distances.
+    Note the structural obstacle too, before treating this as a small change: load_static_index
+    runs BEFORE evaluate_shape_trust/evaluate_trip_trust (cli.py:896 vs cli.py:904-908) and has
+    neither shapes.txt nor the trusted distances available. Adding the branch means reordering
+    the load, not just adding a condition.
 
     Edge cases, none of which occur in any monitored feed (Bucharest has zero leading blanks, zero
     trailing blanks, zero all-blank trips, and blank runs of 1-6 always anchored on both sides):
@@ -163,9 +166,14 @@ def interpolate_blank_stop_times(
     such a run either way.
 
     Returns the stops with every None replaced by an int, and the set of stop_sequences filled in.
-    That set equals every stop's sequence exactly when the trip had no times at all.
     """
-    known = [i for i, (_seq, _sid, arr, _dep) in enumerate(stops) if arr is not None]
+    # Both fields required, not just arrival: load_static_index only ever produces both-or-neither,
+    # but this function is public and separately tested, and a half-None row reaching the anchor
+    # arithmetic below would raise TypeError instead of being treated as the blank it is.
+    known = [
+        i for i, (_seq, _sid, arr, dep) in enumerate(stops)
+        if arr is not None and dep is not None
+    ]
 
     if not known:
         return (
@@ -282,8 +290,12 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
         # Guarded so a feed without blanks - which is 11 of the 12 monitored cities - never pays
         # for the FA-19 path at all. stop_times.txt reaches 93.7MB on the largest of them.
         if any(arr is None for _seq, _sid, arr, _dep in ordered):
+            # Read off the INPUT rather than inferred from len(filled_seqs) == len(ordered): that
+            # comparison silently relies on stop_sequence being unique, and a feed with no
+            # stop_sequence column at all gives every row seq 0 (see the int() default above).
+            anchored = any(arr is not None for _seq, _sid, arr, _dep in ordered)
             ordered, filled_seqs = interpolate_blank_stop_times(ordered)
-            if len(filled_seqs) == len(ordered):
+            if not anchored:
                 logger.warning(
                     "build_gtfs.py: trip_id=%s has no scheduled times at all - nothing to "
                     "anchor an interpolation to, so its stops keep 00:00:00 and its rebuilt "

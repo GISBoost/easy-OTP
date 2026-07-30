@@ -398,6 +398,11 @@ lines are excluded from matching upstream, so this defect corrupted the publishe
 ever moving the published delay **statistics**. A feed that puts blanks on matched routes would
 see both.
 
+**Bucharest archives released before 2026-07-30 are affected and are not being recomputed.** Their
+`stop_times.txt` contains rows up to 141 hours on the metro lines. Rebuild them from the archived
+static feed and matched table if you need them; every other city's archives are unaffected, since
+no other monitored feed publishes blank times.
+
 Family A has no trip-cancellation signal (unlike RT-3, which can read `ScheduleRelationship`
 from `TripUpdate`s) — every trip in the static feed is reconstructed, cancelled or not.
 

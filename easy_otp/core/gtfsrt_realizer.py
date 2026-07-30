@@ -122,6 +122,13 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
                 trip_id = row["trip_id"]
                 seq = int(row.get("stop_sequence", 0))
                 stop_id = row.get("stop_id", "")
+                # KNOWN DIVERGENCE from tools/family_a_reconstruction (FA-19, 2026-07-30): an
+                # empty string is falsy, so a blank arrival_time AND departure_time falls through
+                # to "0:0:0" here - midnight. Blanks at non-timepoint stops are legal GTFS the
+                # consumer is meant to interpolate, and reading them as zero makes rebuild_stop_times
+                # below book the NEXT timepoint's absolute clock time as a travel duration
+                # (measured on Bucharest's feed: rows reaching 141 hours). family_a fixed this in
+                # build_gtfs.interpolate_blank_stop_times; this copy has NOT been fixed yet.
                 arr_raw = row.get("arrival_time") or row.get("departure_time") or "0:0:0"
                 dep_raw = row.get("departure_time") or row.get("arrival_time") or "0:0:0"
                 arr_sec = parse_gtfs_time(arr_raw)

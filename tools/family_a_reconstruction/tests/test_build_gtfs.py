@@ -261,6 +261,24 @@ def test_interpolate_trip_without_any_times_keeps_zeros():
     assert filled == {1, 2}
 
 
+def test_interpolate_rounds_rather_than_truncates():
+    # Every other case here divides evenly, so a `//` implementation would pass them all. 100 s
+    # over three hops does not: truncation would give 33/66, rounding gives 33/67. Pinned because
+    # a silent change here breaks the byte-identical guarantee for feeds without blanks.
+    stops = [(1, "A", 0, 0), (2, "B", None, None), (3, "C", None, None), (4, "D", 100, 100)]
+    out, _filled = interpolate_blank_stop_times(stops)
+    assert [out[1][2], out[2][2]] == [33, 67]
+
+
+def test_interpolate_treats_a_half_missing_row_as_blank():
+    # load_static_index only ever emits both-or-neither, but the helper is public: a row with one
+    # field set must not reach the anchor arithmetic and raise TypeError.
+    stops = [(1, "A", 100, 100), (2, "B", 150, None), (3, "C", 200, 200)]
+    out, filled = interpolate_blank_stop_times(stops)
+    assert out[1] == (2, "B", 150, 150)
+    assert filled == {2}
+
+
 def test_interpolate_leaves_a_fully_timed_trip_untouched():
     stops = [(1, "A", 100, 120), (2, "B", 300, 300)]
     out, filled = interpolate_blank_stop_times(stops)
@@ -374,6 +392,34 @@ def test_rebuild_stop_times_does_not_explode_on_a_blank_run(tmp_path):
 
     assert corrections[("t1", 3)] == (parse_gtfs_time("23:10:00"), parse_gtfs_time("23:10:00"))
     assert corrections[("t1", 2)] == (parse_gtfs_time("23:05:00"), parse_gtfs_time("23:05:00"))
+
+
+def test_rebuild_stop_times_handles_a_blank_run_at_the_end_of_a_trip(tmp_path):
+    """The spec's second acceptance case: blanks at the END of a trip, through the full path.
+
+    There is no later timepoint to interpolate towards, so the run clamps to the last known
+    departure and the trip simply stops advancing - which is the honest answer, and crucially not
+    the pre-FA-19 behaviour of teleporting the whole trip to midnight and back.
+    """
+    path = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0", "service_id": "svc1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "23:00:00", "departure_time": "23:02:00",
+             "stop_id": "A", "stop_sequence": "1"},
+            {"trip_id": "t1", "arrival_time": "", "departure_time": "",
+             "stop_id": "B", "stop_sequence": "2"},
+            {"trip_id": "t1", "arrival_time": "", "departure_time": "",
+             "stop_id": "C", "stop_sequence": "3"},
+        ],
+    )
+    idx = load_static_index(path)
+    assert idx.interpolated_time_stops == {("t1", 2), ("t1", 3)}
+
+    corrections, _corrected, _gap = rebuild_stop_times(idx, {}, {"svc1": {"WEEKDAY"}})
+    last_dep = parse_gtfs_time("23:02:00")
+    assert corrections[("t1", 2)] == (last_dep, last_dep)
+    assert corrections[("t1", 3)] == (last_dep, last_dep)
 
 
 # ---------------------------------------------------------------------------
