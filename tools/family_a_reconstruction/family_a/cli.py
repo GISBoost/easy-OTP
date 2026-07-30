@@ -984,6 +984,15 @@ def _cmd_build(args: argparse.Namespace) -> int:
     trusted_trip_count = len({trip_id for trip_id, _seq in trusted_stop_dist})
     print(f"Shapes trustworthy for shape_dist_traveled (FA-10): {len(shape_cumulative_dist)}/{len(shape_dist_raw)}")
     print(f"Trips using shape_dist_traveled for stop anchoring (FA-10): {trusted_trip_count}/{len(static_index.trip_stops)}")
+    # FA-19: blank scheduled times are legal GTFS and were previously read as midnight, which
+    # inflated Bucharest's mean delay from ~34 s to 896 s. Printed unconditionally, including the
+    # zero, because the defect is latent for any feed that starts publishing blanks - a silent
+    # counter would let the next one through unnoticed.
+    blank_trip_count = len({trip_id for trip_id, _seq in static_index.interpolated_time_stops})
+    print(
+        f"Stop times with blank schedule interpolated (FA-19): "
+        f"{len(static_index.interpolated_time_stops)} in {blank_trip_count} trip(s)"
+    )
 
     # FA-15: which routes this run actually observed - the only defensible denominator for "did
     # this build produce anything". rebuild_stop_times walks the WHOLE static feed (every route,

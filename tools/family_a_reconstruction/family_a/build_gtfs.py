@@ -22,11 +22,14 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 
 from family_a.calendar_scope import time_bucket_for_seconds
+
+logger = logging.getLogger(__name__)
 
 # segment_key = (route_id, direction_id, from_stop_id, to_stop_id, day_type, time_bucket)
 SegmentKey = tuple[str, str, str, str, str, int]
@@ -116,6 +119,87 @@ def format_gtfs_time(seconds: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def interpolate_blank_stop_times(
+    stops: list[tuple[int, str, int | None, int | None]],
+) -> tuple[list[tuple[int, str, int, int]], set[int]]:
+    """Fill in stops whose scheduled times were blank in stop_times.txt (FA-19).
+
+    GTFS only requires arrival_time/departure_time at timepoints; leaving them blank in between
+    is legal and standard, and the consumer is expected to interpolate. Before FA-19 this module
+    coerced a blank to "0:0:0" - Python treats "" as falsy, so the `or` chain fell through to the
+    default - which made rebuild_stop_times misbehave in three separate ways at once:
+
+      1. prev -> blank booked `max(0, 0 - prev_dep)` = 0 s of travel, collapsing the blank stop
+         onto the previous one;
+      2. blank -> next timepoint booked `max(0, arr_sec - 0)` = that timepoint's ABSOLUTE clock
+         time as a travel duration, compounding at every timepoint after a run of blanks
+         (measured in Bucharest: 46h -> 69h -> 93h -> 117h -> 140h);
+      3. the segment_stats lookup keys on time_bucket_for_seconds(prev_dep), so a fabricated 0
+         sent it to the midnight bucket - a real 23:00 observation could never match, and the
+         segment silently fell back to the very schedule that was broken.
+
+    Measured on Bucharest 2026-07-22: 25,715 of 1,332,794 rows (1.93%) blank in 2,861 of 62,196
+    trips (4.6%), and 0.67% of published rows carried 95.9% of the city's whole delay mass. The
+    other 11 monitored cities have 0.00% blanks, so this defect is latent for any feed that
+    starts using them.
+
+    *stops* must be sorted by stop_sequence, with None for a stop whose arrival AND departure were
+    both blank. A one-sided blank is NOT this case: load_static_index resolves it to the other
+    field, which is correct and predates FA-19.
+
+    Interpolation is linear by stop count, not weighted by distance. shape_dist_traveled would be
+    the better basis where it exists, but Bucharest - the only affected feed - publishes not one
+    value of it in stop_times.txt, so that branch would be dead code testable only synthetically.
+    Revisit if a feed ever turns up with both blanks and distances.
+
+    Edge cases, none of which occur in any monitored feed (Bucharest has zero leading blanks, zero
+    trailing blanks, zero all-blank trips, and blank runs of 1-6 always anchored on both sides):
+      - leading blanks have no earlier anchor, so they clamp to the first known arrival;
+      - trailing blanks clamp to the last known departure;
+      - a trip with no times at all cannot be anchored to anything and keeps zeros.
+
+    A non-monotonic pair of timepoints yields interpolated times running backwards; that is left
+    alone deliberately, since rebuild_stop_times already clamps travel at >= 0 and would collapse
+    such a run either way.
+
+    Returns the stops with every None replaced by an int, and the set of stop_sequences filled in.
+    That set equals every stop's sequence exactly when the trip had no times at all.
+    """
+    known = [i for i, (_seq, _sid, arr, _dep) in enumerate(stops) if arr is not None]
+
+    if not known:
+        return (
+            [(seq, stop_id, 0, 0) for seq, stop_id, _arr, _dep in stops],
+            {seq for seq, _sid, _arr, _dep in stops},
+        )
+
+    out: list[tuple[int, str, int, int]] = list(stops)  # type: ignore[assignment]
+    filled: set[int] = set()
+
+    def _set(idx: int, value: int) -> None:
+        seq, stop_id, _arr, _dep = stops[idx]
+        # Same value for both: a blank row is blank in both fields, so there is no dwell to model.
+        out[idx] = (seq, stop_id, value, value)
+        filled.add(seq)
+
+    for idx in range(known[0]):
+        _set(idx, stops[known[0]][2])
+
+    for idx in range(known[-1] + 1, len(stops)):
+        _set(idx, stops[known[-1]][3])
+
+    for before, after in zip(known, known[1:]):
+        gap = after - before - 1
+        if gap <= 0:
+            continue
+        start = stops[before][3]   # previous stop's DEPARTURE
+        end = stops[after][2]      # next stop's ARRIVAL
+        for step in range(1, gap + 1):
+            _set(before + step, int(round(start + (end - start) * step / (gap + 1))))
+
+    return out, filled
+
+
 # ---------------------------------------------------------------------------
 # Static GTFS index
 # ---------------------------------------------------------------------------
@@ -137,10 +221,19 @@ class StaticIndex:
     # Defaults to {} so existing test helpers that build a StaticIndex directly
     # (not via load_static_index) don't need updating for a field they don't test.
     stop_time_dist_traveled: dict[tuple[str, int], float | None] = field(default_factory=dict)
+    # (trip_id, stop_sequence) of every stop whose blank scheduled times were filled in by
+    # interpolate_blank_stop_times - FA-19. Diagnostics only; nothing downstream branches on it.
+    # Same default-empty precedent as stop_time_dist_traveled above.
+    interpolated_time_stops: set[tuple[str, int]] = field(default_factory=set)
 
 
 def load_static_index(gtfs_zip_path: str) -> StaticIndex:
-    """Parse trips.txt and stop_times.txt from the static GTFS zip."""
+    """Parse trips.txt and stop_times.txt from the static GTFS zip.
+
+    Stops whose arrival_time and departure_time are both blank are interpolated between the
+    surrounding timepoints rather than read as midnight - see interpolate_blank_stop_times
+    (FA-19) for why that mattered and what it measured.
+    """
     trip_route: dict[str, tuple[str, str]] = {}
     trip_service_id: dict[str, str] = {}
     trip_stops_raw: dict[str, list] = defaultdict(list)
@@ -163,12 +256,17 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
                 trip_id = row["trip_id"]
                 seq = int(row.get("stop_sequence", 0))
                 stop_id = row.get("stop_id", "")
-                arr_raw = row.get("arrival_time") or row.get("departure_time") or "0:0:0"
-                dep_raw = row.get("departure_time") or row.get("arrival_time") or "0:0:0"
-                arr_sec = parse_gtfs_time(arr_raw)
-                dep_sec = parse_gtfs_time(dep_raw)
+                # FA-19: a blank is NOT midnight - it is a stop the feed expects the consumer to
+                # interpolate, and is carried as None until interpolate_blank_stop_times fills it
+                # below. A one-sided blank still resolves to the other field, exactly as before.
+                arr_raw = (row.get("arrival_time") or "").strip()
+                dep_raw = (row.get("departure_time") or "").strip()
+                if arr_raw or dep_raw:
+                    arr_sec = parse_gtfs_time(arr_raw or dep_raw)
+                    dep_sec = parse_gtfs_time(dep_raw or arr_raw)
+                else:
+                    arr_sec = dep_sec = None
                 trip_stops_raw[trip_id].append((seq, stop_id, arr_sec, dep_sec))
-                stop_map[(trip_id, seq)] = (stop_id, arr_sec, dep_sec)
                 # FA-10: never coerce a blank shape_dist_traveled to 0.0 - shape_dist.py's
                 # fill-rate check needs to tell "genuinely zero" apart from "absent" to
                 # correctly reject the Łódź/Vilnius trap (column present, every row blank).
@@ -177,10 +275,27 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
                     float(dist_raw) if dist_raw.strip() else None
                 )
 
-    trip_stops = {
-        tid: sorted(stops, key=lambda x: x[0])
-        for tid, stops in trip_stops_raw.items()
-    }
+    trip_stops: dict[str, list[tuple]] = {}
+    interpolated_time_stops: set[tuple[str, int]] = set()
+    for tid, raw_stops in trip_stops_raw.items():
+        ordered = sorted(raw_stops, key=lambda x: x[0])
+        # Guarded so a feed without blanks - which is 11 of the 12 monitored cities - never pays
+        # for the FA-19 path at all. stop_times.txt reaches 93.7MB on the largest of them.
+        if any(arr is None for _seq, _sid, arr, _dep in ordered):
+            ordered, filled_seqs = interpolate_blank_stop_times(ordered)
+            if len(filled_seqs) == len(ordered):
+                logger.warning(
+                    "build_gtfs.py: trip_id=%s has no scheduled times at all - nothing to "
+                    "anchor an interpolation to, so its stops keep 00:00:00 and its rebuilt "
+                    "times are not meaningful.",
+                    tid,
+                )
+            interpolated_time_stops.update((tid, seq) for seq in filled_seqs)
+        trip_stops[tid] = ordered
+        # Derived from the finished list rather than filled during the parse loop above: the two
+        # must never disagree about a stop's times, and interpolation happens after sorting.
+        for seq, stop_id, arr_sec, dep_sec in ordered:
+            stop_map[(tid, seq)] = (stop_id, arr_sec, dep_sec)
 
     return StaticIndex(
         trip_route=trip_route,
@@ -189,6 +304,7 @@ def load_static_index(gtfs_zip_path: str) -> StaticIndex:
         all_trip_ids=set(trip_route.keys()),
         trip_service_id=trip_service_id,
         stop_time_dist_traveled=stop_time_dist_traveled,
+        interpolated_time_stops=interpolated_time_stops,
     )
 
 

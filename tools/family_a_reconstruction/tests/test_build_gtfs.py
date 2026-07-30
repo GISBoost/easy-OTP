@@ -15,6 +15,7 @@ from pathlib import Path
 from family_a.build_gtfs import (
     StaticIndex,
     format_gtfs_time,
+    interpolate_blank_stop_times,
     load_static_index,
     parse_gtfs_time,
     rebuild_stop_times,
@@ -204,6 +205,175 @@ def test_load_static_index_stop_time_dist_traveled_blank_value_is_none(tmp_path)
         )
     idx = load_static_index(str(path))
     assert idx.stop_time_dist_traveled == {("t1", 1): None, ("t1", 2): 1112.0}
+
+
+# ---------------------------------------------------------------------------
+# interpolate_blank_stop_times (FA-19)
+# ---------------------------------------------------------------------------
+
+
+def test_interpolate_blank_run_is_spread_evenly():
+    stops = [
+        (1, "A", 28800, 28800),
+        (2, "B", None, None),
+        (3, "C", None, None),
+        (4, "D", 29100, 29100),
+    ]
+    out, filled = interpolate_blank_stop_times(stops)
+    assert out == [
+        (1, "A", 28800, 28800),
+        (2, "B", 28900, 28900),
+        (3, "C", 29000, 29000),
+        (4, "D", 29100, 29100),
+    ]
+    assert filled == {2, 3}
+
+
+def test_interpolate_single_blank_lands_midway_between_departure_and_arrival():
+    # Anchors are the previous stop's DEPARTURE (1060) and the next stop's ARRIVAL (1160),
+    # not their arrivals - so the dwell at stop 1 must not be interpolated across.
+    stops = [(1, "A", 1000, 1060), (2, "B", None, None), (3, "C", 1160, 1200)]
+    out, filled = interpolate_blank_stop_times(stops)
+    assert out[1] == (2, "B", 1110, 1110)
+    assert filled == {2}
+
+
+def test_interpolate_leading_blanks_clamp_to_first_known_arrival():
+    stops = [(1, "A", None, None), (2, "B", None, None), (3, "C", 500, 600)]
+    out, filled = interpolate_blank_stop_times(stops)
+    assert out == [(1, "A", 500, 500), (2, "B", 500, 500), (3, "C", 500, 600)]
+    assert filled == {1, 2}
+
+
+def test_interpolate_trailing_blanks_clamp_to_last_known_departure():
+    stops = [(1, "A", 100, 200), (2, "B", None, None)]
+    out, filled = interpolate_blank_stop_times(stops)
+    assert out == [(1, "A", 100, 200), (2, "B", 200, 200)]
+    assert filled == {2}
+
+
+def test_interpolate_trip_without_any_times_keeps_zeros():
+    # Nothing to anchor to. Every sequence comes back in the filled set, which is exactly how
+    # load_static_index recognises this case in order to warn about it.
+    stops = [(1, "A", None, None), (2, "B", None, None)]
+    out, filled = interpolate_blank_stop_times(stops)
+    assert out == [(1, "A", 0, 0), (2, "B", 0, 0)]
+    assert filled == {1, 2}
+
+
+def test_interpolate_leaves_a_fully_timed_trip_untouched():
+    stops = [(1, "A", 100, 120), (2, "B", 300, 300)]
+    out, filled = interpolate_blank_stop_times(stops)
+    assert out == stops
+    assert filled == set()
+
+
+# ---------------------------------------------------------------------------
+# load_static_index - blank scheduled times (FA-19)
+# ---------------------------------------------------------------------------
+
+
+def _blank_times_zip(tmp_path) -> str:
+    """The Bucharest MREX_LV_968_0_316 shape: two blank stops between two timepoints."""
+    return _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0", "service_id": "svc1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "23:10:00", "departure_time": "23:10:00",
+             "stop_id": "A", "stop_sequence": "2"},
+            {"trip_id": "t1", "arrival_time": "", "departure_time": "",
+             "stop_id": "B", "stop_sequence": "3"},
+            {"trip_id": "t1", "arrival_time": "", "departure_time": "",
+             "stop_id": "C", "stop_sequence": "4"},
+            {"trip_id": "t1", "arrival_time": "23:16:30", "departure_time": "23:17:00",
+             "stop_id": "D", "stop_sequence": "5"},
+        ],
+    )
+
+
+def test_load_static_index_interpolates_blank_times(tmp_path):
+    idx = load_static_index(_blank_times_zip(tmp_path))
+    # 83400 -> 83790 over three hops: 130 s each.
+    assert idx.trip_stops["t1"] == [
+        (2, "A", 83400, 83400),
+        (3, "B", 83530, 83530),
+        (4, "C", 83660, 83660),
+        (5, "D", 83790, 83820),
+    ]
+
+
+def test_load_static_index_records_which_stops_were_interpolated(tmp_path):
+    idx = load_static_index(_blank_times_zip(tmp_path))
+    assert idx.interpolated_time_stops == {("t1", 3), ("t1", 4)}
+
+
+def test_load_static_index_stop_map_agrees_with_trip_stops_after_interpolation(tmp_path):
+    idx = load_static_index(_blank_times_zip(tmp_path))
+    for seq, stop_id, arr, dep in idx.trip_stops["t1"]:
+        assert idx.stop_map[("t1", seq)] == (stop_id, arr, dep)
+
+
+def test_load_static_index_genuine_midnight_is_not_treated_as_blank(tmp_path):
+    # The whole defect was "" being falsy; an explicit 00:00:00 is a real time and must survive
+    # untouched, or every overnight trip would be silently reinterpolated.
+    path = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0", "service_id": "svc1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "00:00:00", "departure_time": "00:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+            {"trip_id": "t1", "arrival_time": "00:05:00", "departure_time": "00:05:00",
+             "stop_id": "B", "stop_sequence": "2"},
+        ],
+    )
+    idx = load_static_index(path)
+    assert idx.trip_stops["t1"] == [(1, "A", 0, 0), (2, "B", 300, 300)]
+    assert idx.interpolated_time_stops == set()
+
+
+def test_load_static_index_one_sided_blank_still_falls_back_to_the_other_field(tmp_path):
+    # Pre-FA-19 behaviour, deliberately unchanged: a row with only one of the two fields is not
+    # the blank case and must not be interpolated.
+    path = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0", "service_id": "svc1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "08:00:00", "departure_time": "",
+             "stop_id": "A", "stop_sequence": "1"},
+            {"trip_id": "t1", "arrival_time": "", "departure_time": "08:05:00",
+             "stop_id": "B", "stop_sequence": "2"},
+        ],
+    )
+    idx = load_static_index(path)
+    assert idx.trip_stops["t1"] == [(1, "A", 28800, 28800), (2, "B", 29100, 29100)]
+    assert idx.interpolated_time_stops == set()
+
+
+def test_rebuild_stop_times_does_not_explode_on_a_blank_run(tmp_path):
+    """The end-to-end symptom FA-19 exists to kill.
+
+    With no observations at all every segment falls back to its scheduled duration, so a trip
+    whose times are intact must come out exactly as scheduled. Before FA-19 the blank stop parsed
+    as 0, which made the NEXT segment book 23:10:00 itself as a travel time: the trip ended at
+    46:10:00 instead of 23:10:00.
+    """
+    path = _make_gtfs_zip(
+        tmp_path,
+        trip_rows=[{"trip_id": "t1", "route_id": "R1", "direction_id": "0", "service_id": "svc1"}],
+        stop_times_rows=[
+            {"trip_id": "t1", "arrival_time": "23:00:00", "departure_time": "23:00:00",
+             "stop_id": "A", "stop_sequence": "1"},
+            {"trip_id": "t1", "arrival_time": "", "departure_time": "",
+             "stop_id": "B", "stop_sequence": "2"},
+            {"trip_id": "t1", "arrival_time": "23:10:00", "departure_time": "23:10:00",
+             "stop_id": "C", "stop_sequence": "3"},
+        ],
+    )
+    idx = load_static_index(path)
+    corrections, _corrected, _gap = rebuild_stop_times(idx, {}, {"svc1": {"WEEKDAY"}})
+
+    assert corrections[("t1", 3)] == (parse_gtfs_time("23:10:00"), parse_gtfs_time("23:10:00"))
+    assert corrections[("t1", 2)] == (parse_gtfs_time("23:05:00"), parse_gtfs_time("23:05:00"))
 
 
 # ---------------------------------------------------------------------------

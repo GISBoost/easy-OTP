@@ -375,9 +375,28 @@ Output: two GTFS zips, byte-identical to the input static feed except for correc
 travel time per segment, P85 = pessimistic/85th-percentile). The command prints the resolved
 agency timezone (`Agency timezone resolved: ...`), counts for trips processed/skipped, segments
 observed/corrected/dropped, interpolation gaps, missing stop locations, segments rejected for an
-implausible time or speed (FA-13 safety net), observations rejected as stationary (FA-18), and —
-when it applies — first stop pairs skipped for want of a position signal (FA-17). Use these to
-judge how much of the recording actually corrected the schedule versus fell back to planned times.
+implausible time or speed (FA-13 safety net), observations rejected as stationary (FA-18), stop
+times whose blank schedule was interpolated (FA-19), and — when it applies — first stop pairs
+skipped for want of a position signal (FA-17). Use these to judge how much of the recording
+actually corrected the schedule versus fell back to planned times.
+
+**Blank scheduled times are interpolated, not read as midnight (FA-19).** GTFS only requires
+`arrival_time`/`departure_time` at timepoints; leaving them blank in between is legal and the
+consumer is expected to fill them in. Until 2026-07-30 this tool coerced a blank to `00:00:00`
+(an empty string is falsy, so the fallback chain swallowed it), which made `rebuild_stop_times`
+book the *next* timepoint's absolute clock time as a travel duration — compounding to rows of
+141 hours. Blanks are now spread evenly between the surrounding timepoints.
+
+Interpolation is by stop count, not weighted by `shape_dist_traveled`: the only feed in this
+monitoring set that publishes blanks (Bucharest) publishes not a single distance value in
+`stop_times.txt`, so a distance-weighted branch would never execute. Revisit if a feed turns up
+with both. A trip with no times at all cannot be anchored to anything, keeps `00:00:00`, and is
+logged as a warning; leading and trailing blank runs clamp to the nearest known time.
+
+Worth knowing when reading the counter: in Bucharest every blank sits on a metro line, and those
+lines are excluded from matching upstream, so this defect corrupted the published **file** without
+ever moving the published delay **statistics**. A feed that puts blanks on matched routes would
+see both.
 
 Family A has no trip-cancellation signal (unlike RT-3, which can read `ScheduleRelationship`
 from `TripUpdate`s) — every trip in the static feed is reconstructed, cancelled or not.
