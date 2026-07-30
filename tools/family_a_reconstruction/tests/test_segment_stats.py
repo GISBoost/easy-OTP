@@ -335,6 +335,10 @@ def test_collect_rejects_implausible_segment_time():
     assert segment_times == {}
     assert counts["rejected_seg_time"] == 1
     assert counts["segments_observed"] == 0
+    # Precedence lock (FA-18): this observation implies 0.37 km/h, so it is stationary too,
+    # but rejected_seg_time wins and rejected_stationary must NOT also count it. Documented
+    # consequence: the very slowest cases bypass the counter named after them.
+    assert counts["rejected_stationary"] == 0
 
 
 def test_collect_rejects_implausible_speed():
@@ -386,12 +390,24 @@ def test_collect_normal_urban_speed_passes_unchanged():
     assert counts["segments_observed"] == 1
 
 
-def test_collect_very_slow_segment_not_rejected_no_lower_bound():
-    """FA-13 has no lower speed bound - heavy traffic / a long dwell producing
-    <1 m/s must NOT be rejected. Uses max_bracket_gap_s=None since a 20-minute
-    gap between the two real GPS observations would otherwise be caught by
-    FA-14's bracket-gap check first (unrelated to the speed check under test
-    here) - same isolation technique as test_collect_rejects_implausible_segment_time.
+def test_collect_slow_but_moving_segment_is_kept():
+    """Heavy traffic must not be mistaken for a stopped vehicle.
+
+    Originally written for FA-13, whose speed check is upper-bound only. FA-18 added a
+    LOWER bound, so the old claim ("<1 m/s must NOT be rejected") is no longer true and
+    this test now guards the narrower invariant it always really covered: a segment that
+    is slow but genuinely moving survives both bounds.
+
+    Margin over the bounds is deliberate and worth keeping explicit: 1112 m / 1200 s =
+    0.927 m/s, i.e. 3.34 km/h, which is 1.67x _MIN_PLAUSIBLE_SPEED_MPS (2 km/h). If a
+    future recalibration raises that threshold past 3.34 km/h this test goes red - and
+    the failure would point at the threshold, not at a regression here, so re-time the
+    fixture rather than "fixing" the filter.
+
+    Uses max_bracket_gap_s=None since a 20-minute gap between the two real GPS
+    observations would otherwise be caught by FA-14's bracket-gap check first (unrelated
+    to the speed checks under test here) - same isolation technique as
+    test_collect_rejects_implausible_segment_time.
     """
     idx = _two_stop_static_index()
     trip_shapes = {"t1": "shape1"}
@@ -411,6 +427,7 @@ def test_collect_very_slow_segment_not_rejected_no_lower_bound():
     key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
     assert segment_times[key] == pytest.approx([1200.0])
     assert counts["rejected_seg_time"] == 0
+    assert counts["rejected_stationary"] == 0
     assert counts["segments_observed"] == 1
 
 
@@ -815,3 +832,100 @@ def test_two_stop_trip_contributes_nothing_when_unwindowed():
     assert counts["first_segment_skipped"] == 1
     assert counts["segments_observed"] == 0
     assert counts["trips_processed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# FA-18: reject observations implying a stationary vehicle
+# ---------------------------------------------------------------------------
+
+
+def _slow_first_segment_inputs(seconds_a_to_b: int):
+    """A->B covered in seconds_a_to_b, then B->C briskly in 100s.
+
+    A->B spans ~1112 m (0.01 degrees of latitude), so 2500 s implies ~1.6 km/h - the
+    layover-on-a-terminus signature FA-18 exists to catch - while B->C stays at ~40 km/h
+    to prove only the offending pair is dropped.
+    """
+    idx, trip_shapes, shapes, stop_locations, _rows = _three_stop_inputs()
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+    d_c = stop_distance_along_shape(0.02, 0.0, _STRAIGHT_LINE)
+    rows = [
+        ("t1", _t(0), 0.0),
+        ("t1", _t(seconds_a_to_b), d_b),
+        ("t1", _t(seconds_a_to_b + 100), d_c),
+    ]
+    return idx, trip_shapes, shapes, stop_locations, _matched_df(rows), d_b
+
+
+def _collect_slow(seconds_a_to_b=2500, **kwargs):
+    idx, trip_shapes, shapes, stop_locations, matched, d_b = _slow_first_segment_inputs(seconds_a_to_b)
+    # max_bracket_gap_s=None isolates FA-18 from FA-14: the deliberately wide observation
+    # spacing this fixture needs would otherwise be rejected as a bracket gap first.
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
+        max_bracket_gap_s=None, **kwargs
+    )
+    return segment_times, counts, d_b
+
+
+def test_stationary_observation_is_rejected():
+    segment_times, counts, _d_b = _collect_slow()
+
+    assert _KEY_AB not in segment_times          # ~1.6 km/h - standing still
+    assert segment_times[_KEY_BC] == pytest.approx([100.0])  # ~40 km/h - kept
+    assert counts["rejected_stationary"] == 1
+    assert counts["segments_observed"] == 1
+
+
+def test_normal_speed_observation_is_kept():
+    segment_times, counts, _d_b = _collect_slow(seconds_a_to_b=100)
+
+    assert segment_times[_KEY_AB] == pytest.approx([100.0])
+    assert counts["rejected_stationary"] == 0
+
+
+def test_none_disables_the_lower_speed_bound():
+    segment_times, counts, _d_b = _collect_slow(min_plausible_speed_mps=None)
+
+    assert segment_times[_KEY_AB] == pytest.approx([2500.0])
+    assert counts["rejected_stationary"] == 0
+
+
+def test_observation_exactly_at_the_threshold_is_kept():
+    """The comparison is a strict `<` - exactly at the bound is not 'stationary'."""
+    _st, _c, d_b = _collect_slow()
+    exact = d_b / 2500.0  # the fixture's own implied speed, to the last bit
+
+    segment_times, counts, _ = _collect_slow(min_plausible_speed_mps=exact)
+
+    assert segment_times[_KEY_AB] == pytest.approx([2500.0])
+    assert counts["rejected_stationary"] == 0
+
+
+def test_stationary_rejection_is_disjoint_from_rejected_seg_time():
+    """FA-15/FA-16 lesson: a counter mixing causes cannot be acted on."""
+    _segment_times, counts, _d_b = _collect_slow()
+
+    assert counts["rejected_stationary"] == 1
+    assert counts["rejected_seg_time"] == 0
+
+
+def test_fa17_skip_wins_over_fa18_on_an_unwindowed_stationary_first_pair():
+    """Both mechanisms target the terminus-layover artifact; this locks the division of work.
+
+    An unwindowed trip whose first pair is stationary must be counted as skipped (FA-17,
+    which never attempts the pair) and NOT as a stationary rejection (FA-18, which would
+    have to interpolate it first). Without this, a future reordering could double-count
+    the same artifact in two counters that are supposed to be disjoint.
+    """
+    idx, trip_shapes, shapes, stop_locations, matched, _d_b = _slow_first_segment_inputs(2500)
+    matched["position_signal"] = "none"
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", max_bracket_gap_s=None
+    )
+
+    assert counts["first_segment_skipped"] == 1
+    assert counts["rejected_stationary"] == 0
+    assert _KEY_AB not in segment_times
+    assert segment_times[_KEY_BC] == pytest.approx([100.0])

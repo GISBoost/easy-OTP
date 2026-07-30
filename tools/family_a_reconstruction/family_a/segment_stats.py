@@ -52,8 +52,62 @@ _MAX_PLAUSIBLE_SEG_TIME_S = 7200.0
 # Prague's route_type=2 InterCity/rychlik routes routinely exceed 120 km/h) - accepted as a known
 # gap for now; per-route/route_type-aware thresholds are a distinct, larger change, not in scope
 # for FA-13.
-# No lower bound: slow segments (traffic, long dwells) are fully legitimate.
 _MAX_PLAUSIBLE_SPEED_MPS = 100.0 / 3.6  # 100 km/h ~= 27.78 m/s
+
+# FA-18: lower bound on the same quantity. FA-13 above deliberately had none ("slow segments
+# (traffic, long dwells) are fully legitimate") - true as far as it went, but it was decided
+# without measuring, and what it lets through is a vehicle standing on a terminus during its
+# layover, whose wait interpolate_stop_time then books as travel time.
+#
+# Calibrated 2026-07-30 on 823,081 RAW segment observations from gtfs-manual-test/raw_snapshots -
+# 7 city-days covering all three FA-12 position-signal classes (Gdansk 07-21/07-22 "none", Lodz
+# 07-19/07-21 + Bucharest 07-21 "sequence", Vilnius 07-19/07-21 "stop_id"). Positives = first
+# pairs of unwindowed trips (2,728); negatives = mid-trip pairs in windowed cities (637,196):
+#
+#     threshold   caught (bad)   lost (good)   discrimination
+#       1.0 km/h        19.0%        0.005%          4025x
+#       1.5 km/h        25.9%        0.024%          1086x
+#       2.0 km/h        31.1%        0.063%           496x    <- chosen
+#       2.5 km/h        35.0%        0.125%           280x
+#       3.0 km/h        39.8%        0.215%           185x
+#
+# "Positives" is a proxy, not a set of confirmed stationary vehicles - it is the population
+# FA-17's own measurement showed to be dominated by layovers, but it also contains legitimately
+# moving trips, so the catch column is a lower bound on real-world precision rather than a
+# "69% of stopped vehicles get through" figure.
+#
+# 2 km/h is picked on physics rather than on the curve: over the median 472 m segment it means
+# 14.2 minutes to cross one stop pair. The rejected population's signature confirms it - those
+# 399 mid-trip casualties average 806 s against a mean of 107 s for what is kept, while being
+# SHORTER (median 342 m vs 473 m). They are not slow journeys, they are stopped vehicles.
+# Going to 3 km/h
+# triples the cost for +8.7pp of catch, and 2-3 km/h is the only band where a genuinely extreme
+# jam could plausibly live; a false rejection biases delay DOWNWARD, i.e. the opposite direction
+# to the defect being fixed, and is correspondingly harder to notice.
+#
+# A minimum-distance guard was measured and REJECTED - do not add one "to be safe". An earlier
+# calibration against pooled P50s with straight-line distances suggested requiring >100 m,
+# because its false positives had a median length of 69 m. On raw observations with real
+# shape-polyline distances that effect disappears (median 342 m), and the guard then cuts the
+# catch from 31.1% to 23.4% while lowering the cost only from 0.063% to 0.058%.
+#
+# Complements FA-17 rather than duplicating it: FA-17 drops the first pair only when the signal
+# is "none", which leaves the same contamination untouched in windowed cities. Measured there,
+# this bound rejects 10.6% of "sequence" first pairs and 3.4% of "stop_id" ones.
+#
+# Second-order effect worth knowing about: this filter drops individual OBSERVATIONS, so a
+# segment key that loses enough of them can fall under --min-observations-per-segment and
+# silently revert to its scheduled time - indistinguishable downstream from a stop pair that
+# was never observed. FA-13 has the same property but rejects ~0.09% where this rejects up to
+# ~0.69%, so it matters more here.
+#
+# One caveat on transferability: the calibration cities have a median segment of 472 m. In a
+# feed with very dense downtown stop spacing (40-60 m pairs) 2 km/h corresponds to only ~90 s,
+# which is an ordinary "stop, traffic light, stop" crawl rather than a layover. Nothing in the
+# measured set behaves that way, but that is where to look first if a newly added city starts
+# reporting an unexpectedly high rejected_stationary.
+DEFAULT_MIN_PLAUSIBLE_SPEED_KMH = 2.0
+_MIN_PLAUSIBLE_SPEED_MPS = DEFAULT_MIN_PLAUSIBLE_SPEED_KMH / 3.6  # ~= 0.56 m/s
 
 
 def collect_segment_observations(
@@ -69,6 +123,7 @@ def collect_segment_observations(
     backward_tolerance_m: float = DEFAULT_BACKWARD_TOLERANCE_M,
     max_bracket_gap_s: float | None = DEFAULT_MAX_BRACKET_GAP_S,
     skip_unwindowed_first_segment: bool = True,
+    min_plausible_speed_mps: float | None = _MIN_PLAUSIBLE_SPEED_MPS,
 ) -> tuple[dict[SegmentKey, list[float]], dict[str, int]]:
     """For each trip's matched position series, interpolate every consecutive
     scheduled stop pair's crossing time and derive an observed segment
@@ -129,11 +184,28 @@ def collect_segment_observations(
     - rejected_seg_time: interpolation succeeded on both stops but the
       derived segment time was non-positive, implausibly long, or implied a
       physically-impossible average speed (FA-13, safety net - see
-      _MAX_PLAUSIBLE_SPEED_MPS).
+      _MAX_PLAUSIBLE_SPEED_MPS). Takes PRECEDENCE over rejected_stationary
+      below: an observation failing both lands here only. That has a real
+      consequence worth knowing - a stationary observation whose seg_time
+      exceeds _MAX_PLAUSIBLE_SEG_TIME_S (2h) is counted here, not there, so
+      the very slowest cases (below ~0.24 km/h over a median 472 m segment)
+      systematically bypass the counter built to count them.
     - first_segment_skipped (FA-17): trips whose FIRST stop pair was not even
       attempted because the recording carried no FA-12 position signal - see
       *skip_unwindowed_first_segment* below. Counted once per trip group, and
       those pairs contribute to none of the counters above.
+    - rejected_stationary (FA-18): interpolation succeeded on both stops but the
+      implied average speed was below *min_plausible_speed_mps* - a vehicle
+      standing still, not travelling slowly. Kept deliberately SEPARATE from
+      rejected_seg_time: a counter that mixes causes cannot be acted on, which
+      is exactly why trips_skipped_unresolvable (three causes in one number) had
+      to be bypassed in FA-16. Counts only observations that got past
+      rejected_seg_time - see the precedence note above.
+
+    *min_plausible_speed_mps* (FA-18, default 2 km/h, None disables): reject an
+    observation whose implied average speed is below this. See the constant's
+    own comment for the calibration behind the number - 823,081 raw observations
+    across 7 city-days - including why no minimum-distance guard accompanies it.
 
     *skip_unwindowed_first_segment* (FA-17, default on): drop the first stop
     pair of every trip whose matched rows carry position_signal == "none".
@@ -195,6 +267,7 @@ def collect_segment_observations(
         "missing_stop_location": 0,
         "rejected_seg_time": 0,
         "first_segment_skipped": 0,
+        "rejected_stationary": 0,
     }
 
     if matched.empty:
@@ -283,6 +356,13 @@ def collect_segment_observations(
             )
             if seg_time <= 0 or seg_time > _MAX_PLAUSIBLE_SEG_TIME_S or implausible_speed:
                 counts["rejected_seg_time"] += 1
+                continue
+
+            # FA-18. Checked after the block above so the two counters stay disjoint: an
+            # observation already rejected as implausible never also lands here. Strict `<`,
+            # so an observation exactly at the threshold is kept.
+            if min_plausible_speed_mps is not None and seg_distance_m / seg_time < min_plausible_speed_mps:
+                counts["rejected_stationary"] += 1
                 continue
 
             local_t_from = t_from.tz_convert(zone)

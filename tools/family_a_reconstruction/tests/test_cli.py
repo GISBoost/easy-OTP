@@ -22,6 +22,7 @@ from family_a.cli import _cmd_build, _cmd_match, _cmd_record, _duration_minutes,
 from family_a.build_gtfs import DEFAULT_MAX_UNKNOWN_TRIP_SHARE, DEFAULT_MIN_CORRECTED_ROUTE_SHARE
 from family_a.interpolate import DEFAULT_MAX_BRACKET_GAP_S
 from family_a.recorder import SnapshotFetchError
+from family_a.segment_stats import DEFAULT_MIN_PLAUSIBLE_SPEED_KMH
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +54,49 @@ def test_build_defaults():
     assert args.min_corrected_route_share == DEFAULT_MIN_CORRECTED_ROUTE_SHARE
     assert args.fail_on_low_yield is False
     assert args.diagnostics_csv is None
+    # Same reasoning for FA-17/FA-18: hand-built args in every other _cmd_build test mean
+    # build_parser is the only thing that can catch a renamed or dropped flag here.
+    assert args.keep_unwindowed_first_segment is False
+    assert args.min_plausible_speed_kmh == DEFAULT_MIN_PLAUSIBLE_SPEED_KMH
+
+
+def test_build_min_plausible_speed_kmh_override():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["build", "--matched", "matched.csv", "--static", "gtfs.zip", "--out-prefix", "out",
+         "--min-plausible-speed-kmh", "3.5"]
+    )
+    assert args.min_plausible_speed_kmh == 3.5
+
+
+def test_build_min_plausible_speed_kmh_zero_is_accepted():
+    """0 is the documented way to disable FA-18 - it must not trip the validator."""
+    parser = build_parser()
+    args = parser.parse_args(
+        ["build", "--matched", "matched.csv", "--static", "gtfs.zip", "--out-prefix", "out",
+         "--min-plausible-speed-kmh", "0"]
+    )
+    assert args.min_plausible_speed_kmh == 0
+
+
+def test_build_min_plausible_speed_kmh_rejects_negative():
+    """A negative value would disable the filter AND silence its summary line."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["build", "--matched", "matched.csv", "--static", "gtfs.zip", "--out-prefix", "out",
+             "--min-plausible-speed-kmh", "-5"]
+        )
+
+
+def test_build_min_plausible_speed_kmh_rejects_value_above_the_upper_bound():
+    """At or above FA-13's 100 km/h the two checks together reject everything."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["build", "--matched", "matched.csv", "--static", "gtfs.zip", "--out-prefix", "out",
+             "--min-plausible-speed-kmh", "100"]
+        )
 
 
 def test_build_input_fit_threshold_override():
@@ -937,6 +981,8 @@ def _make_build_args(tmp_path, **overrides):
         max_unknown_trip_share = DEFAULT_MAX_UNKNOWN_TRIP_SHARE
         # FA-17 default, likewise: the skip is ON, so this opt-out stays False.
         keep_unwindowed_first_segment = False
+        # FA-18 default, likewise (km/h; 0 would disable the lower speed bound).
+        min_plausible_speed_kmh = 2.0
 
     ns = _NS()
     for key, value in overrides.items():
@@ -981,9 +1027,66 @@ def test_cmd_build_end_to_end_writes_both_zips(tmp_path, capsys):
     assert "Segment observations collected" in captured.out
     assert "interpolation gaps" in captured.out
     assert "rejected (implausible segment time or speed, FA-13)" in captured.out
+    assert "rejected as stationary (implied speed below 2 km/h, FA-18)" in captured.out
     assert "Segments corrected: 1" in captured.out
     assert "P50 output written to" in captured.out
     assert "P85 output written to" in captured.out
+
+
+def _write_stationary_matched(tmp_path):
+    """A vehicle that takes 40 minutes to cover the ~1112 m first stop pair (~1.7 km/h).
+
+    Below FA-18's 2 km/h bound but above FA-13's 2h upper limit on seg_time, so it lands in
+    rejected_stationary rather than rejected_seg_time.
+    """
+    from family_a.matcher import project_point_to_polyline
+
+    d_b = project_point_to_polyline(0.01, 0.0, [(0.0, 0.0), (0.01, 0.0)])[0]
+    matched_path = tmp_path / "matched_slow.csv"
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m,perpendicular_dist_m\n"
+        "t1,2026-01-01T07:00:00Z,0.0,0.0\n"
+        f"t1,2026-01-01T07:40:00Z,{d_b},0.0\n",
+        encoding="utf-8",
+    )
+    return matched_path
+
+
+def test_cmd_build_rejects_stationary_observation_end_to_end(tmp_path, capsys):
+    """Covers the km/h -> m/s conversion in _cmd_build, which unit tests never touch."""
+    gtfs = _make_build_static_zip(tmp_path)
+    matched_path = _write_stationary_matched(tmp_path)
+
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=str(tmp_path / "out"),
+        # A day, not None: the CLI's own summary line formats this value, so None is not a
+        # shape _cmd_build ever sees from argparse. Large enough to isolate FA-18 from FA-14.
+        max_bracket_gap_seconds=86400.0,
+    )
+    assert _cmd_build(args) == 0
+
+    captured = capsys.readouterr()
+    assert "rejected as stationary (implied speed below 2 km/h, FA-18): 1" in captured.out
+    assert "Segments corrected: 0" in captured.out
+
+
+def test_cmd_build_min_plausible_speed_zero_disables_the_check(tmp_path, capsys):
+    """0 must both keep the observation AND drop the summary line entirely."""
+    gtfs = _make_build_static_zip(tmp_path)
+    matched_path = _write_stationary_matched(tmp_path)
+
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=str(tmp_path / "out"),
+        max_bracket_gap_seconds=86400.0,
+        min_plausible_speed_kmh=0,
+    )
+    assert _cmd_build(args) == 0
+
+    captured = capsys.readouterr()
+    assert "rejected as stationary" not in captured.out
+    assert "Segments corrected: 1" in captured.out
 
 
 def _make_build_static_zip_with_shape_dist_traveled(tmp_path):

@@ -261,6 +261,56 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   trusted.
 - `--time-bucket-minutes` (default `120`) — time-of-day bucket width in minutes for segment
   correction scoping (see below); 12 buckets/day at the default 2-hour width.
+- `--min-plausible-speed-kmh` (default `2.0`, `0` disables) — **FA-18.** Reject a segment
+  observation whose implied average speed falls below this. FA-13's speed check (below) is
+  upper-bound only, deliberately so — but what that lets through is a vehicle **standing on a
+  terminus during its layover**, whose wait the interpolation then books as travel time. FA-17
+  removes the worst of this, but only for the first stop pair and only when the recording had no
+  position signal; the same contamination is still measurable in windowed cities, where this bound
+  rejects **10.6%** of `sequence` first pairs and **3.4%** of `stop_id` ones.
+  **Calibrated on 823,081 raw segment observations** from 7 city-days spanning all three FA-12
+  signal classes (Gdańsk `none`, Łódź + Bucharest `sequence`, Vilnius `stop_id`), measured on real
+  shape-polyline distances:
+
+  | threshold | caught (proxy positives) | lost (known-good) | discrimination |
+  |---|---:|---:|---:|
+  | 1.0 km/h | 19.0% | 0.005% | 4025× |
+  | 1.5 km/h | 25.9% | 0.024% | 1086× |
+  | **2.0 km/h** | **31.1%** | **0.063%** | **496×** |
+  | 2.5 km/h | 35.0% | 0.125% | 280× |
+  | 3.0 km/h | 39.8% | 0.215% | 185× |
+
+  "Proxy positives" are first stop pairs of *unwindowed* trips — the population FA-17's own
+  measurement showed to be dominated by layovers, but which still contains legitimately moving
+  vehicles. So the catch column is a lower bound on real precision, **not** a claim that 69% of
+  stopped vehicles slip through. Negatives are mid-trip pairs in windowed cities.
+
+  The default is chosen on **physics, not on the curve**: over the median 472 m segment, 2 km/h
+  means **14.2 minutes** to cross a single stop pair. The rejected population's signature confirms
+  it — those observations average **806 s** against a mean of **107 s** for what is kept, while
+  being *shorter* (median 342 m vs 473 m). They are not slow journeys; they are stopped vehicles.
+  Going to 3 km/h triples the cost for +8.7pp of catch, and 2–3 km/h is the only band where a
+  genuinely extreme jam could live; a false rejection biases delay *downward*, the opposite
+  direction to the defect being fixed. Verified end to end on the same archived recordings:
+
+  | city-day | observations rejected | change in `Segments corrected` |
+  |---|---:|---:|
+  | Gdańsk 07-22 | 0.687% | −0.75% |
+  | Bucharest 07-21 | 0.251% | −0.33% |
+  | Vilnius 07-21 | 0.099% | not measured |
+  | Łódź 07-21 | 0.042% | not measured |
+
+  Two second-order effects to keep in mind. Rejections are **per observation**, so a segment key
+  that loses enough of them can drop under `--min-observations-per-segment` and revert to its
+  scheduled time — downstream that is indistinguishable from a pair nobody ever observed. And the
+  calibration cities have a median segment of 472 m: in a feed with very dense downtown stop
+  spacing (40–60 m pairs) 2 km/h is only ~90 s, an ordinary "stop, lights, stop" crawl rather than
+  a layover. Nothing in the measured set behaves that way, but that is the first thing to check if
+  a newly added city reports an unexpectedly high stationary count.
+  **A minimum-distance guard was measured and rejected** — do not add one. Against pooled P50s with
+  straight-line distances it looked necessary (false positives had a median length of 69 m), but on
+  raw observations with real polyline distances that effect disappears (median 342 m) and the guard
+  merely cuts the catch from 31.1% to 23.4% while lowering the cost only from 0.063% to 0.058%.
 - `--keep-unwindowed-first-segment` (off by default) — **FA-17.** By default, each trip's **first**
   stop pair is dropped when the recording carried no FA-12 position signal (`position_signal` is
   `none`, i.e. the feed publishes neither `current_stop_sequence` nor `stop_id`). Without a window,
@@ -324,9 +374,10 @@ Output: two GTFS zips, byte-identical to the input static feed except for correc
 `arrival_time`/`departure_time` values in `stop_times.txt` (P50 = typical/median observed
 travel time per segment, P85 = pessimistic/85th-percentile). The command prints the resolved
 agency timezone (`Agency timezone resolved: ...`), counts for trips processed/skipped, segments
-observed/corrected/dropped, interpolation gaps, missing stop locations, and segments rejected for
-an implausible time or speed (FA-13 safety net) — use these to judge how much of the recording
-actually corrected the schedule versus fell back to planned times.
+observed/corrected/dropped, interpolation gaps, missing stop locations, segments rejected for an
+implausible time or speed (FA-13 safety net), observations rejected as stationary (FA-18), and —
+when it applies — first stop pairs skipped for want of a position signal (FA-17). Use these to
+judge how much of the recording actually corrected the schedule versus fell back to planned times.
 
 Family A has no trip-cancellation signal (unlike RT-3, which can read `ScheduleRelationship`
 from `TripUpdate`s) — every trip in the static feed is reconstructed, cancelled or not.

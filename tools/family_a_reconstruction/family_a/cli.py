@@ -6,7 +6,7 @@ cmd.exe/PowerShell; see each subcommand's own --help for a copy-pasteable exampl
 
     py -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> [--duration-min N] [--interval-sec N]
     py -m family_a.cli match --positions-dir <dir> [<dir> ...] --static <gtfs.zip> --out <table> [--max-perpendicular-dist-m N]
-    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N] [--max-bracket-gap-seconds N] [--keep-unwindowed-first-segment]
+    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N] [--max-bracket-gap-seconds N] [--min-plausible-speed-kmh N] [--keep-unwindowed-first-segment]
 """
 
 from __future__ import annotations
@@ -54,6 +54,8 @@ from family_a.recorder import (
     write_snapshot,
 )
 from family_a.segment_stats import (
+    DEFAULT_MIN_PLAUSIBLE_SPEED_KMH,
+    _MAX_PLAUSIBLE_SPEED_MPS,
     aggregate_segments,
     collect_segment_observations,
     filter_min_observations,
@@ -138,6 +140,29 @@ def _positive_int(value: str) -> int:
     if ivalue < 1:
         raise argparse.ArgumentTypeError(f"must be a positive integer, got {value}")
     return ivalue
+
+
+def _min_plausible_speed_kmh(value: str) -> float:
+    """argparse type for --min-plausible-speed-kmh: 0 disables, negatives are rejected.
+
+    A negative value would silently disable the filter (the `> 0` guard in _cmd_build
+    reads false) AND suppress its summary line, leaving the user no signal at all that
+    the bound they asked for is not running. The upper end is bounded too: at or above
+    FA-13's own _MAX_PLAUSIBLE_SPEED_MPS the two checks would between them reject every
+    observation, which is never what anyone means.
+    """
+    fvalue = float(value)
+    if fvalue < 0:
+        raise argparse.ArgumentTypeError(
+            f"must be 0 (disables the check) or positive, got {value}"
+        )
+    max_kmh = _MAX_PLAUSIBLE_SPEED_MPS * 3.6
+    if fvalue >= max_kmh:
+        raise argparse.ArgumentTypeError(
+            f"must be below FA-13's upper bound of {max_kmh:.0f} km/h, got {value} - at or "
+            "above it the two speed checks together reject every observation"
+        )
+    return fvalue
 
 
 def _duration_minutes(value: str) -> int:
@@ -889,6 +914,10 @@ def _cmd_build(args: argparse.Namespace) -> int:
         trusted_stop_dist=trusted_stop_dist,
         max_bracket_gap_s=args.max_bracket_gap_seconds,
         skip_unwindowed_first_segment=not args.keep_unwindowed_first_segment,
+        # 0 disables (argparse keeps it a float; None is what the callee wants for "off").
+        min_plausible_speed_mps=(
+            args.min_plausible_speed_kmh / 3.6 if args.min_plausible_speed_kmh > 0 else None
+        ),
     )
     segment_times, dropped_count = filter_min_observations(
         segment_times, args.min_observations_per_segment
@@ -930,6 +959,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
     )
     print(f"  - missing stop location (stop_id absent from stops.txt): {collect_counts['missing_stop_location']}")
     print(f"  - rejected (implausible segment time or speed, FA-13): {collect_counts['rejected_seg_time']}")
+    if args.min_plausible_speed_kmh > 0:
+        print(
+            f"  - rejected as stationary (implied speed below "
+            f"{args.min_plausible_speed_kmh:g} km/h, FA-18): "
+            f"{collect_counts['rejected_stationary']}"
+        )
     if collect_counts["first_segment_skipped"]:
         print(
             f"  - first stop pair skipped, recording had no FA-12 position signal (FA-17): "
@@ -1190,6 +1225,23 @@ def build_parser() -> argparse.ArgumentParser:
             "observations is spaced further apart in time than this many seconds - a wide "
             "gap means sparse sampling, not a real travel time (FA-14, PRD §7 open "
             f"question #10; default: {DEFAULT_MAX_BRACKET_GAP_S:.0f})."
+        ),
+    )
+    p_build.add_argument(
+        "--min-plausible-speed-kmh",
+        type=_min_plausible_speed_kmh,
+        default=DEFAULT_MIN_PLAUSIBLE_SPEED_KMH,
+        help=(
+            "FA-18: reject a segment observation whose implied average speed falls below this "
+            "(0 disables). A vehicle standing on a terminus during its layover is otherwise "
+            "booked as travelling, since FA-13's speed check is upper-bound only. Calibrated on "
+            "823,081 raw observations from 7 city-days covering all three FA-12 signal classes: "
+            "at 2 km/h the rule catches 31.1%% of the proxy positive population (first stop "
+            "pairs of unwindowed trips) while costing 0.063%% of known-good mid-trip ones "
+            "(496x discrimination). The number is chosen on physics rather than on the curve - "
+            "over the median 472 m segment, 2 km/h means 14.2 minutes to cross one stop pair - "
+            "and the rejected population averages 806 s against 107 s for what is kept, while "
+            f"being shorter. Default: {DEFAULT_MIN_PLAUSIBLE_SPEED_KMH}."
         ),
     )
     p_build.add_argument(
