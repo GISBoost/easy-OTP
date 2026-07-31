@@ -6,7 +6,7 @@ cmd.exe/PowerShell; see each subcommand's own --help for a copy-pasteable exampl
 
     py -m family_a.cli record --url <VehiclePositions.pb URL> --out-dir <dir> [--duration-min N] [--interval-sec N]
     py -m family_a.cli match --positions-dir <dir> [<dir> ...] --static <gtfs.zip> --out <table> [--max-perpendicular-dist-m N]
-    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N] [--max-bracket-gap-seconds N] [--min-plausible-speed-kmh N] [--keep-unwindowed-first-segment]
+    py -m family_a.cli build --matched <table> --static <gtfs.zip> --out-prefix <prefix> [--min-observations-per-segment N] [--time-bucket-minutes N] [--max-bracket-gap-seconds N] [--min-plausible-speed-kmh N] [--keep-first-segment]
 """
 
 from __future__ import annotations
@@ -744,9 +744,10 @@ def _cmd_match(args: argparse.Namespace) -> int:
         df["recording_date"] = recording_date
         # FA-17: same scalar-broadcast treatment, and per-directory for the same reason the
         # print below is per-directory - two --positions-dir values can resolve to different
-        # signals, and `build` must be able to tell which rows came from an unwindowed one.
-        # Carried in the table itself rather than a sidecar file so an archived matched.csv
-        # stays self-describing: re-running `build` on it later cannot silently lose the fact.
+        # signals. Kept as DIAGNOSTICS only: since FA-20 dropped the signal condition on the
+        # first-stop-pair skip, nothing in `build` reads this column, but it is what lets anyone
+        # tell afterwards how a given day's positions were windowed. Carried in the table itself
+        # rather than a sidecar file so an archived matched.csv stays self-describing.
         df["position_signal"] = df.attrs.get("position_signal", "none")
 
         # FA-12: capability is decided per-directory/day, so print it per directory rather than
@@ -913,7 +914,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         shape_cumulative_dist=shape_cumulative_dist,
         trusted_stop_dist=trusted_stop_dist,
         max_bracket_gap_s=args.max_bracket_gap_seconds,
-        skip_unwindowed_first_segment=not args.keep_unwindowed_first_segment,
+        skip_first_segment=not args.keep_first_segment,
         # 0 disables (argparse keeps it a float; None is what the callee wants for "off").
         min_plausible_speed_mps=(
             args.min_plausible_speed_kmh / 3.6 if args.min_plausible_speed_kmh > 0 else None
@@ -965,12 +966,23 @@ def _cmd_build(args: argparse.Namespace) -> int:
             f"{args.min_plausible_speed_kmh:g} km/h, FA-18): "
             f"{collect_counts['rejected_stationary']}"
         )
-    if collect_counts["first_segment_skipped"]:
+    # FA-20: printed unconditionally (including the zero under --keep-first-segment) because it is
+    # the whole visible cost of the rule - a build log that simply omits it cannot be audited.
+    # Two texts rather than one: with the skip off the count is always 0, and a line that then
+    # still said "every trip" and advertised the flag already in force would contradict itself.
+    if args.keep_first_segment:
         print(
-            f"  - first stop pair skipped, recording had no FA-12 position signal (FA-17): "
-            f"{collect_counts['first_segment_skipped']} trips. Without a window, a vehicle "
-            f"laying over on the origin terminus is read as still travelling, inflating that "
-            f"one pair; pass --keep-unwindowed-first-segment to measure it instead."
+            "  - first stop pair skipped (FA-20): 0 trips - skip disabled by "
+            "--keep-first-segment, so every trip's first pair is measured. That pair absorbs "
+            "the vehicle's layover on its origin terminus, so expect it to read late."
+        )
+    else:
+        print(
+            f"  - first stop pair skipped, every trip (FA-20): "
+            f"{collect_counts['first_segment_skipped']} trips. A vehicle idling on its origin "
+            f"terminus already carries the next trip's trip_id, so its layover is booked as "
+            f"travel time on that one pair regardless of the FA-12 position signal; pass "
+            f"--keep-first-segment to measure the artifact instead of dropping it."
         )
     print(f"Segments dropped (fewer than {args.min_observations_per_segment} observations): {dropped_count}")
     print(f"Segments corrected: {corrected_count}")
@@ -978,7 +990,10 @@ def _cmd_build(args: argparse.Namespace) -> int:
     # days) since rebuild_stop_times always rebuilds the whole schedule - it
     # is dominated by trips the recording never touched at all, so it is not
     # a useful measure of "how well did this recording go" on its own; use
-    # segments_observed/interpolation_gaps above for that.
+    # segments_observed/interpolation_gaps above for that. Since FA-20 it also
+    # carries a systematic floor of one pair per trip in the feed (the skipped
+    # first pair always falls back to its scheduled time), so a rise here after
+    # FA-20 is that floor, not a loss of coverage.
     print(f"Segments as gap across the full static schedule (kept scheduled time): {gap_count}")
     print(f"Fallback shapes used (shapes.txt missing): {'yes' if fallback_used else 'no'}")
     trusted_trip_count = len({trip_id for trip_id, _seq in trusted_stop_dist})
@@ -1245,26 +1260,32 @@ def build_parser() -> argparse.ArgumentParser:
             "(0 disables). A vehicle standing on a terminus during its layover is otherwise "
             "booked as travelling, since FA-13's speed check is upper-bound only. Calibrated on "
             "823,081 raw observations from 7 city-days covering all three FA-12 signal classes: "
-            "at 2 km/h the rule catches 31.1%% of the proxy positive population (first stop "
-            "pairs of unwindowed trips) while costing 0.063%% of known-good mid-trip ones "
-            "(496x discrimination). The number is chosen on physics rather than on the curve - "
+            "at 2 km/h the rule catches 31.1%% of the proxy positive population it was calibrated "
+            "against (first stop pairs of trips with no FA-12 window) while costing 0.063%% of "
+            "known-good mid-trip ones (496x discrimination). Since FA-20 drops every trip's first "
+            "pair outright, what this bound still does is catch stationary observations MID-TRIP. "
+            "The number is chosen on physics rather than on the curve - "
             "over the median 472 m segment, 2 km/h means 14.2 minutes to cross one stop pair - "
             "and the rejected population averages 806 s against 107 s for what is kept, while "
             f"being shorter. Default: {DEFAULT_MIN_PLAUSIBLE_SPEED_KMH}."
         ),
     )
     p_build.add_argument(
-        "--keep-unwindowed-first-segment",
+        "--keep-first-segment",
         action="store_true",
         help=(
-            "FA-17: keep correcting each trip's FIRST stop pair even when the recording carried "
-            "no FA-12 position signal. Off by default because that pair then absorbs the "
-            "vehicle's layover on the origin terminus: measured on Gdansk 2026-07-29 (the only "
-            "monitored city with signal \"none\") the first pair is 246 m long, scheduled at 74 s "
-            "but reconstructed at 477 s - a median implied speed of 1.8 km/h, with 34.2%% of them "
-            "under 1 km/h - and it alone accounted for 107.6 s of that city's 171.1 s mean delay. "
-            "Pass this to measure the artifact rather than drop it. No effect on a recording WITH "
-            "a position signal, or on a matched table written before FA-17."
+            "FA-20: keep correcting each trip's FIRST stop pair. Off by default because that pair "
+            "absorbs the vehicle's layover on the origin terminus - it already carries the next "
+            "trip's trip_id while it waits, so the moment it ARRIVED to wait is interpolated as "
+            "the moment it crossed stop 1. FA-17 dropped the pair only for recordings with no "
+            "FA-12 position signal; a nine-city measurement (2026-07-29) showed the signal does "
+            "not predict the artifact - Rome and Szczecin at 100%% sequence coverage give a median "
+            "first-pair speed of 2.5 and 5.0 km/h against ~19 and ~21 km/h mid-trip, while Sofia "
+            "on stop_id is nearly clean - so the skip is now unconditional. The pair is also the "
+            "only one that can carry real departure lateness, but that costs little: median "
+            "layover 120-502 s per city against a median lateness of -16 to +15 s. Pass this to "
+            "measure the artifact rather than drop it; it fully disables the skip, including for "
+            "recordings with signal \"none\" that FA-17 would still have dropped."
         ),
     )
     p_build.add_argument(

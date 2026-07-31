@@ -102,6 +102,13 @@ def test_aggregate_single_observation():
 
 # ---------------------------------------------------------------------------
 # collect_segment_observations
+#
+# Every call in this block passes skip_first_segment=False, for the same reason the FA-18
+# block passes max_bracket_gap_s=None: to isolate the mechanism under test. These fixtures
+# are 2- and 3-stop trips whose subject IS the first stop pair (interpolation, bracket gaps,
+# trusted shape_dist anchoring, recording_date grouping), and FA-20 drops that pair before
+# any of it runs. FA-20's own behaviour, and the production defaults, are covered in the
+# FA-17/FA-20 and FA-18 blocks below and end to end in test_cli.py.
 # ---------------------------------------------------------------------------
 
 
@@ -124,7 +131,9 @@ def test_collect_successful_interpolation_appends_segment_time():
         ("t1", _t(100), d_b),
     ])
 
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
+    )
 
     # _t(0) = 2026-01-01T00:00:00 UTC, a Thursday -> WEEKDAY, bucket 0
     key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
@@ -155,7 +164,7 @@ def test_collect_segment_observations_uses_local_time_not_utc_for_day_type_and_b
     ])
 
     segment_times, _counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="Etc/GMT-9"
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="Etc/GMT-9", skip_first_segment=False
     )
 
     # Local: 2026-01-04 08:00:00, a Sunday.
@@ -181,7 +190,9 @@ def test_collect_one_sided_interpolation_failure_is_a_gap():
         ("t1", _t(10), 1.0),
     ])
 
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
+    )
 
     assert segment_times == {}
     assert counts["interpolation_gaps"] == 1
@@ -211,7 +222,7 @@ def test_collect_wide_bracket_gap_excludes_only_that_stop_pair():
     ])
 
     segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
     )
 
     key_ab = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
@@ -236,7 +247,7 @@ def test_collect_bracket_gap_rejected_not_incremented_under_threshold():
     ])
 
     _segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
     )
     assert counts["bracket_gap_rejected"] == 0
 
@@ -260,7 +271,7 @@ def test_collect_custom_max_bracket_gap_s_threading():
     ])
 
     segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False,
         max_bracket_gap_s=60.0,
     )
     assert segment_times == {}
@@ -275,7 +286,9 @@ def test_collect_trip_with_no_resolvable_shape_is_skipped():
     stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
 
     matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(100), 100.0)])
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
+    )
 
     assert segment_times == {}
     assert counts["trips_processed"] == 0
@@ -289,7 +302,9 @@ def test_collect_trip_with_fewer_than_two_stops_is_skipped():
     stop_locations = {"A": (0.0, 0.0)}
 
     matched = _matched_df([("t1", _t(0), 0.0)])
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
+    )
 
     assert segment_times == {}
     assert counts["trips_processed"] == 0
@@ -303,7 +318,9 @@ def test_collect_missing_stop_location_is_distinct_from_interpolation_gap():
     stop_locations = {"A": (0.0, 0.0)}  # B missing
 
     matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(100), 100.0)])
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
+    )
 
     assert segment_times == {}
     assert counts["trips_processed"] == 1  # the trip itself was resolvable and attempted
@@ -329,7 +346,7 @@ def test_collect_rejects_implausible_segment_time():
     ])
 
     segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", max_bracket_gap_s=None
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False, max_bracket_gap_s=None
     )
 
     assert segment_times == {}
@@ -359,7 +376,7 @@ def test_collect_rejects_implausible_speed():
     ])
 
     segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
     )
 
     assert segment_times == {}
@@ -381,7 +398,7 @@ def test_collect_normal_urban_speed_passes_unchanged():
     ])
 
     segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
     )
 
     key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
@@ -421,7 +438,7 @@ def test_collect_slow_but_moving_segment_is_kept():
     ])
 
     segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", max_bracket_gap_s=None
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False, max_bracket_gap_s=None
     )
 
     key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
@@ -434,7 +451,9 @@ def test_collect_slow_but_moving_segment_is_kept():
 def test_collect_empty_matched_dataframe():
     idx = _two_stop_static_index()
     matched = _matched_df([])
-    segment_times, counts = collect_segment_observations(matched, idx, {}, {}, {}, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, {}, {}, {}, agency_tz="UTC", skip_first_segment=False
+    )
     assert segment_times == {}
     assert counts["trips_processed"] == 0
 
@@ -464,7 +483,7 @@ def test_collect_trusted_stop_dist_bypasses_geometric_anchoring():
 
     trusted_stop_dist = {("t1", 1): 0.0, ("t1", 2): trusted_d_b}
     segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False,
         trusted_stop_dist=trusted_stop_dist,
     )
 
@@ -490,10 +509,10 @@ def test_collect_shape_cumulative_dist_and_trusted_stop_dist_omitted_matches_def
     ])
 
     without_params, counts_without = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
     )
     with_none_params, counts_with_none = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False,
         shape_cumulative_dist=None, trusted_stop_dist=None,
     )
 
@@ -535,7 +554,7 @@ def test_collect_late_stop_resolves_to_late_pass_reproducing_poznan_route151_pat
     ])
 
     segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
     )
 
     key_ab = ("R151", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
@@ -577,7 +596,7 @@ def test_collect_pattern_cache_keyed_by_shape_and_stop_pattern_not_bare_shape_id
     ])
 
     segment_times, _counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC"
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
     )
 
     key_express_ab = ("RX", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(300, 120))
@@ -615,7 +634,7 @@ def test_collect_fully_trusted_trip_never_calls_resolve_stop_distances_for_patte
 
     trusted_stop_dist = {("t1", 1): 0.0, ("t1", 2): trusted_d_b}
     segment_times, counts = collect_segment_observations(
-        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False,
         trusted_stop_dist=trusted_stop_dist,
     )
 
@@ -645,7 +664,9 @@ def test_collect_same_recording_date_still_merges_correctly():
         ("t1", _t(100), d_b, date(2026, 1, 1)),
     ])
 
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
+    )
 
     key = ("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(0, 120))
     assert segment_times[key] == pytest.approx([100.0])
@@ -676,7 +697,9 @@ def test_collect_prevents_cross_day_bracketing_with_close_timestamps():
         ("t1", _t(50), d_b, date(2026, 1, 2)),
     ])
 
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
+    )
 
     assert segment_times == {}
     assert counts["segments_observed"] == 0
@@ -702,7 +725,9 @@ def test_collect_without_recording_date_column_groups_by_trip_id_only():
     ])
     assert "recording_date" not in matched.columns
 
-    segment_times, counts = collect_segment_observations(matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC")
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", skip_first_segment=False
+    )
 
     assert counts["segments_observed"] == 1
     assert counts["interpolation_gaps"] == 0
@@ -732,7 +757,7 @@ def test_filter_min_observations_keeps_all_when_threshold_is_one():
 
 
 # ---------------------------------------------------------------------------
-# FA-17: drop the first stop pair when the recording had no FA-12 position signal
+# FA-17/FA-20: drop the first stop pair of every trip, whatever its position signal
 # ---------------------------------------------------------------------------
 
 
@@ -776,34 +801,53 @@ def test_first_segment_skipped_when_position_signal_is_none():
     assert counts["segments_observed"] == 1
 
 
-def test_first_segment_kept_when_position_signal_is_usable():
-    for signal in ("sequence", "stop_id"):
-        segment_times, counts = _collect_with_signal(signal)
+@pytest.mark.parametrize("signal", ["sequence", "stop_id"])
+def test_first_segment_skipped_when_position_signal_is_usable(signal):
+    """FA-20 reversal: FA-17 KEPT this pair, on the theory that an FA-12 window prevents the
+    artifact. Rome and Szczecin at 100% sequence coverage have the worst first pairs measured
+    (2.5 and 5.0 km/h against ~19 and ~21 km/h mid-trip), so the window does not prevent it.
+    """
+    segment_times, counts = _collect_with_signal(signal)
+
+    assert _KEY_AB not in segment_times
+    assert segment_times[_KEY_BC] == pytest.approx([100.0])
+    assert counts["first_segment_skipped"] == 1
+    assert counts["segments_observed"] == 1
+
+
+def test_first_segment_skipped_when_signal_column_absent():
+    """FA-20 reversal, and the one that matters most: FA-17 deliberately left a pre-FA-17
+    matched table (no position_signal column) untouched. Keeping that rule would leave the
+    artifact in every archived table of that era, so FA-20 skips those too. Pinned explicitly
+    rather than left to follow from the code, so the reversal stays visible in the diff.
+    """
+    segment_times, counts = _collect_with_signal(None)
+
+    assert _KEY_AB not in segment_times
+    assert segment_times[_KEY_BC] == pytest.approx([100.0])
+    assert counts["first_segment_skipped"] == 1
+
+
+def test_first_segment_kept_when_skip_disabled():
+    """--keep-first-segment brings the first pair back intact, whatever the signal - so the
+    change stays measurable and reversible from the command line.
+
+    Precisely: it restores pre-FA-20 behaviour for a recording WITH a position signal, and
+    pre-FA-17 behaviour for one without - FA-17 dropped the pair when the signal was "none",
+    and this flag disables the skip outright rather than reinstating that condition. There is
+    deliberately no way to get the old signal-conditional rule back.
+    """
+    for signal in ("none", "sequence", "stop_id", None):
+        segment_times, counts = _collect_with_signal(signal, skip_first_segment=False)
 
         assert segment_times[_KEY_AB] == pytest.approx([100.0]), signal
         assert segment_times[_KEY_BC] == pytest.approx([100.0]), signal
         assert counts["first_segment_skipped"] == 0, signal
 
 
-def test_first_segment_kept_when_signal_column_absent():
-    """A matched table written before FA-17 must behave exactly as it did then."""
-    segment_times, counts = _collect_with_signal(None)
-
-    assert segment_times[_KEY_AB] == pytest.approx([100.0])
-    assert segment_times[_KEY_BC] == pytest.approx([100.0])
-    assert counts["first_segment_skipped"] == 0
-
-
-def test_first_segment_kept_when_skip_disabled():
-    segment_times, counts = _collect_with_signal("none", skip_unwindowed_first_segment=False)
-
-    assert segment_times[_KEY_AB] == pytest.approx([100.0])
-    assert counts["first_segment_skipped"] == 0
-
-
-def test_first_segment_skipped_when_any_row_of_the_trip_is_unwindowed():
-    """Two --positions-dir values can resolve to different signals; the unwindowed
-    positions are already merged into this trip's series, so "any" is the safe test."""
+def test_first_segment_skipped_when_rows_of_the_trip_disagree_on_signal():
+    """Two --positions-dir values can resolve to different signals. FA-17 needed an "any row
+    says none" rule for that; under FA-20 the trip is skipped whatever the rows say."""
     idx, trip_shapes, shapes, stop_locations, rows = _three_stop_inputs()
     matched = _matched_df(rows)
     matched["position_signal"] = ["sequence", "none", "sequence"]
@@ -816,13 +860,13 @@ def test_first_segment_skipped_when_any_row_of_the_trip_is_unwindowed():
     assert counts["first_segment_skipped"] == 1
 
 
-def test_two_stop_trip_contributes_nothing_when_unwindowed():
-    """Its only pair IS the first pair - skipping must not raise or emit a segment."""
+def test_two_stop_trip_contributes_nothing_when_first_segment_skipped():
+    """Its only pair IS the first pair - skipping must not raise or emit a segment. No
+    position_signal column here on purpose: the guard is the empty range(1, 1), not a lookup."""
     idx = _two_stop_static_index()
     stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
     d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
     matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(100), d_b)])
-    matched["position_signal"] = "none"
 
     segment_times, counts = collect_segment_observations(
         matched, idx, {"t1": "shape1"}, {"shape1": _STRAIGHT_LINE}, stop_locations, agency_tz="UTC"
@@ -859,11 +903,15 @@ def _slow_first_segment_inputs(seconds_a_to_b: int):
 
 def _collect_slow(seconds_a_to_b=2500, **kwargs):
     idx, trip_shapes, shapes, stop_locations, matched, d_b = _slow_first_segment_inputs(seconds_a_to_b)
-    # max_bracket_gap_s=None isolates FA-18 from FA-14: the deliberately wide observation
-    # spacing this fixture needs would otherwise be rejected as a bracket gap first.
+    # Two deliberate isolations, both so this block tests FA-18 and nothing else:
+    # - max_bracket_gap_s=None isolates it from FA-14, whose bracket-gap rule would reject this
+    #   fixture's deliberately wide observation spacing before the speed check ever runs;
+    # - skip_first_segment=False isolates it from FA-20, which would otherwise drop A->B - the
+    #   pair this fixture makes slow - without interpolating it at all. FA-18's production job
+    #   since FA-20 is mid-trip, covered on its own by the mid-trip test below.
     segment_times, counts = collect_segment_observations(
         matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC",
-        max_bracket_gap_s=None, **kwargs
+        max_bracket_gap_s=None, skip_first_segment=False, **kwargs
     )
     return segment_times, counts, d_b
 
@@ -910,16 +958,16 @@ def test_stationary_rejection_is_disjoint_from_rejected_seg_time():
     assert counts["rejected_seg_time"] == 0
 
 
-def test_fa17_skip_wins_over_fa18_on_an_unwindowed_stationary_first_pair():
+def test_fa20_skip_wins_over_fa18_on_a_stationary_first_pair():
     """Both mechanisms target the terminus-layover artifact; this locks the division of work.
 
-    An unwindowed trip whose first pair is stationary must be counted as skipped (FA-17,
-    which never attempts the pair) and NOT as a stationary rejection (FA-18, which would
-    have to interpolate it first). Without this, a future reordering could double-count
-    the same artifact in two counters that are supposed to be disjoint.
+    A trip whose first pair is stationary must be counted as skipped (FA-20, which never
+    attempts the pair) and NOT as a stationary rejection (FA-18, which would have to
+    interpolate it first). Without this, a future reordering could double-count the same
+    artifact in two counters that are supposed to be disjoint. Run at production defaults -
+    no position_signal set, since FA-20 no longer consults one.
     """
     idx, trip_shapes, shapes, stop_locations, matched, _d_b = _slow_first_segment_inputs(2500)
-    matched["position_signal"] = "none"
 
     segment_times, counts = collect_segment_observations(
         matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", max_bracket_gap_s=None
@@ -929,3 +977,25 @@ def test_fa17_skip_wins_over_fa18_on_an_unwindowed_stationary_first_pair():
     assert counts["rejected_stationary"] == 0
     assert _KEY_AB not in segment_times
     assert segment_times[_KEY_BC] == pytest.approx([100.0])
+
+
+def test_stationary_mid_trip_pair_is_still_rejected_at_production_defaults():
+    """FA-18's remaining job since FA-20: the first pair is gone before it is interpolated, so
+    what this bound catches is a vehicle standing still LATER in the trip - a mid-route
+    terminus, a driver break, or a layover spilling past stop 2. Nothing else in this block
+    runs at defaults, so without this the production configuration would be untested.
+    """
+    idx, trip_shapes, shapes, stop_locations, _rows = _three_stop_inputs()
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+    d_c = stop_distance_along_shape(0.02, 0.0, _STRAIGHT_LINE)
+    # A->B brisk (and skipped anyway), B->C ~1112 m in 2500 s = ~1.6 km/h.
+    matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(100), d_b), ("t1", _t(2600), d_c)])
+
+    segment_times, counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", max_bracket_gap_s=None
+    )
+
+    assert segment_times == {}
+    assert counts["first_segment_skipped"] == 1
+    assert counts["rejected_stationary"] == 1
+    assert counts["segments_observed"] == 0

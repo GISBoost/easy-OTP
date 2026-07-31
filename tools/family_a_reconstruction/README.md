@@ -143,9 +143,9 @@ Output columns: `trip_id`, `timestamp` (UTC; pandas' default tz-aware format in 
 `distance_along_shape_m`, `perpendicular_dist_m`, `position_signal` (FA-17 — which FA-12 signal
 this directory resolved to: `sequence`, `stop_id`, or `none`; broadcast onto every row of that
 directory, exactly like `recording_date` below, because two `--positions-dir` values can
-legitimately resolve differently. It travels in the table rather than a sidecar file so an
-archived `matched.csv` stays self-describing: re-running `build` on it later cannot silently lose
-the fact that its positions were never windowed), `recording_date` (FA-6) — the calendar date
+legitimately resolve differently. **Diagnostics only since FA-20** — nothing in `build` reads it —
+but it travels in the table rather than a sidecar file so an archived `matched.csv` stays
+self-describing about how its positions were windowed), `recording_date` (FA-6) — the calendar date
 of the recording *session* that observation came from, derived from the **earliest usable
 GTFS-RT `FeedHeader.timestamp` among that `--positions-dir`'s snapshots**, converted to the
 static feed's `agency_timezone` (`agency.txt`, falls back to `Europe/Warsaw` if absent — same
@@ -264,10 +264,14 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
 - `--min-plausible-speed-kmh` (default `2.0`, `0` disables) — **FA-18.** Reject a segment
   observation whose implied average speed falls below this. FA-13's speed check (below) is
   upper-bound only, deliberately so — but what that lets through is a vehicle **standing on a
-  terminus during its layover**, whose wait the interpolation then books as travel time. FA-17
-  removes the worst of this, but only for the first stop pair and only when the recording had no
-  position signal; the same contamination is still measurable in windowed cities, where this bound
-  rejects **10.6%** of `sequence` first pairs and **3.4%** of `stop_id` ones.
+  terminus during its layover**, whose wait the interpolation then books as travel time. When this
+  bound was calibrated, FA-17 removed the worst of it only for the first stop pair and only when
+  the recording had no position signal, and the same contamination was still measurable in windowed
+  cities — this bound rejected **10.6%** of `sequence` first pairs and **3.4%** of `stop_id` ones.
+  **Since FA-20 that is history, not a live division of labour:** every trip's first pair is now
+  dropped before it is interpolated, so what this bound still catches is stationary observations
+  **mid-trip** — a terminus the schedule places mid-route, a driver break, or a layover spilling
+  past stop 2.
   **Calibrated on 823,081 raw segment observations** from 7 city-days spanning all three FA-12
   signal classes (Gdańsk `none`, Łódź + Bucharest `sequence`, Vilnius `stop_id`), measured on real
   shape-polyline distances:
@@ -280,10 +284,12 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   | 2.5 km/h | 35.0% | 0.125% | 280× |
   | 3.0 km/h | 39.8% | 0.215% | 185× |
 
-  "Proxy positives" are first stop pairs of *unwindowed* trips — the population FA-17's own
-  measurement showed to be dominated by layovers, but which still contains legitimately moving
+  "Proxy positives" are first stop pairs of trips with no FA-12 window — the population FA-17's
+  own measurement showed to be dominated by layovers, but which still contains legitimately moving
   vehicles. So the catch column is a lower bound on real precision, **not** a claim that 69% of
-  stopped vehicles slip through. Negatives are mid-trip pairs in windowed cities.
+  stopped vehicles slip through. Negatives are mid-trip pairs in windowed cities. That describes
+  how the threshold was picked; **since FA-20 drops every trip's first pair outright, what this
+  bound still catches is stationary observations mid-trip.**
 
   The default is chosen on **physics, not on the curve**: over the median 472 m segment, 2 km/h
   means **14.2 minutes** to cross a single stop pair. The rejected population's signature confirms
@@ -311,21 +317,70 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   straight-line distances it looked necessary (false positives had a median length of 69 m), but on
   raw observations with real polyline distances that effect disappears (median 342 m) and the guard
   merely cuts the catch from 31.1% to 23.4% while lowering the cost only from 0.063% to 0.058%.
-- `--keep-unwindowed-first-segment` (off by default) — **FA-17.** By default, each trip's **first**
-  stop pair is dropped when the recording carried no FA-12 position signal (`position_signal` is
-  `none`, i.e. the feed publishes neither `current_stop_sequence` nor `stop_id`). Without a window,
-  a vehicle sitting out its layover on the origin terminus keeps projecting onto the first stop, so
-  the interpolated crossing of stop 1 is the moment it *arrived to wait* — and the whole layover
-  ends up inside the first segment's travel time.
-  Measured on **Gdańsk 2026-07-29**, the only monitored city with signal `none`: that pair averages
-  **246 m**, is scheduled at **74 s** (14.0 km/h) and was reconstructed at **477 s** — a median
-  implied speed of **1.8 km/h**, with **34.2%** of them under 1 km/h, i.e. stationary. It alone
-  contributed **+107.6 s of the city's +171.1 s** mean delay. The same measurement at the 8th stop
-  gives 17.8 km/h with 0.1% under 3 km/h, and cities *with* a signal show no such jump (Łódź,
-  `sequence`: +0.2 s; Vilnius, `stop_id`: +36.6 s) — so this is a first-pair, no-window artifact,
-  not a property of the method. Pass this flag to measure the artifact instead of dropping it.
-  No effect on a recording with a position signal, or on a matched table written before FA-17
-  (no `position_signal` column → never skipped).
+- `--keep-first-segment` (off by default) — **FA-20**, generalising FA-17. By default each trip's
+  **first** stop pair is dropped, unconditionally. A vehicle idling on its origin terminus already
+  carries the next trip's `trip_id`, and `interpolate_stop_time` returns the *first* bracketing
+  pair — so the moment it *arrived to wait* is recorded as the moment it crossed stop 1, and the
+  whole layover is booked as travel time on that one pair.
+
+  FA-17 dropped the pair only when the recording carried no FA-12 position signal
+  (`position_signal == "none"`, in practice Gdańsk alone). A nine-city measurement on raw
+  observations (2026-07-29) showed **the signal class does not predict the artifact** — median
+  implied speed of the first pair against mid-trip, km/h:
+
+  | city | FA-12 signal | mid-trip | first pair | under 2 km/h |
+  |---|---|---:|---:|---:|
+  | Rome | `sequence` 100% | 19.06 | **2.46** | 39.9% |
+  | Prague | `sequence` 71.8% | 24.54 | 3.11 | 37.9% |
+  | Boston | `sequence` 93.9% | 20.40 | 4.32 | 22.2% |
+  | Gdańsk | **`none`** | 19.77 | 4.72 | 23.4% |
+  | Szczecin | `sequence` 100% | 20.76 | 5.03 | 20.1% |
+  | Brisbane | `sequence` 100% | 26.80 | 6.76 | 11.1% |
+  | Lisbon | `sequence` 100% | 16.08 | 6.54 | 7.1% |
+  | Vilnius | `stop_id` 100% | 20.67 | 10.57 | 3.4% |
+  | Sofia | `stop_id` 100% | 18.54 | 12.00 | 0.1% |
+  | Łódź | `sequence` 100% | 18.65 | ~18 | ~0% |
+
+  Rome and Szczecin have **full** `sequence` coverage and are among the worst; Sofia has `stop_id`
+  and is nearly clean; Gdańsk — the single city FA-17 was calibrated on — is only fourth. Łódź is
+  the one city with essentially no artifact at all, and it is `sequence` too. The FA-17 condition
+  was a coincidence of its sample.
+
+  The first pair is also the only one that can carry genuine **departure lateness**, since
+  `rebuild_stop_times` anchors each trip on its *scheduled* first departure. Measured on the same
+  recordings that costs little: median terminus layover **120–502 s** per city against a median
+  departure lateness of **−16 to +15 s**, and pooled observations are reduced to a P50 per segment
+  key anyway.
+
+  **What it costs and what it does to the numbers.** Dropping the pair removes **0.2–2.5% of
+  segment observations** depending on the city (measured across 51 city-days: Szczecin −0.19%,
+  Łódź −0.50%, Rome −1.13%, Vilnius −1.95%, Prague −2.52%; Gdańsk exactly 0%, since FA-17 already
+  dropped its pairs). The effect on reported delay is much larger than that share suggests,
+  because observations are pooled per segment key and then accumulated along the trip: median
+  mean delay falls in eleven of twelve cities, and **Rome, Boston and Lisbon cross below zero**
+  (Rome 10.3 → −28.6 s, Boston 56.3 → −4.4 s, Lisbon 2.7 → −17.8 s). Those three already had a
+  negative steady-state per-segment increment before the change (−2.1, −1.3, −0.8 s per segment),
+  so the sign is consistent with their own schedules being padded — but a feed that now reports
+  vehicles as *early* is a publishing decision, not just a technical one. Łódź, which has no
+  artifact to remove, moves +0.0 s — the control that says the rule is not simply shaving delay
+  off everything.
+
+  Two limits on all the numbers above, carried from the calibration rather than re-derived. The
+  departure-lateness figures come only from trips with an **observable dwell**, and that coverage
+  ranges from 71% (Rome) to 10% (Szczecin), so Szczecin's lateness is weakly representative. And
+  the whole calibration is **27–29 July, i.e. school holidays** — service is thinner and terminus
+  layovers plausibly longer than in term time. Re-measure on term-time data before treating any
+  of it as settled.
+
+  Pass this flag to measure the artifact instead of dropping it — it disables the skip entirely,
+  including for the `none` recordings FA-17 would still have dropped. Note FA-20 **reverses**
+  FA-17's backward-compatibility rule on purpose: a matched table written before FA-17 (no
+  `position_signal` column) is now skipped as well, rather than left alone.
+
+  One consequence worth knowing before you point this at a new feed: a trip with only **two
+  stops** now contributes nothing at all, because its only pair is the first one. A feed made
+  entirely of two-stop trips (shuttles, some rail feeds) will build a realized GTFS identical to
+  its schedule, and the only signal will be FA-15's `--min-corrected-route-share` warning.
 - `--min-corrected-route-share` (default `0.40`) — **FA-15.** Warn when fewer than this fraction
   of the routes actually *observed* in the matched table end up with any corrected segment — the
   signature of a build that is mostly just the static schedule and will read as near-perfect
@@ -376,9 +431,10 @@ travel time per segment, P85 = pessimistic/85th-percentile). The command prints 
 agency timezone (`Agency timezone resolved: ...`), counts for trips processed/skipped, segments
 observed/corrected/dropped, interpolation gaps, missing stop locations, segments rejected for an
 implausible time or speed (FA-13 safety net), observations rejected as stationary (FA-18), stop
-times whose blank schedule was interpolated (FA-19), and — when it applies — first stop pairs
-skipped for want of a position signal (FA-17). Use these to judge how much of the recording
-actually corrected the schedule versus fell back to planned times.
+times whose blank schedule was interpolated (FA-19), and first stop pairs skipped as terminus
+layover (FA-20 — printed on every run, including the zero under `--keep-first-segment`). Use these
+to judge how much of the recording actually corrected the schedule versus fell back to planned
+times.
 
 **Blank scheduled times are interpolated, not read as midnight (FA-19).** GTFS only requires
 `arrival_time`/`departure_time` at timepoints; leaving them blank in between is legal and the

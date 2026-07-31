@@ -54,9 +54,9 @@ def test_build_defaults():
     assert args.min_corrected_route_share == DEFAULT_MIN_CORRECTED_ROUTE_SHARE
     assert args.fail_on_low_yield is False
     assert args.diagnostics_csv is None
-    # Same reasoning for FA-17/FA-18: hand-built args in every other _cmd_build test mean
+    # Same reasoning for FA-20/FA-18: hand-built args in every other _cmd_build test mean
     # build_parser is the only thing that can catch a renamed or dropped flag here.
-    assert args.keep_unwindowed_first_segment is False
+    assert args.keep_first_segment is False
     assert args.min_plausible_speed_kmh == DEFAULT_MIN_PLAUSIBLE_SPEED_KMH
 
 
@@ -881,6 +881,11 @@ def test_cmd_match_duplicate_positions_dir_detected_via_different_relative_paths
 # ---------------------------------------------------------------------------
 
 
+# The polyline every _cmd_build fixture below writes into shapes.txt: A at 0.0, B at ~1112 m,
+# C at ~2224 m. Shared so distance lookups in the tests cannot drift from the feed they read.
+_BUILD_SHAPE = [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0)]
+
+
 def _make_multi_trip_build_static_zip(tmp_path, trip_ids):
     """Same shape as _make_build_static_zip but with several trips on one route (FA-16).
 
@@ -892,11 +897,12 @@ def _make_multi_trip_build_static_zip(tmp_path, trip_ids):
     path = tmp_path / "gtfs_build_multi.zip"
     trips = "".join(f"{t},R1,0,shape1,svc1\n" for t in trip_ids)
     stop_times = "".join(
-        f"{t},08:00:00,08:00:00,A,1\n{t},08:10:00,08:10:00,B,2\n" for t in trip_ids
+        f"{t},08:00:00,08:00:00,A,1\n{t},08:10:00,08:10:00,B,2\n{t},08:20:00,08:20:00,C,3\n"
+        for t in trip_ids
     )
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("trips.txt", "trip_id,route_id,direction_id,shape_id,service_id\n" + trips)
-        zf.writestr("stops.txt", "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.01,0.0\n")
+        zf.writestr("stops.txt", "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.01,0.0\nC,0.02,0.0\n")
         zf.writestr(
             "stop_times.txt",
             "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n" + stop_times,
@@ -905,7 +911,8 @@ def _make_multi_trip_build_static_zip(tmp_path, trip_ids):
             "shapes.txt",
             "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
             "shape1,0.0,0.0,0\n"
-            "shape1,0.01,0.0,1\n",
+            "shape1,0.01,0.0,1\n"
+            "shape1,0.02,0.0,2\n",
         )
         zf.writestr(
             "calendar.txt",
@@ -916,9 +923,12 @@ def _make_multi_trip_build_static_zip(tmp_path, trip_ids):
     return path
 
 
-def _write_multi_trip_matched(path, trip_ids, *, d_b):
+def _write_multi_trip_matched(path, trip_ids, *, d_b, d_c):
     rows = "".join(
-        f"{t},2026-01-01T07:00:00Z,0.0\n{t},2026-01-01T07:04:00Z,{d_b}\n" for t in trip_ids
+        f"{t},2026-01-01T07:00:00Z,0.0\n"
+        f"{t},2026-01-01T07:04:00Z,{d_b}\n"
+        f"{t},2026-01-01T07:08:00Z,{d_c}\n"
+        for t in trip_ids
     )
     path.write_text(
         "trip_id,timestamp,distance_along_shape_m\n" + rows, encoding="utf-8"
@@ -929,6 +939,11 @@ def _make_build_static_zip(tmp_path, *, trip_id="t1"):
     # service_id + calendar.txt (svc1 active weekdays, 2026-01-01 is a
     # Thursday) so FA-5's day-type gating resolves this trip to a non-empty
     # day_type set instead of degenerating into "always a gap".
+    #
+    # Three stops, not two (FA-20): the first stop pair of every trip is dropped before it is
+    # interpolated, so a 2-stop trip can never produce a correction and every _cmd_build test
+    # here would have to opt out of the production default to observe anything. With A->B->C
+    # the skip stays live and B->C is the pair these tests measure.
     #
     # *trip_id* (FA-16) is parameterised so the same fixture covers a feed whose trip_ids are
     # purely numeric (Boston: 91.6% of them) or numeric with a leading zero - both cases where
@@ -942,19 +957,21 @@ def _make_build_static_zip(tmp_path, *, trip_id="t1"):
         )
         zf.writestr(
             "stops.txt",
-            "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.01,0.0\n",
+            "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.01,0.0\nC,0.02,0.0\n",
         )
         zf.writestr(
             "stop_times.txt",
             "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
             f"{trip_id},08:00:00,08:00:00,A,1\n"
-            f"{trip_id},08:10:00,08:10:00,B,2\n",
+            f"{trip_id},08:10:00,08:10:00,B,2\n"
+            f"{trip_id},08:20:00,08:20:00,C,3\n",
         )
         zf.writestr(
             "shapes.txt",
             "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
             "shape1,0.0,0.0,0\n"
-            "shape1,0.01,0.0,1\n",
+            "shape1,0.01,0.0,1\n"
+            "shape1,0.02,0.0,2\n",
         )
         zf.writestr(
             "calendar.txt",
@@ -979,8 +996,8 @@ def _make_build_args(tmp_path, **overrides):
         fail_on_low_yield = False
         # FA-16 default, likewise.
         max_unknown_trip_share = DEFAULT_MAX_UNKNOWN_TRIP_SHARE
-        # FA-17 default, likewise: the skip is ON, so this opt-out stays False.
-        keep_unwindowed_first_segment = False
+        # FA-20 default, likewise: the skip is ON for every trip, so this opt-out stays False.
+        keep_first_segment = False
         # FA-18 default, likewise (km/h; 0 would disable the lower speed bound).
         min_plausible_speed_kmh = 2.0
 
@@ -994,16 +1011,19 @@ def test_cmd_build_end_to_end_writes_both_zips(tmp_path, capsys):
     from family_a.matcher import project_point_to_polyline
 
     gtfs = _make_build_static_zip(tmp_path)
-    d_b = project_point_to_polyline(0.01, 0.0, [(0.0, 0.0), (0.01, 0.0)])[0]
+    d_b = project_point_to_polyline(0.01, 0.0, _BUILD_SHAPE)[0]
+    d_c = project_point_to_polyline(0.02, 0.0, _BUILD_SHAPE)[0]
 
     matched_path = tmp_path / "matched.csv"
     # 07:00:00 UTC = 08:00:00 local Europe/Warsaw (UTC+1, no DST in January) -
     # same bucket as stop_times.txt's scheduled 08:00:00/08:10:00, so this
     # keeps exercising an actual correction post-FA-5, not just a gap.
+    # A->B is dropped by FA-20, so B->C (4 minutes here) is the corrected pair.
     matched_path.write_text(
         "trip_id,timestamp,distance_along_shape_m,perpendicular_dist_m\n"
         f"t1,2026-01-01T07:00:00Z,0.0,0.0\n"
-        f"t1,2026-01-01T07:00:50Z,{d_b},0.0\n",
+        f"t1,2026-01-01T07:04:00Z,{d_b},0.0\n"
+        f"t1,2026-01-01T07:08:00Z,{d_c},0.0\n",
         encoding="utf-8",
     )
 
@@ -1028,25 +1048,33 @@ def test_cmd_build_end_to_end_writes_both_zips(tmp_path, capsys):
     assert "interpolation gaps" in captured.out
     assert "rejected (implausible segment time or speed, FA-13)" in captured.out
     assert "rejected as stationary (implied speed below 2 km/h, FA-18)" in captured.out
+    # FA-20 prints this on every run, including the zero - re-conditioning it on the counter
+    # (as FA-17 did) or losing the line to a typo must not pass. The opt-out wording is pinned
+    # in test_cmd_build_keep_first_segment_reports_the_skip_as_disabled below.
+    assert "first stop pair skipped, every trip (FA-20): 1 trips" in captured.out
     assert "Segments corrected: 1" in captured.out
     assert "P50 output written to" in captured.out
     assert "P85 output written to" in captured.out
 
 
 def _write_stationary_matched(tmp_path):
-    """A vehicle that takes 40 minutes to cover the ~1112 m first stop pair (~1.7 km/h).
+    """A vehicle that takes 40 minutes to cover the ~1112 m B->C stop pair (~1.7 km/h).
 
     Below FA-18's 2 km/h bound but above FA-13's 2h upper limit on seg_time, so it lands in
-    rejected_stationary rather than rejected_seg_time.
+    rejected_stationary rather than rejected_seg_time. The stationary pair is B->C rather than
+    A->B because FA-20 drops A->B before it is ever interpolated - putting the artifact there
+    would test the skip, not the speed bound.
     """
     from family_a.matcher import project_point_to_polyline
 
-    d_b = project_point_to_polyline(0.01, 0.0, [(0.0, 0.0), (0.01, 0.0)])[0]
+    d_b = project_point_to_polyline(0.01, 0.0, _BUILD_SHAPE)[0]
+    d_c = project_point_to_polyline(0.02, 0.0, _BUILD_SHAPE)[0]
     matched_path = tmp_path / "matched_slow.csv"
     matched_path.write_text(
         "trip_id,timestamp,distance_along_shape_m,perpendicular_dist_m\n"
         "t1,2026-01-01T07:00:00Z,0.0,0.0\n"
-        f"t1,2026-01-01T07:40:00Z,{d_b},0.0\n",
+        f"t1,2026-01-01T07:04:00Z,{d_b},0.0\n"
+        f"t1,2026-01-01T07:44:00Z,{d_c},0.0\n",
         encoding="utf-8",
     )
     return matched_path
@@ -1069,6 +1097,40 @@ def test_cmd_build_rejects_stationary_observation_end_to_end(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "rejected as stationary (implied speed below 2 km/h, FA-18): 1" in captured.out
     assert "Segments corrected: 0" in captured.out
+
+
+def test_cmd_build_keep_first_segment_reports_the_skip_as_disabled(tmp_path, capsys):
+    """The opt-out branch of FA-20's diagnostics line.
+
+    With the skip off the counter is necessarily 0, so the default text - "every trip ... pass
+    --keep-first-segment" - would both contradict itself and advertise a flag already in force.
+    Pinning both branches is what makes the unconditional print worth having.
+    """
+    from family_a.matcher import project_point_to_polyline
+
+    gtfs = _make_build_static_zip(tmp_path)
+    d_b = project_point_to_polyline(0.01, 0.0, _BUILD_SHAPE)[0]
+    d_c = project_point_to_polyline(0.02, 0.0, _BUILD_SHAPE)[0]
+    matched_path = tmp_path / "matched.csv"
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m\n"
+        "t1,2026-01-01T07:00:00Z,0.0\n"
+        f"t1,2026-01-01T07:04:00Z,{d_b}\n"
+        f"t1,2026-01-01T07:08:00Z,{d_c}\n",
+        encoding="utf-8",
+    )
+    args = _make_build_args(
+        tmp_path, matched=str(matched_path), static=str(gtfs),
+        out_prefix=str(tmp_path / "out"), keep_first_segment=True,
+    )
+
+    assert _cmd_build(args) == 0
+
+    captured = capsys.readouterr()
+    assert "skip disabled by --keep-first-segment" in captured.out
+    assert "every trip (FA-20)" not in captured.out
+    # Both pairs measured, not just B->C - the flag has to restore the pair, not only the wording.
+    assert "Segments corrected: 2" in captured.out
 
 
 def test_cmd_build_min_plausible_speed_zero_disables_the_check(tmp_path, capsys):
@@ -1096,14 +1158,14 @@ def _make_build_static_zip_with_shape_dist_traveled(tmp_path):
     unit tests (which call evaluate_shape_trust/evaluate_trip_trust directly,
     bypassing cli.py's wiring entirely).
 
-    Stop B's shape_dist_traveled (1112.0) is deliberately set to HALFWAY along the
-    shape, not to B's own true geometric position (which sits at the far end,
-    ~2224m) - this makes the trusted-anchor value and the geometric-projection
-    value clearly distinguishable in the resulting corrected schedule, so a bug
-    that silently fell back to geometric anchoring (e.g. cli.py passing
-    evaluate_trip_trust's shape_cumulative_dist/shape_scale_factor arguments in
-    the wrong order) would be caught by the timing assertion below, not just by
-    the absence of a crash.
+    Stops B and C both carry a shape_dist_traveled at HALF their own true geometric position
+    along the shape (B: 556.0 against ~1112 m, C: 1112.0 against ~2224 m) - this makes the
+    trusted-anchor value and the geometric-projection value clearly distinguishable in the
+    resulting corrected schedule, so a bug that silently fell back to geometric anchoring (e.g.
+    cli.py passing evaluate_trip_trust's shape_cumulative_dist/shape_scale_factor arguments in
+    the wrong order) would be caught by the timing assertion below, not just by the absence of
+    a crash. Three stops rather than two because FA-20 drops A->B unconditionally, so the pair
+    that has to carry the distinction is B->C.
     """
     path = tmp_path / "gtfs_build_shape_dist.zip"
     with zipfile.ZipFile(path, "w") as zf:
@@ -1113,13 +1175,14 @@ def _make_build_static_zip_with_shape_dist_traveled(tmp_path):
         )
         zf.writestr(
             "stops.txt",
-            "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.02,0.0\n",
+            "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.01,0.0\nC,0.02,0.0\n",
         )
         zf.writestr(
             "stop_times.txt",
             "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\n"
             "t1,08:00:00,08:00:00,A,1,0.0\n"
-            "t1,08:10:00,08:10:00,B,2,1112.0\n",
+            "t1,08:10:00,08:10:00,B,2,556.0\n"
+            "t1,08:20:00,08:20:00,C,3,1112.0\n",
         )
         zf.writestr(
             "shapes.txt",
@@ -1141,19 +1204,19 @@ def test_cmd_build_uses_trusted_shape_dist_traveled_end_to_end(tmp_path, capsys)
     gtfs = _make_build_static_zip_with_shape_dist_traveled(tmp_path)
 
     matched_path = tmp_path / "matched.csv"
-    # 07:00 UTC = 08:00 local Europe/Warsaw (same alignment as the plain
-    # end-to-end test above). Positions bracket the trusted B distance
-    # (1112.0, at 07:01:00) BEFORE the geometric B distance (~2224.0, at
-    # 07:02:00) - if the trusted value is used, B's corrected travel time is
-    # 60s; if a bug silently fell back to geometric anchoring, it would be
-    # 120s. Timings (vs. an earlier 30s/60s version) are chosen to keep the
-    # implied speed under FA-13's _MAX_PLAUSIBLE_SPEED_MPS (100 km/h ~= 27.78 m/s) - both the
-    # trusted and geometric distances imply ~18.5 m/s here.
+    # 07:00 UTC = 08:00 local Europe/Warsaw (same alignment as the plain end-to-end test above).
+    # The measured pair is B->C (FA-20 drops A->B). Positions bracket the TRUSTED distances of B
+    # and C (556.0 at 07:01:00, 1112.0 at 07:02:00 - 60s apart) before their GEOMETRIC ones
+    # (~1112 at 07:02:00 and ~2224 at 07:04:00 - 120s apart), so a silent fallback to geometric
+    # anchoring doubles B->C's travel time and moves C's corrected arrival by a whole minute.
+    # Timings keep the implied speed under FA-13's _MAX_PLAUSIBLE_SPEED_MPS (100 km/h ~= 27.78
+    # m/s) and over FA-18's 2 km/h floor on both paths (~9.3 m/s each).
     matched_path.write_text(
         "trip_id,timestamp,distance_along_shape_m,perpendicular_dist_m\n"
         "t1,2026-01-01T07:00:00Z,0.0,0.0\n"
-        "t1,2026-01-01T07:01:00Z,1112.0,0.0\n"
-        "t1,2026-01-01T07:02:00Z,2224.0,0.0\n",
+        "t1,2026-01-01T07:01:00Z,556.0,0.0\n"
+        "t1,2026-01-01T07:02:00Z,1112.0,0.0\n"
+        "t1,2026-01-01T07:04:00Z,2224.0,0.0\n",
         encoding="utf-8",
     )
 
@@ -1168,8 +1231,9 @@ def test_cmd_build_uses_trusted_shape_dist_traveled_end_to_end(tmp_path, capsys)
 
     with zipfile.ZipFile(f"{out_prefix}_p50.zip") as zf:
         stop_times_content = zf.read("stop_times.txt").decode("utf-8")
-    b_row = next(line for line in stop_times_content.splitlines() if ",B," in line)
-    assert "08:01:00" in b_row
+    # A->B is a gap (FA-20), so B keeps its scheduled 08:10:00 and C = 08:10:00 + observed B->C.
+    c_row = next(line for line in stop_times_content.splitlines() if ",C," in line)
+    assert "08:11:00" in c_row
 
 
 def test_cmd_build_reads_matched_csv_produced_by_cmd_match_with_recording_date(tmp_path, capsys):
@@ -1258,15 +1322,14 @@ def test_cmd_build_reads_matched_csv_produced_by_cmd_match_with_recording_date(t
     assert "position_signal" in header
 
     out_prefix = str(tmp_path / "out_via_match")
-    # keep_unwindowed_first_segment: this fixture's positions carry no
-    # current_stop_sequence/stop_id, so match resolves signal "none", and its trip has exactly
-    # one stop pair - which IS the first pair. Under FA-17's default that pair is dropped and
-    # the correction this test exists to observe never happens. Opting out keeps the test on
-    # its own subject (FA-6's recording_date surviving the CSV round trip); FA-17's own
-    # behaviour is covered in test_segment_stats.py.
+    # keep_first_segment: this fixture's trip has exactly one stop pair - which IS the first
+    # pair. Under FA-20's default that pair is dropped and the correction this test exists to
+    # observe never happens. Opting out keeps the test on its own subject (FA-6's
+    # recording_date surviving the CSV round trip); FA-20's own behaviour is covered in
+    # test_segment_stats.py.
     build_args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs_path), out_prefix=out_prefix,
-        keep_unwindowed_first_segment=True,
+        keep_first_segment=True,
     )
     result = _cmd_build(build_args)
 
@@ -1291,7 +1354,8 @@ def test_cmd_build_reports_gap_when_no_observations(tmp_path, capsys):
     assert result == 0
     captured = capsys.readouterr()
     assert "Segments corrected: 0" in captured.out
-    assert "Segments as gap across the full static schedule (kept scheduled time): 1" in captured.out
+    # The fixture's trip is A->B->C, so an empty matched table leaves both stop pairs as gaps.
+    assert "Segments as gap across the full static schedule (kept scheduled time): 2" in captured.out
 
 
 def test_cmd_build_matched_file_not_found_returns_1(tmp_path, capsys):
@@ -1571,14 +1635,16 @@ def test_cmd_build_healthy_run_emits_no_warning_and_writes_diagnostics(tmp_path,
     from family_a.matcher import project_point_to_polyline
 
     gtfs = _make_build_static_zip(tmp_path)
-    d_b = project_point_to_polyline(0.01, 0.0, [(0.0, 0.0), (0.01, 0.0)])[0]
+    d_b = project_point_to_polyline(0.01, 0.0, _BUILD_SHAPE)[0]
+    d_c = project_point_to_polyline(0.02, 0.0, _BUILD_SHAPE)[0]
     matched_path = tmp_path / "matched.csv"
     # 4 minutes apart, deliberately under FA-14's 300s bracket-gap limit - a wider pair would be
     # rejected before it could ever become a correction.
     matched_path.write_text(
         "trip_id,timestamp,distance_along_shape_m\n"
         "t1,2026-01-01T07:00:00Z,0.0\n"
-        f"t1,2026-01-01T07:04:00Z,{d_b}\n",
+        f"t1,2026-01-01T07:04:00Z,{d_b}\n"
+        f"t1,2026-01-01T07:08:00Z,{d_c}\n",
         encoding="utf-8",
     )
     diag = tmp_path / "diag_build.csv"
@@ -1680,16 +1746,19 @@ def test_cmd_match_reports_no_trip_id_separately_so_the_figures_reconcile(tmp_pa
 # ---------------------------------------------------------------------------
 
 
-def _write_two_point_matched(path, trip_id, *, d_b):
-    """A minimal matched table: one trip crossing stop A then stop B, 4 minutes apart.
+def _write_three_point_matched(path, trip_id, *, d_b, d_c):
+    """A minimal matched table: one trip crossing stops A, B and C, 4 minutes apart.
 
     4 minutes is deliberately inside FA-14's 300s bracket-gap limit - a wider pair would be
     rejected before it could ever become a correction, masking what these tests measure.
+    Three points rather than two because FA-20 drops A->B, so B->C is the pair that survives
+    into the correction these tests assert on.
     """
     path.write_text(
         "trip_id,timestamp,distance_along_shape_m\n"
         f"{trip_id},2026-01-01T07:00:00Z,0.0\n"
-        f"{trip_id},2026-01-01T07:04:00Z,{d_b}\n",
+        f"{trip_id},2026-01-01T07:04:00Z,{d_b}\n"
+        f"{trip_id},2026-01-01T07:08:00Z,{d_c}\n",
         encoding="utf-8",
     )
 
@@ -1697,7 +1766,13 @@ def _write_two_point_matched(path, trip_id, *, d_b):
 def _d_b():
     from family_a.matcher import project_point_to_polyline
 
-    return project_point_to_polyline(0.01, 0.0, [(0.0, 0.0), (0.01, 0.0)])[0]
+    return project_point_to_polyline(0.01, 0.0, _BUILD_SHAPE)[0]
+
+
+def _d_c():
+    from family_a.matcher import project_point_to_polyline
+
+    return project_point_to_polyline(0.02, 0.0, _BUILD_SHAPE)[0]
 
 
 def test_cmd_build_resolves_purely_numeric_trip_ids(tmp_path, capsys):
@@ -1710,7 +1785,7 @@ def test_cmd_build_resolves_purely_numeric_trip_ids(tmp_path, capsys):
     """
     gtfs = _make_build_static_zip(tmp_path, trip_id="76132151")
     matched_path = tmp_path / "matched.csv"
-    _write_two_point_matched(matched_path, "76132151", d_b=_d_b())
+    _write_three_point_matched(matched_path, "76132151", d_b=_d_b(), d_c=_d_c())
     args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
     )
@@ -1733,7 +1808,7 @@ def test_cmd_build_preserves_leading_zero_trip_ids(tmp_path, capsys):
     """
     gtfs = _make_build_static_zip(tmp_path, trip_id="007")
     matched_path = tmp_path / "matched.csv"
-    _write_two_point_matched(matched_path, "007", d_b=_d_b())
+    _write_three_point_matched(matched_path, "007", d_b=_d_b(), d_c=_d_c())
     args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
     )
@@ -1749,11 +1824,12 @@ def test_cmd_build_numeric_trip_ids_round_trip_through_parquet(tmp_path, capsys)
     matched_path = tmp_path / "matched.parquet"
     pd.DataFrame(
         {
-            "trip_id": ["76132151", "76132151"],
+            "trip_id": ["76132151", "76132151", "76132151"],
             "timestamp": pd.to_datetime(
-                ["2026-01-01T07:00:00Z", "2026-01-01T07:04:00Z"], utc=True
+                ["2026-01-01T07:00:00Z", "2026-01-01T07:04:00Z", "2026-01-01T07:08:00Z"],
+                utc=True,
             ),
-            "distance_along_shape_m": [0.0, _d_b()],
+            "distance_along_shape_m": [0.0, _d_b(), _d_c()],
         }
     ).to_parquet(matched_path)
     args = _make_build_args(
@@ -1792,7 +1868,7 @@ def test_cmd_build_warns_when_matched_table_does_not_fit_the_static(tmp_path, ca
     """
     gtfs = _make_build_static_zip(tmp_path, trip_id="t1")
     matched_path = tmp_path / "matched.csv"
-    _write_two_point_matched(matched_path, "trip_from_another_publication", d_b=_d_b())
+    _write_three_point_matched(matched_path, "trip_from_another_publication", d_b=_d_b(), d_c=_d_c())
     args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
     )
@@ -1808,7 +1884,7 @@ def test_cmd_build_no_input_fit_warning_when_the_pair_matches(tmp_path, capsys):
     """Guards against a false alarm, not just against a missed one."""
     gtfs = _make_build_static_zip(tmp_path, trip_id="t1")
     matched_path = tmp_path / "matched.csv"
-    _write_two_point_matched(matched_path, "t1", d_b=_d_b())
+    _write_three_point_matched(matched_path, "t1", d_b=_d_b(), d_c=_d_c())
     args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
     )
@@ -1823,7 +1899,7 @@ def test_cmd_build_no_input_fit_warning_when_the_pair_matches(tmp_path, capsys):
 def test_cmd_build_input_mismatch_counts_towards_fail_on_low_yield(tmp_path):
     gtfs = _make_build_static_zip(tmp_path, trip_id="t1")
     matched_path = tmp_path / "matched.csv"
-    _write_two_point_matched(matched_path, "trip_from_another_publication", d_b=_d_b())
+    _write_three_point_matched(matched_path, "trip_from_another_publication", d_b=_d_b(), d_c=_d_c())
     out_prefix = str(tmp_path / "out")
     args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs),
@@ -1849,7 +1925,7 @@ def test_cmd_build_input_fit_warns_in_the_middle_of_the_range_where_fa15_stays_s
     known = ["t1", "t2", "t3", "t4"]
     gtfs = _make_multi_trip_build_static_zip(tmp_path, known)
     matched_path = tmp_path / "matched.csv"
-    _write_multi_trip_matched(matched_path, known + ["ghost1", "ghost2"], d_b=_d_b())
+    _write_multi_trip_matched(matched_path, known + ["ghost1", "ghost2"], d_b=_d_b(), d_c=_d_c())
     args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=str(tmp_path / "out")
     )
@@ -1869,7 +1945,7 @@ def test_cmd_build_input_fit_silent_just_below_the_threshold(tmp_path, capsys):
     known = ["t1", "t2", "t3", "t4", "t5"]
     gtfs = _make_multi_trip_build_static_zip(tmp_path, known)
     matched_path = tmp_path / "matched.csv"
-    _write_multi_trip_matched(matched_path, known + ["ghost1"], d_b=_d_b())
+    _write_multi_trip_matched(matched_path, known + ["ghost1"], d_b=_d_b(), d_c=_d_c())
     args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs),
         out_prefix=str(tmp_path / "out"), fail_on_low_yield=True,
@@ -1887,7 +1963,7 @@ def test_cmd_build_input_mismatch_alone_drives_fail_on_low_yield(tmp_path, capsy
     known = ["t1", "t2", "t3", "t4"]
     gtfs = _make_multi_trip_build_static_zip(tmp_path, known)
     matched_path = tmp_path / "matched.csv"
-    _write_multi_trip_matched(matched_path, known + ["ghost1", "ghost2"], d_b=_d_b())
+    _write_multi_trip_matched(matched_path, known + ["ghost1", "ghost2"], d_b=_d_b(), d_c=_d_c())
     out_prefix = str(tmp_path / "out")
     args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs),
@@ -1905,7 +1981,7 @@ def test_cmd_build_input_fit_threshold_is_configurable(tmp_path, capsys):
     known = ["t1", "t2", "t3", "t4"]
     gtfs = _make_multi_trip_build_static_zip(tmp_path, known)
     matched_path = tmp_path / "matched.csv"
-    _write_multi_trip_matched(matched_path, known + ["ghost1", "ghost2"], d_b=_d_b())
+    _write_multi_trip_matched(matched_path, known + ["ghost1", "ghost2"], d_b=_d_b(), d_c=_d_c())
     args = _make_build_args(
         tmp_path, matched=str(matched_path), static=str(gtfs),
         out_prefix=str(tmp_path / "out"), max_unknown_trip_share=0.5,

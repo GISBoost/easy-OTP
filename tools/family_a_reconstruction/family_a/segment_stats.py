@@ -61,8 +61,11 @@ _MAX_PLAUSIBLE_SPEED_MPS = 100.0 / 3.6  # 100 km/h ~= 27.78 m/s
 #
 # Calibrated 2026-07-30 on 823,081 RAW segment observations from gtfs-manual-test/raw_snapshots -
 # 7 city-days covering all three FA-12 position-signal classes (Gdansk 07-21/07-22 "none", Lodz
-# 07-19/07-21 + Bucharest 07-21 "sequence", Vilnius 07-19/07-21 "stop_id"). Positives = first
-# pairs of unwindowed trips (2,728); negatives = mid-trip pairs in windowed cities (637,196):
+# 07-19/07-21 + Bucharest 07-21 "sequence", Vilnius 07-19/07-21 "stop_id"). The positive class of
+# that calibration was "first pairs of trips with no FA-12 window" (2,728) simply because those
+# were the pairs FA-17 had already shown to be layover-dominated; negatives = mid-trip pairs in
+# windowed cities (637,196). It describes how the number was picked, not a rule that still runs -
+# FA-20 removed the signal condition entirely (see collect_segment_observations' docstring):
 #
 #     threshold   caught (bad)   lost (good)   discrimination
 #       1.0 km/h        19.0%        0.005%          4025x
@@ -71,7 +74,7 @@ _MAX_PLAUSIBLE_SPEED_MPS = 100.0 / 3.6  # 100 km/h ~= 27.78 m/s
 #       2.5 km/h        35.0%        0.125%           280x
 #       3.0 km/h        39.8%        0.215%           185x
 #
-# "Positives" is a proxy, not a set of confirmed stationary vehicles - it is the population
+# "Positives" is a proxy, not a set of confirmed stationary vehicles - it was the population
 # FA-17's own measurement showed to be dominated by layovers, but it also contains legitimately
 # moving trips, so the catch column is a lower bound on real-world precision rather than a
 # "69% of stopped vehicles get through" figure.
@@ -91,9 +94,13 @@ _MAX_PLAUSIBLE_SPEED_MPS = 100.0 / 3.6  # 100 km/h ~= 27.78 m/s
 # shape-polyline distances that effect disappears (median 342 m), and the guard then cuts the
 # catch from 31.1% to 23.4% while lowering the cost only from 0.063% to 0.058%.
 #
-# Complements FA-17 rather than duplicating it: FA-17 drops the first pair only when the signal
-# is "none", which leaves the same contamination untouched in windowed cities. Measured there,
-# this bound rejects 10.6% of "sequence" first pairs and 3.4% of "stop_id" ones.
+# Division of labour, as of FA-20: the first stop pair of every trip is now dropped before it is
+# ever interpolated, so this bound no longer sees the pairs it was calibrated on. What it still
+# does - and the only reason it is not redundant - is catch stationary observations MID-TRIP: a
+# vehicle held at a terminus that the schedule places mid-route, a driver break, or a layover that
+# spills past stop 2. The 10.6% of "sequence" first pairs and 3.4% of "stop_id" ones it was
+# measured to reject are historical evidence that the artifact reached beyond signal "none"; they
+# are not work this bound is doing today.
 #
 # Second-order effect worth knowing about: this filter drops individual OBSERVATIONS, so a
 # segment key that loses enough of them can fall under --min-observations-per-segment and
@@ -122,7 +129,7 @@ def collect_segment_observations(
     trusted_stop_dist: dict[tuple[str, int], float] | None = None,
     backward_tolerance_m: float = DEFAULT_BACKWARD_TOLERANCE_M,
     max_bracket_gap_s: float | None = DEFAULT_MAX_BRACKET_GAP_S,
-    skip_unwindowed_first_segment: bool = True,
+    skip_first_segment: bool = True,
     min_plausible_speed_mps: float | None = _MIN_PLAUSIBLE_SPEED_MPS,
 ) -> tuple[dict[SegmentKey, list[float]], dict[str, int]]:
     """For each trip's matched position series, interpolate every consecutive
@@ -190,10 +197,12 @@ def collect_segment_observations(
       exceeds _MAX_PLAUSIBLE_SEG_TIME_S (2h) is counted here, not there, so
       the very slowest cases (below ~0.24 km/h over a median 472 m segment)
       systematically bypass the counter built to count them.
-    - first_segment_skipped (FA-17): trips whose FIRST stop pair was not even
-      attempted because the recording carried no FA-12 position signal - see
-      *skip_unwindowed_first_segment* below. Counted once per trip group, and
-      those pairs contribute to none of the counters above.
+    - first_segment_skipped (FA-17, generalised in FA-20): trips whose FIRST
+      stop pair was not even attempted - see *skip_first_segment* below. Counted
+      once per trip group, and those pairs contribute to none of the counters
+      above. Since FA-20 the skip is unconditional, so with the default this
+      equals trips_processed; it stays a counter rather than becoming implicit
+      because it is what makes the cost of the rule visible in a build log.
     - rejected_stationary (FA-18): interpolation succeeded on both stops but the
       implied average speed was below *min_plausible_speed_mps* - a vehicle
       standing still, not travelling slowly. Kept deliberately SEPARATE from
@@ -207,32 +216,51 @@ def collect_segment_observations(
     own comment for the calibration behind the number - 823,081 raw observations
     across 7 city-days - including why no minimum-distance guard accompanies it.
 
-    *skip_unwindowed_first_segment* (FA-17, default on): drop the first stop
-    pair of every trip whose matched rows carry position_signal == "none".
+    *skip_first_segment* (FA-17, made unconditional in FA-20, default on): drop
+    the first stop pair of EVERY trip, whatever its position_signal, and whether
+    or not the matched table has that column at all.
 
-    Why only the first pair, and only for that signal: with no
-    current_stop_sequence/stop_id to window on (FA-12), a vehicle standing on
-    the origin terminus during its layover projects onto the first stop for the
-    entire wait, so interpolate_stop_time reads the moment it ARRIVED to lay
-    over as the moment it crossed stop 1, and the layover lands inside the
-    first segment's travel time. Measured on Gdansk 2026-07-29, the only
-    monitored city with signal "none": first pair 246 m apart, scheduled 74 s
-    (14.0 km/h), reconstructed 477 s (1.8 km/h median), 34.2% of them under
-    1 km/h - i.e. stationary. It contributed +107.6 s of the city's +171.1 s
-    mean delay. The same measurement mid-trip (8th stop) gives 17.8 km/h with
-    0.1% under 3 km/h, and cities WITH a signal show no such jump at all
-    (Lodz, signal "sequence": +0.2 s; Vilnius, signal "stop_id": +36.6 s), so
-    this is squarely a first-pair, no-window artifact rather than a general
-    property of the method.
+    Why the first pair: a vehicle idling on its origin terminus already carries
+    the next trip's trip_id, so its whole layover is matched to that trip. The
+    layover positions all project at (or near) stop 1's distance, and
+    interpolate_stop_time returns the FIRST bracketing pair it finds - so the
+    moment the vehicle ARRIVED to wait is recorded as the moment it crossed
+    stop 1, and the entire wait is booked as travel time on the first stop pair.
+    Nothing in that chain depends on FA-12 windowing.
 
-    Backward compatible in two directions: a matched table with no
-    position_signal column at all (written before FA-17) never triggers the
-    skip, and neither does one whose signal is "sequence"/"stop_id". A trip
-    group whose rows disagree (possible when several --positions-dir values
-    covering the same recording_date resolved to different signals) is treated
-    as unwindowed if ANY row says "none" - by then the unwindowed positions are
-    already merged into this trip's series, so the artifact is present
-    regardless of what the other directory managed to window.
+    Why the FA-17 signal condition was dropped (measured 2026-07-29 across nine
+    cities, median implied speed of the first pair vs mid-trip, km/h):
+
+        Rome     sequence 100%    2.46 vs 19.06    39.9% under 2 km/h
+        Prague   sequence  72%    3.11 vs 24.54    37.9%
+        Boston   sequence  94%    4.32 vs 20.40    22.2%
+        Gdansk   none             4.72 vs 19.77    23.4%
+        Szczecin sequence 100%    5.03 vs 20.76    20.1%
+        Vilnius  stop_id  100%   10.57 vs 20.67     3.4%
+        Sofia    stop_id  100%   12.00 vs 18.54     0.1%
+        Lodz     sequence 100%     ~18  vs 18.65      ~0%
+
+    Rome and Szczecin have full sequence coverage and are among the worst;
+    Sofia has stop_id and is nearly clean; Gdansk - the only "none", and the
+    single city FA-17 was calibrated on - is only fourth; and Lodz, the one
+    city with no artifact at all, is "sequence" like the worst two. The signal
+    class does not predict the artifact, so FA-17's condition was a coincidence
+    of its sample rather than a mechanism.
+
+    What is lost: the first pair also carries genuine departure lateness, and it
+    is the only pair that can, since rebuild_stop_times anchors each trip on its
+    SCHEDULED first departure. Measured on the same recordings, that loss is
+    negligible against the artifact - median layover 120-502 s per city against
+    a median departure lateness of -16 to +15 s - and since observations are
+    pooled and reduced to a P50 per segment key, the median is what survives
+    anyway.
+
+    Note this reverses FA-17's backward-compatibility rule deliberately: a
+    matched table with no position_signal column (written before FA-17) is now
+    skipped too. Under FA-17 such a table was left untouched, which would today
+    mean silently keeping the artifact in every archived pre-FA-17 table.
+    position_signal itself stays in the table as FA-12/FA-17 diagnostics - match
+    still resolves and prints it - it just no longer drives anything here.
 
     *shape_cumulative_dist*/*trusted_stop_dist* (FA-10, both optional, both
     default to today's fully-geometric behaviour when omitted): see
@@ -288,8 +316,6 @@ def collect_segment_observations(
     trusted_trip_ids = {tid for tid, _seq in trusted_stop_dist} if trusted_stop_dist else set()
 
     group_cols = ["trip_id", "recording_date"] if "recording_date" in matched.columns else ["trip_id"]
-    # FA-17: absent column -> pre-FA-17 table -> never skip (see docstring).
-    has_signal_col = skip_unwindowed_first_segment and "position_signal" in matched.columns
 
     for group_key, group in matched.groupby(group_cols, sort=False):
         trip_id = group_key[0]  # group_cols is always a list -> always a tuple key
@@ -318,10 +344,11 @@ def collect_segment_observations(
                 pattern_cache, shape_id, trip_id, stops, stop_locations, polyline, cumulative, backward_tolerance_m
             )
 
-        # FA-17: "any row says none" rather than a single representative value - see docstring.
-        first_idx = 0
-        if has_signal_col and (group["position_signal"] == "none").any():
-            first_idx = 1
+        # FA-20: unconditional - position_signal does not predict the terminus-layover
+        # artifact, see the docstring. A 2-stop trip needs no special case: the loop below
+        # becomes range(1, 1), i.e. no segments and no exception.
+        first_idx = 1 if skip_first_segment else 0
+        if skip_first_segment:
             counts["first_segment_skipped"] += 1
 
         for idx in range(first_idx, len(stops) - 1):
