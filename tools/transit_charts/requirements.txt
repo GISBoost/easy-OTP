@@ -1,0 +1,13 @@
+# Deliberately its own file and its own venv, separate from
+# tools/family_a_reconstruction/requirements.txt.
+#
+# That file is also installed on the Termux phone that does the recording (TX-1), and
+# matplotlib has no prebuilt wheels for Android's Bionic libc. Keeping the plotting dependency
+# in a different environment means the constraint is enforced by structure rather than by
+# remembering it - the same reasoning tools/analysis/requirements.txt already documents.
+#
+# family_a itself is imported by path from the sibling directory, not installed.
+# Floors, not pins: the code uses pd.read_csv(format="mixed") and
+# groupby.agg(n="count") from pandas 2.0, and Axes.legend(ncols=) from mpl 3.6.
+pandas>=2.0
+matplotlib>=3.6

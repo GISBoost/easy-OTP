@@ -30,6 +30,12 @@ tools/family_a_reconstruction/*.parquet
 # GTFS zips, ad hoc match/build outputs - personal test data, not deliverable code) ---
 tools/family_a_reconstruction/gtfs-manual-test/
 
+# --- transit_charts tooling (own venv - matplotlib must never reach family_a's, which is
+# installed on the Termux phone; cached tidy tables and rendered figures are data) ---
+tools/transit_charts/.venv/
+tools/transit_charts/out/
+tools/transit_charts/.pytest_cache/
+
 # --- i18n developer tooling (build scripts, LLM translation helpers) ---
 tools/i18n/
 easy_otp.pro
