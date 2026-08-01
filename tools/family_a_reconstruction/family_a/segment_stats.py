@@ -414,6 +414,196 @@ def collect_segment_observations(
     return dict(segment_times), counts
 
 
+# seg_status values emitted by collect_stop_crossings. Exported as constants so a consumer can
+# filter on them without hardcoding strings that could drift out of sync with this module.
+#
+# "ok" is a real string rather than None on purpose. A None here would be read back as NaN once
+# the column round-trips through a DataFrame or a CSV, so every consumer would have to remember
+# that "accepted" means isna() - a footgun that costs nothing to avoid.
+SEG_OK = "ok"
+SEG_FIRST_PAIR = "first_pair"          # FA-20: never attempted
+SEG_STATIONARY = "stationary"          # FA-18: implied speed below the floor
+SEG_IMPLAUSIBLE = "implausible"        # FA-13: non-positive, > 2h, or faster than 100 km/h
+SEG_GAP = "gap"                        # one or both crossings could not be interpolated
+SEG_MISSING_STOP = "missing_stop_location"  # a stop_id absent from stops.txt
+SEG_NO_PREVIOUS = "no_previous_stop"   # the trip's first stop - no segment ends here
+
+
+def collect_stop_crossings(
+    matched: pd.DataFrame,
+    static_index: "StaticIndex",
+    trip_shapes: dict[str, str],
+    shapes: dict[str, list[tuple[float, float]]],
+    stop_locations: dict[str, tuple[float, float]],
+    shape_cumulative_dist: dict[str, list[float]] | None = None,
+    trusted_stop_dist: dict[tuple[str, int], float] | None = None,
+    backward_tolerance_m: float = DEFAULT_BACKWARD_TOLERANCE_M,
+    max_bracket_gap_s: float | None = DEFAULT_MAX_BRACKET_GAP_S,
+    skip_first_segment: bool = True,
+    min_plausible_speed_mps: float | None = _MIN_PLAUSIBLE_SPEED_MPS,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Per-stop interpolated crossing times, the raw material collect_segment_observations
+    computes internally and then throws away by differencing.
+
+    Returns (crossings, counts). *crossings* has ONE ROW PER SCHEDULED STOP of every
+    processed trip - including stops that could not be interpolated, whose obs_time is NaT.
+    Keeping the misses is deliberate: coverage per stop_sequence is what makes the
+    recording-window edge bias visible, and a table that silently omits them cannot show it.
+
+    Columns:
+      trip_id, recording_date, route_id, direction_id, stop_sequence, stop_id,
+      shape_dist_m, sched_arr_s, sched_dep_s, obs_time (UTC, NaT if not interpolable),
+      is_first_stop, seg_time_s, seg_dist_m, seg_status
+
+    seg_time_s/seg_dist_m describe the segment ENDING at this row's stop (previous stop ->
+    this stop), so they are None on a trip's first stop, where seg_status is SEG_NO_PREVIOUS.
+    Everywhere else seg_status is SEG_OK or one of the SEG_* reasons above - never null, so
+    a consumer filters with `== SEG_OK` and never has to reason about NaN.
+
+    **Nothing is dropped - rejections are LABELLED.** That is the whole point of this function
+    existing beside collect_segment_observations rather than inside it: the aggregation path
+    must drop a stationary observation, but a headway or punctuality analysis legitimately
+    wants it. Pushing that decision to the caller, with the reason attached, is what stops a
+    downstream consumer from quietly re-deriving its own (divergent) filter semantics.
+
+    Filter parity with collect_segment_observations is guaranteed by a test, not by review:
+    differencing this function's accepted rows must reproduce that function's segment times
+    exactly on the same input. See test_segment_stats.py.
+
+    One deliberate difference: each stop is interpolated ONCE here, where
+    collect_segment_observations interpolates it twice (as the "to" of one pair and the "from"
+    of the next). The results are identical - interpolate_stop_time is deterministic in
+    (series, distance) - but the counts differ: bracket_gap_rejected counts CALLS, so this
+    function reports roughly half as many for the same data. Same event, different denominator.
+    """
+    counts = {
+        "trips_processed": 0,
+        "trips_skipped_unresolvable": 0,
+        "stops_total": 0,
+        "stops_crossed": 0,
+        "bracket_gap_rejected": 0,
+        "missing_stop_location": 0,
+        "segments_accepted": 0,
+        "segments_first_pair": 0,
+        "segments_gap": 0,
+        "segments_rejected_implausible": 0,
+        "segments_rejected_stationary": 0,
+    }
+    columns = [
+        "trip_id", "recording_date", "route_id", "direction_id", "stop_sequence", "stop_id",
+        "shape_dist_m", "sched_arr_s", "sched_dep_s", "obs_time", "is_first_stop",
+        "seg_time_s", "seg_dist_m", "seg_status",
+    ]
+    if matched.empty:
+        return pd.DataFrame(columns=columns), counts
+
+    pattern_cache: dict[tuple[str, tuple[str, ...]], dict[int, float]] = {}
+    trusted_trip_ids = {tid for tid, _seq in trusted_stop_dist} if trusted_stop_dist else set()
+    has_recording_date = "recording_date" in matched.columns
+    group_cols = ["trip_id", "recording_date"] if has_recording_date else ["trip_id"]
+
+    rows: list[tuple] = []
+    for group_key, group in matched.groupby(group_cols, sort=False):
+        trip_id = group_key[0]
+        recording_date = group_key[1] if has_recording_date else None
+        stops = static_index.trip_stops.get(trip_id)
+        if not stops or len(stops) < 2:
+            counts["trips_skipped_unresolvable"] += 1
+            continue
+
+        shape_id = trip_shapes.get(trip_id)
+        polyline = shapes.get(shape_id) if shape_id is not None else None
+        if polyline is None:
+            counts["trips_skipped_unresolvable"] += 1
+            continue
+
+        route_id, direction_id = static_index.trip_route.get(trip_id, ("", "0"))
+        group = group.sort_values("timestamp")
+        position_series = list(zip(group["timestamp"], group["distance_along_shape_m"]))
+        counts["trips_processed"] += 1
+
+        cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
+        trip_fully_trusted = trip_id in trusted_trip_ids
+        pattern_dist: dict[int, float] | None = None
+        if not trip_fully_trusted:
+            pattern_dist = _resolve_pattern_distances(
+                pattern_cache, shape_id, trip_id, stops, stop_locations, polyline,
+                cumulative, backward_tolerance_m,
+            )
+
+        # Pass 1: one interpolation per stop. distances[i]/crossings[i] are None where the
+        # stop has no known location or its crossing could not be bracketed.
+        distances: list[float | None] = []
+        crossings: list[object] = []
+        for seq, stop_id, _arr, _dep in stops:
+            counts["stops_total"] += 1
+            if stop_id not in stop_locations:
+                distances.append(None)
+                crossings.append(None)
+                continue
+            d = trusted_stop_dist[(trip_id, seq)] if trip_fully_trusted else pattern_dist.get(seq)
+            if d is None:
+                distances.append(None)
+                crossings.append(None)
+                continue
+            t = interpolate_stop_time(
+                position_series, d, max_bracket_gap_s=max_bracket_gap_s, counts=counts
+            )
+            distances.append(d)
+            crossings.append(t)
+            if t is not None:
+                counts["stops_crossed"] += 1
+
+        # Pass 2: one row per stop, with the segment that ends at it classified.
+        for idx, (seq, stop_id, arr_sec, dep_sec) in enumerate(stops):
+            seg_time = seg_dist = None
+            if idx == 0:
+                reason = SEG_NO_PREVIOUS
+            elif idx == 1 and skip_first_segment:
+                # FA-20. Checked before anything that would need the crossings, mirroring
+                # collect_segment_observations, which never attempts this pair at all.
+                reason = SEG_FIRST_PAIR
+                counts["segments_first_pair"] += 1
+            elif distances[idx - 1] is None or distances[idx] is None:
+                reason = SEG_MISSING_STOP
+                counts["missing_stop_location"] += 1
+            elif crossings[idx - 1] is None or crossings[idx] is None:
+                reason = SEG_GAP
+                counts["segments_gap"] += 1
+            else:
+                seg_time = (crossings[idx] - crossings[idx - 1]).total_seconds()
+                seg_dist = abs(distances[idx] - distances[idx - 1])
+                implausible_speed = (
+                    seg_time > 0 and seg_dist / seg_time > _MAX_PLAUSIBLE_SPEED_MPS
+                )
+                if seg_time <= 0 or seg_time > _MAX_PLAUSIBLE_SEG_TIME_S or implausible_speed:
+                    reason = SEG_IMPLAUSIBLE
+                    counts["segments_rejected_implausible"] += 1
+                elif (
+                    min_plausible_speed_mps is not None
+                    and seg_dist / seg_time < min_plausible_speed_mps
+                ):
+                    # FA-18, checked after FA-13 so the two stay disjoint - same precedence
+                    # as collect_segment_observations, and the strict `<` is the same too.
+                    reason = SEG_STATIONARY
+                    counts["segments_rejected_stationary"] += 1
+                else:
+                    reason = SEG_OK
+                    counts["segments_accepted"] += 1
+
+            rows.append((
+                trip_id, recording_date, route_id, direction_id, seq, stop_id,
+                distances[idx], arr_sec, dep_sec, crossings[idx], idx == 0,
+                seg_time, seg_dist, reason,
+            ))
+
+    crossings_df = pd.DataFrame(rows, columns=columns)
+    # groupby gives object dtype for the timestamps; make it a real tz-aware column so
+    # downstream arithmetic (delay, headway) does not silently fall back to Python objects.
+    crossings_df["obs_time"] = pd.to_datetime(crossings_df["obs_time"], utc=True)
+    return crossings_df, counts
+
+
 def _cached_stop_distance(
     cache: dict[tuple[str, str], float],
     shape_id: str,

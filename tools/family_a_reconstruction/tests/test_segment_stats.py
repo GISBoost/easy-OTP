@@ -5,18 +5,26 @@ Run: pytest tests/test_segment_stats.py -v
 """
 
 import statistics
+import zoneinfo
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
 
-from family_a.build_gtfs import StaticIndex
-from family_a.calendar_scope import time_bucket_for_seconds
+from family_a.build_gtfs import StaticIndex, segment_key_for
+from family_a.calendar_scope import day_type_for_date, time_bucket_for_seconds
 from family_a.interpolate import stop_distance_along_shape
 from family_a.matcher import cumulative_distances
 from family_a.segment_stats import (
+    SEG_FIRST_PAIR,
+    SEG_GAP,
+    SEG_NO_PREVIOUS,
+    SEG_OK,
+    SEG_STATIONARY,
     aggregate_segments,
     collect_segment_observations,
+    collect_stop_crossings,
     filter_min_observations,
 )
 
@@ -999,3 +1007,204 @@ def test_stationary_mid_trip_pair_is_still_rejected_at_production_defaults():
     assert counts["first_segment_skipped"] == 1
     assert counts["rejected_stationary"] == 1
     assert counts["segments_observed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# collect_stop_crossings - the per-stop view the chart layer consumes
+# ---------------------------------------------------------------------------
+
+# Four collinear points, so a 4-stop trip has three segments to classify independently.
+_LONG_LINE = [(0.0, 0.0), (0.01, 0.0), (0.02, 0.0), (0.03, 0.0)]
+_LONG_LATS = (0.0, 0.01, 0.02, 0.03)
+
+
+def _four_stop_inputs(observation_seconds):
+    """A->B->C->D on a straight line, one observation at each stop's own distance.
+
+    *observation_seconds* gives the timestamp at which the vehicle is seen at each stop, so a
+    caller can make any individual segment fast, slow or stationary.
+    """
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 0, 0), (2, "B", 100, 100), (3, "C", 200, 200), (4, "D", 300, 300)]},
+    )
+    stop_locations = {name: (lat, 0.0) for name, lat in zip("ABCD", _LONG_LATS)}
+    distances = [stop_distance_along_shape(lat, 0.0, _LONG_LINE) for lat in _LONG_LATS]
+    matched = _matched_df([("t1", _t(s), d) for s, d in zip(observation_seconds, distances)])
+    return idx, {"t1": "shape1"}, {"shape1": _LONG_LINE}, stop_locations, matched
+
+
+def _segments_from_crossings(crossings, agency_tz="UTC", bucket_minutes=120):
+    """Rebuild collect_segment_observations' output from a crossings table.
+
+    Deliberately re-derives the segment key here rather than importing a shared helper: if
+    both sides used the same private code path, the equivalence test below would prove nothing
+    about the thing it exists to protect.
+    """
+    zone = zoneinfo.ZoneInfo(agency_tz)
+    out = defaultdict(list)
+    # dropna=False: recording_date is all-None for a pre-FA-6 matched table, and pandas'
+    # default would silently discard every group.
+    for _key, group in crossings.groupby(["trip_id", "recording_date"], dropna=False, sort=False):
+        rows = list(group.sort_values("stop_sequence").itertuples())
+        for prev, cur in zip(rows, rows[1:]):
+            if cur.seg_status != SEG_OK:
+                continue
+            local_from = prev.obs_time.tz_convert(zone)
+            key = segment_key_for(
+                cur.route_id, cur.direction_id, prev.stop_id, cur.stop_id,
+                day_type_for_date(local_from.date()),
+                time_bucket_for_seconds(
+                    local_from.hour * 3600 + local_from.minute * 60 + local_from.second,
+                    bucket_minutes,
+                ),
+            )
+            out[key].append(cur.seg_time_s)
+    return dict(out)
+
+
+@pytest.mark.parametrize("skip_first", [True, False])
+@pytest.mark.parametrize("max_gap", [None, 300.0])
+@pytest.mark.parametrize(
+    "observation_seconds",
+    [
+        (0, 100, 200, 300),      # everything brisk
+        (0, 100, 2600, 2700),    # B->C stationary (~1.6 km/h over ~1112 m)
+        (0, 100, 200, 100_000),  # C->D longer than FA-13's 2h ceiling
+        (0, 100, 110, 120),      # C->D ~1112 m in 10 s = 400 km/h, over FA-13's speed ceiling
+        (0, 400, 800, 1200),     # brackets 400 s apart - rejected by FA-14 at max_gap=300
+    ],
+)
+def test_crossings_reproduce_collect_segment_observations(
+    observation_seconds, skip_first, max_gap
+):
+    """The anti-drift guard for the chart layer.
+
+    collect_stop_crossings exists so charts do not re-implement FA-13/FA-18/FA-20 and quietly
+    diverge from the aggregation path. That promise is only worth something if it is checked:
+    differencing the accepted crossings must reproduce collect_segment_observations exactly,
+    for every combination of filter outcomes this fixture can produce.
+    """
+    idx, trip_shapes, shapes, stop_locations, matched = _four_stop_inputs(observation_seconds)
+    # max_gap is parametrised rather than pinned at None: FA-14 rejects a bracketing pair on a
+    # per-CALL basis, and this function makes half as many calls as the original, so it is
+    # exactly the filter most likely to drift between the two. Leaving it disabled would have
+    # left that untested.
+    common = dict(max_bracket_gap_s=max_gap, skip_first_segment=skip_first)
+
+    expected, _counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", **common
+    )
+    crossings, _ccounts = collect_stop_crossings(
+        matched, idx, trip_shapes, shapes, stop_locations, **common
+    )
+
+    derived = _segments_from_crossings(crossings)
+    assert set(derived) == set(expected)
+    for key, values in expected.items():
+        assert derived[key] == pytest.approx(values)
+
+
+def test_crossings_reproduce_collect_segment_observations_with_a_missing_stop_location():
+    """A stop absent from stops.txt is a static-feed defect both functions must treat alike."""
+    idx, trip_shapes, shapes, stop_locations, matched = _four_stop_inputs((0, 100, 200, 300))
+    stop_locations = {k: v for k, v in stop_locations.items() if k != "C"}
+    common = dict(max_bracket_gap_s=None, skip_first_segment=False)
+
+    expected, _counts = collect_segment_observations(
+        matched, idx, trip_shapes, shapes, stop_locations, agency_tz="UTC", **common
+    )
+    crossings, counts = collect_stop_crossings(
+        matched, idx, trip_shapes, shapes, stop_locations, **common
+    )
+
+    assert _segments_from_crossings(crossings) == pytest.approx(expected)
+    assert counts["missing_stop_location"] == 2      # B->C and C->D both lose an endpoint
+
+
+def test_crossings_keep_one_row_per_scheduled_stop_including_misses():
+    """Coverage is the point: a stop that could not be interpolated must still have a row,
+    otherwise the recording-window edge bias is invisible to the consumer."""
+    idx, trip_shapes, shapes, stop_locations, _m = _four_stop_inputs((0, 100, 200, 300))
+    # Vehicle only ever observed around A and B - C and D are never bracketed.
+    d_b = stop_distance_along_shape(0.01, 0.0, _LONG_LINE)
+    matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(100), d_b)])
+
+    crossings, counts = collect_stop_crossings(
+        matched, idx, trip_shapes, shapes, stop_locations, max_bracket_gap_s=None
+    )
+
+    assert len(crossings) == 4                      # one row per scheduled stop
+    assert counts["stops_total"] == 4
+    assert counts["stops_crossed"] == 2             # only A and B
+    assert crossings.obs_time.isna().sum() == 2     # C and D are NaT, not absent
+    assert list(crossings.seg_status) == [SEG_NO_PREVIOUS, SEG_FIRST_PAIR, SEG_GAP, SEG_GAP]
+
+
+def test_crossings_label_rejections_instead_of_dropping_them():
+    """The semantic difference from collect_segment_observations, pinned.
+
+    A stationary segment is LABELLED here and dropped there. A consumer doing headway or
+    punctuality analysis legitimately wants the row; only the aggregation path must lose it.
+    """
+    idx, trip_shapes, shapes, stop_locations, matched = _four_stop_inputs((0, 100, 2600, 2700))
+
+    crossings, counts = collect_stop_crossings(
+        matched, idx, trip_shapes, shapes, stop_locations, max_bracket_gap_s=None
+    )
+
+    by_stop = dict(zip(crossings.stop_id, crossings.seg_status))
+    assert by_stop["A"] == SEG_NO_PREVIOUS
+    assert by_stop["B"] == SEG_FIRST_PAIR          # FA-20
+    assert by_stop["C"] == SEG_STATIONARY          # FA-18, kept as a row
+    assert by_stop["D"] == SEG_OK                  # accepted
+    assert counts["segments_rejected_stationary"] == 1
+    assert counts["segments_accepted"] == 1
+    # The stationary row still carries its measurement - that is what makes it usable.
+    stationary = crossings[crossings.stop_id == "C"].iloc[0]
+    assert stationary.seg_time_s == pytest.approx(2500.0)
+    assert pd.notna(stationary.obs_time)
+
+
+def test_crossings_first_pair_label_follows_skip_first_segment():
+    idx, trip_shapes, shapes, stop_locations, matched = _four_stop_inputs((0, 100, 200, 300))
+
+    kept, counts = collect_stop_crossings(
+        matched, idx, trip_shapes, shapes, stop_locations,
+        max_bracket_gap_s=None, skip_first_segment=False,
+    )
+
+    assert SEG_FIRST_PAIR not in set(kept.seg_status)
+    assert counts["segments_first_pair"] == 0
+    assert counts["segments_accepted"] == 3
+
+
+def test_crossings_empty_matched_returns_typed_empty_frame():
+    """An empty input must still produce the full schema - a consumer that selects columns
+    should not have to special-case the no-data day."""
+    idx, trip_shapes, shapes, stop_locations, _m = _four_stop_inputs((0, 100, 200, 300))
+
+    crossings, counts = collect_stop_crossings(
+        pd.DataFrame(columns=["trip_id", "timestamp", "distance_along_shape_m"]),
+        idx, trip_shapes, shapes, stop_locations,
+    )
+
+    assert crossings.empty
+    assert "seg_status" in crossings.columns
+    assert "obs_time" in crossings.columns
+    assert counts["trips_processed"] == 0
+
+
+def test_crossings_two_stop_trip_yields_two_rows_and_no_segment():
+    idx = _two_stop_static_index()
+    stop_locations = {"A": (0.0, 0.0), "B": (0.01, 0.0)}
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+    matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(100), d_b)])
+
+    crossings, counts = collect_stop_crossings(
+        matched, idx, {"t1": "shape1"}, {"shape1": _STRAIGHT_LINE}, stop_locations
+    )
+
+    assert list(crossings.seg_status) == [SEG_NO_PREVIOUS, SEG_FIRST_PAIR]
+    assert counts["segments_accepted"] == 0
+    assert counts["trips_processed"] == 1
