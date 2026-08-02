@@ -48,7 +48,7 @@ The plugin UI is available in English and **Polish** *(new in v0.5)*.
 | QGIS | 3.22 LTR+ | Install from qgis.org; the plugin uses the bundled Python and GDAL |
 | Java | **8 (1.8)** | Plugin can download it — [*Download Java 8 JRE and OpenTripPlanner Jar*](#getting-java-8-and-the-otp-jar) (or install manually) |
 | OpenTripPlanner jar | **1.5.0** | Plugin can download it — [*Download Java 8 JRE and OpenTripPlanner Jar*](#getting-java-8-and-the-otp-jar) (`otp-1.5.0-shaded.jar`) |
-| OSM extract | any | Plugin can download it — [*Download transit data*](#getting-osm-and-gtfs-data-new-in-v02) (`.osm.pbf` covering your study area) [or learn how to prepare your own OSM data](tools/custom_network.md) |
+| OSM extract | any | Plugin can download it — [*Download transit data*](#getting-osm-and-gtfs-data-new-in-v02) (`.osm.pbf` covering your study area) [or learn how to prepare your own OSM data](tools/network/README.md) |
 | GTFS feed(s) | any valid | Plugin can download it — [*Download transit data*](#getting-osm-and-gtfs-data-new-in-v02) (one or more `.zip` archives in a folder) |
 
 You don't have to collect everything by hand — the plugin can download Java 8, the OTP
@@ -251,7 +251,7 @@ Copy those directly into the **OSM extract** and **GTFS folder** parameters of
 
 Want to model a network change (closed road, new footbridge, different
 speed limit) instead of just downloading an extract? See
-[Preparing a custom OSM network](tools/custom_network.md).
+[Preparing a custom OSM network](tools/network/README.md).
 
 ---
 
@@ -841,6 +841,11 @@ standalone command-line tool, [`tools/family_a_reconstruction/`](tools/family_a_
 reconstructs a realized GTFS from recorded vehicle positions via map-matching and
 interpolation. **It is not a Processing algorithm** — it does not appear in the QGIS Toolbox
 and requires its own Python environment. See its README for setup and a full worked example.
+Charts built from that tool's output live in [`tools/transit_charts/`](tools/transit_charts/README.md).
+
+Both of these, plus a handful of other standalone scripts and diagnostics, are indexed in
+[`tools/README.md`](tools/README.md) — start there if you're looking for something outside
+the plugin itself.
 
 ---
 
