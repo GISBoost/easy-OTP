@@ -153,6 +153,46 @@ def test_usable_headways_drops_outage_spanning_intervals_by_default():
     assert len(forced) == 2
 
 
+def test_bunching_rate_is_relative_to_the_pairs_own_scheduled_headway():
+    """The whole point of the ratio: a 5-min line and a 20-min line must land on one scale.
+
+    Both frames here have exactly one headway at 20% of their own scheduled interval and the
+    rest bang on schedule - so both must report the same bunched_share (1/6), regardless of
+    their wildly different absolute headways.
+    """
+    fast = _frame([60.0, 300.0, 300.0, 300.0, 300.0, 300.0],
+                  scheduled=[300.0] * 6, route_short_name="fast")
+    slow = _frame([240.0, 1200.0, 1200.0, 1200.0, 1200.0, 1200.0],
+                  scheduled=[1200.0] * 6, route_short_name="slow")
+    frame = pd.concat([fast, slow], ignore_index=True)
+
+    out = tidy.bunching_rate(frame, ["route_short_name"], threshold=0.25, min_n=3)
+
+    fast_row = out[out.route_short_name == "fast"].iloc[0]
+    slow_row = out[out.route_short_name == "slow"].iloc[0]
+    assert fast_row.bunched_share == pytest.approx(1 / 6)
+    assert slow_row.bunched_share == pytest.approx(1 / 6)
+
+
+def test_bunching_rate_drops_rows_with_no_usable_scheduled_headway():
+    """Same gap `wait_times`' SWT side already has - a group cannot bunch relative to a
+    schedule it does not carry."""
+    frame = _frame([60.0, 300.0, 300.0], scheduled=[None, None, None])
+
+    out = tidy.bunching_rate(frame, ["route_short_name"], min_n=1)
+
+    assert out.empty
+
+
+def test_bunching_rate_below_min_n_is_flagged_not_dropped():
+    frame = _frame([60.0, 300.0], scheduled=[300.0, 300.0])
+
+    out = tidy.bunching_rate(frame, ["route_short_name"], min_n=5)
+
+    row = out.iloc[0]
+    assert row.n == 2 and row.below_min_n and pd.isna(row.bunched_share)
+
+
 def test_usable_headways_keeps_the_first_stop():
     """Regularity never touches travel time, so the FA-20 layover artifact cannot reach it -
     excluding stop 1 here would throw away good data for no reason."""

@@ -289,6 +289,279 @@ def headway_ridgeline(
     )
 
 
+def bunching_heatmap(
+    table: pd.DataFrame,
+    *,
+    out_prefix: Path,
+    source,
+    route: str,
+    direction: str | None = None,
+    bucket_minutes: int = 60,
+    threshold: float = 0.25,
+    min_n: int = 3,
+) -> style.ChartResult:
+    """B8 - how often a headway closes to under `threshold` of ITS OWN scheduled interval,
+    stop by hour.
+
+    B7's ridgeline shows bunching happens somewhere on the route at some hour, but not WHERE.
+    This is the localiser: a vertical band is one stop where pairs are always closing up, which
+    is usually just downstream of wherever the actual cause sits.
+    """
+    subset = tidy.usable_headways(table, routes=[route])
+    direction = direction if direction is not None else tidy.busiest_direction(subset)
+    subset = subset[subset.direction_id.astype(str) == str(direction)]
+    if subset.empty:
+        raise ValueError(f"no usable headways for route {route!r} direction {direction!r}")
+    headsign = tidy.direction_label(subset)
+
+    subset["bucket"] = tidy.local_time_bucket(subset.obs_local, bucket_minutes)
+    stats = tidy.bunching_rate(subset, ["stop_sequence", "bucket"], threshold=threshold,
+                                min_n=min_n)
+
+    grid = stats.pivot(index="stop_sequence", columns="bucket", values="bunched_share").sort_index()
+    thin = stats.pivot(index="stop_sequence", columns="bucket", values="below_min_n")
+
+    fig, ax = style.new_figure(width=12.0, height=max(5.0, 0.22 * len(grid)))
+    mesh = ax.imshow(
+        grid.to_numpy(dtype=float), aspect="auto", origin="lower", cmap="RdYlGn_r",
+        vmin=0.0, vmax=0.5, interpolation="nearest",
+    )
+    bar = fig.colorbar(mesh, ax=ax, pad=0.02)
+    bar.set_label(f"share of headways < {threshold:.0%} of scheduled", labelpad=12)
+
+    style.hatch_thin_cells(
+        ax,
+        [(x, y) for y, row in enumerate(thin.to_numpy()) for x, flag in enumerate(row)
+         if bool(flag) or pd.isna(grid.to_numpy()[y][x])],
+    )
+    ax.set_xticks(range(len(grid.columns)))
+    ax.set_xticklabels([f"{int(b) // 60:02d}:{int(b) % 60:02d}" for b in grid.columns],
+                       rotation=45)
+    ax.set_yticks(range(len(grid.index)))
+    ax.set_yticklabels(grid.index)
+    ax.set_xlabel("local time of day")
+    ax.set_ylabel("stop sequence")
+    ax.set_title(
+        "B8 · bunching frequency, " + tidy.route_direction_title(route, direction, headsign)
+    )
+    ax.grid(False)
+
+    notes = [
+        style.window_note(subset),
+        f"bunched = observed headway < {threshold:.0%} of the SAME pair's scheduled headway - "
+        "a ratio, not a fixed number of minutes, so a 5-min and a 20-min service are comparable "
+        f"on this scale; hatched cells have fewer than {min_n} headways",
+        "headways spanning a feed outage excluded; regularity never uses travel time, so the "
+        "FA-20 layover artifact cannot reach this chart",
+    ]
+    style.caption(ax, notes)
+    return style.save(
+        fig, stats, style.chart_params("B8", source, len(table),
+                            {"route": route, "direction": direction, "headsign": headsign,
+                             "bucket_minutes": bucket_minutes, "threshold": threshold,
+                             "min_n": min_n}, notes),
+        out_prefix,
+    )
+
+
+def regularity_ranking(
+    table: pd.DataFrame,
+    *,
+    out_prefix: Path,
+    source,
+    routes: list[str] | None = None,
+    min_n: int = 20,
+) -> style.ChartResult:
+    """H28 - one bar per line, ranked by headway CV - the city-wide answer to "which lines are
+    least regular", instead of one B5 heatmap per line.
+
+    Pools both directions per line, same precedent B6 already set (`wait_times` groups by
+    `route_short_name` alone) - headway is already computed same-direction internally
+    (`tidy.build`'s `_attach_headway`), so pooling both here mixes two internally-consistent
+    measurements, not apples with oranges.
+    """
+    subset = tidy.usable_headways(table, routes=routes)
+    if subset.empty:
+        raise ValueError("no usable headways after filtering")
+    stats = tidy.headway_cv(subset, ["route_short_name"], min_n=min_n)
+    if stats.empty:
+        raise ValueError("no route reached min_n headways")
+    stats = stats.sort_values("cv", ascending=True, na_position="first").reset_index(drop=True)
+
+    fig, ax = style.new_figure(width=10.0, height=max(3.0, 0.42 * len(stats)))
+    positions = range(len(stats))
+    colours = ["#BBBBBB" if thin else "#0072B2" for thin in stats.below_min_n]
+    widths = [0.0 if pd.isna(v) else v for v in stats.cv]
+    ax.barh(positions, widths, color=colours)
+    for y, (thin, n) in enumerate(zip(stats.below_min_n, stats.n)):
+        if thin:
+            ax.text(0.005, y, f"n={n} (below min_n)", va="center", fontsize=7.5,
+                    color="#555555")
+    for level, text in ((CV_EXCELLENT, "excellent"), (CV_TYPICAL, "US bus avg")):
+        ax.axvline(level, color="black", linewidth=1.0, linestyle="--")
+        ax.text(level, len(stats) - 0.7, text, fontsize=7.5, rotation=90, va="top", ha="right")
+    ax.set_yticks(list(positions))
+    ax.set_yticklabels(stats.route_short_name)
+    ax.set_xlabel("headway CV (coefficient of variation; 0 = perfectly even)")
+    ax.set_title("H28 · network-wide headway regularity ranking")
+    ax.grid(True, axis="x", **style.GRID_KW)
+
+    notes = [
+        style.window_note(subset),
+        "CV = sd/mean of observed headway, pooled over both directions and every stop of each "
+        f"line; grey bars have fewer than {min_n} headways, where a standard deviation is not "
+        "a measurement",
+        "CV is already scale-free, so a 5-minute and a 20-minute line are directly comparable "
+        "here without adjustment",
+    ]
+    style.caption(ax, notes)
+    return style.save(
+        fig, stats,
+        style.chart_params("H28", source, len(table), {"routes": routes, "min_n": min_n}, notes),
+        out_prefix,
+    )
+
+
+def excess_wait_ranking(
+    table: pd.DataFrame,
+    *,
+    out_prefix: Path,
+    source,
+    routes: list[str] | None = None,
+    min_n: int = 20,
+    winsorise_quantile: float | None = 0.99,
+) -> style.ChartResult:
+    """H29 - one bar per line, two panels: absolute excess wait (EWT, minutes) and EWT relative
+    to actual wait (AWT) - two different questions that must not collapse into one ranking.
+
+    Absolute EWT answers "where do we lose the most passenger-minutes" (the equity framing B6
+    already uses), and structurally favours low-frequency lines: a bigger scheduled headway
+    means a bigger E[H^2]/(2 E[H]) even at identical PROPORTIONAL regularity. The relative panel
+    (EWT/AWT) answers "which line is proportionally worst" and is fair between a 5-minute and a
+    20-minute line. Showing only one would silently answer the other question too.
+    """
+    subset = tidy.usable_headways(table, routes=routes)
+    if subset.empty:
+        raise ValueError("no usable headways after filtering")
+    stats = tidy.wait_times(subset, ["route_short_name"],
+                            winsorise_quantile=winsorise_quantile, min_n=min_n)
+    if stats.empty:
+        raise ValueError("no route reached min_n headways")
+    stats["ewt_min"] = style.to_minutes(stats.ewt_s)
+    stats["awt_min"] = style.to_minutes(stats.awt_s)
+    stats["ewt_ratio"] = (stats.ewt_s / stats.awt_s).where(stats.awt_s > 0)
+
+    colours = style.colour_for(list(stats.route_short_name))
+    fig, (left, right) = style.plt.subplots(1, 2, figsize=(13.0, max(3.0, 0.42 * len(stats))))
+    for ax, column, label in (
+        (left, "ewt_min", "excess wait (minutes)"),
+        (right, "ewt_ratio", "excess wait / actual wait"),
+    ):
+        ordered = stats.sort_values(column, ascending=True, na_position="first").reset_index(drop=True)
+        positions = range(len(ordered))
+        bar_colours = ["#BBBBBB" if thin else colours[name]
+                       for thin, name in zip(ordered.below_min_n, ordered.route_short_name)]
+        widths = [0.0 if pd.isna(v) else v for v in ordered[column]]
+        ax.barh(positions, widths, color=bar_colours)
+        for y, (thin, n) in enumerate(zip(ordered.below_min_n, ordered.n)):
+            if thin:
+                ax.text(0.0, y, f"n={n}", va="center", fontsize=7.0, color="#555555")
+        ax.set_yticks(list(positions))
+        ax.set_yticklabels(ordered.route_short_name)
+        ax.set_xlabel(label)
+        ax.grid(True, axis="x", **style.GRID_KW)
+
+    left.set_title("absolute (passenger-minutes / equity)")
+    right.set_title("relative to AWT (regularity)")
+    fig.suptitle("H29 · network-wide excess wait ranking")
+
+    trimmed_note = (
+        f"winsorised at p{winsorise_quantile:.0%}" if winsorise_quantile else "no winsorising"
+    )
+    notes = [
+        style.window_note(subset),
+        "EWT (excess wait time) = AWT (actual wait, E[H^2]/2E[H]) - SWT (the same formula on "
+        f"scheduled headways). {trimmed_note}. Left favours low-frequency lines structurally; "
+        "right corrects for that - read them as two different questions, not a disagreement",
+        f"grey bars have fewer than {min_n} headways",
+    ]
+    style.caption(right, notes)
+    return style.save(
+        fig, stats,
+        style.chart_params("H29", source, len(table),
+                            {"routes": routes, "min_n": min_n,
+                             "winsorise_quantile": winsorise_quantile}, notes),
+        out_prefix, rect=(0, 0.10, 1, 0.90),
+    )
+
+
+def bunching_by_route_heatmap(
+    table: pd.DataFrame,
+    *,
+    out_prefix: Path,
+    source,
+    routes: list[str] | None = None,
+    bucket_minutes: int = 60,
+    threshold: float = 0.25,
+    min_n: int = 3,
+) -> style.ChartResult:
+    """H30 - the city-wide B8: bunching frequency, route by hour, instead of stop by hour for
+    one route. Answers which lines and which hours have a real bunching problem, city-wide.
+    """
+    subset = tidy.usable_headways(table, routes=routes)
+    if subset.empty:
+        raise ValueError("no usable headways after filtering")
+    subset["bucket"] = tidy.local_time_bucket(subset.obs_local, bucket_minutes)
+    stats = tidy.bunching_rate(subset, ["route_short_name", "bucket"], threshold=threshold,
+                                min_n=min_n)
+    if stats.empty:
+        raise ValueError("no route reached min_n headways")
+
+    grid = stats.pivot(
+        index="route_short_name", columns="bucket", values="bunched_share"
+    ).sort_index()
+    thin = stats.pivot(index="route_short_name", columns="bucket", values="below_min_n")
+
+    fig, ax = style.new_figure(width=12.0, height=max(5.0, 0.35 * len(grid)))
+    mesh = ax.imshow(
+        grid.to_numpy(dtype=float), aspect="auto", origin="lower", cmap="RdYlGn_r",
+        vmin=0.0, vmax=0.5, interpolation="nearest",
+    )
+    bar = fig.colorbar(mesh, ax=ax, pad=0.02)
+    bar.set_label(f"share of headways < {threshold:.0%} of scheduled", labelpad=12)
+
+    style.hatch_thin_cells(
+        ax,
+        [(x, y) for y, row in enumerate(thin.to_numpy()) for x, flag in enumerate(row)
+         if bool(flag) or pd.isna(grid.to_numpy()[y][x])],
+    )
+    ax.set_xticks(range(len(grid.columns)))
+    ax.set_xticklabels([f"{int(b) // 60:02d}:{int(b) % 60:02d}" for b in grid.columns],
+                       rotation=45)
+    ax.set_yticks(range(len(grid.index)))
+    ax.set_yticklabels(grid.index)
+    ax.set_xlabel("local time of day")
+    ax.set_ylabel("route")
+    ax.set_title(f"H30 · network-wide bunching frequency ({bucket_minutes}-min buckets)")
+    ax.grid(False)
+
+    notes = [
+        style.window_note(subset),
+        f"bunched = observed headway < {threshold:.0%} of the SAME pair's scheduled headway, "
+        "pooled over both directions and every stop of each line",
+        f"hatched cells have fewer than {min_n} headways; one contaminated line can dominate "
+        "this colour scale for the rest of the city - filter it out via --route if so",
+    ]
+    style.caption(ax, notes)
+    return style.save(
+        fig, stats,
+        style.chart_params("H30", source, len(table),
+                            {"routes": routes, "bucket_minutes": bucket_minutes,
+                             "threshold": threshold, "min_n": min_n}, notes),
+        out_prefix,
+    )
+
+
 def _facet(keys: list[str], height_each: float):
     fig, axes = style.plt.subplots(
         len(keys), 1, figsize=(12.0, max(3.0, height_each * len(keys))), sharex=True

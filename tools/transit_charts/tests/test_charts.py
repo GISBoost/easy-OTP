@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from transit_charts import tidy
-from transit_charts.render import punctuality, trajectory
+from transit_charts.render import headway, punctuality, trajectory
 
 
 @pytest.fixture
@@ -51,6 +51,7 @@ def table(tmp_path):
                     "seg_status": "no_previous_stop" if stop == 1 else "ok",
                     "is_first_stop": stop == 1,
                     "headway_s": None if run == 0 else 1200.0,
+                    "sched_headway_s": None if run == 0 else 1200.0,
                     "headway_spans_outage": False,
                     "trip_coverage": 1.0,
                     "service_date_offset_days": 0,
@@ -222,3 +223,69 @@ def test_thin_buckets_are_marked_not_silently_dropped(table, tmp_path):
     assert data.below_min_n.all()
     assert data.p50_min.isna().all()
     assert (data.n > 0).all()          # the counts are still there to be read
+
+
+def test_b8_writes_one_sidecar_row_per_stop_bucket(table, tmp_path):
+    frame, source = table
+
+    result = headway.bunching_heatmap(
+        frame, out_prefix=tmp_path / "b8", source=source, route="11", min_n=2
+    )
+
+    data, meta = _artefacts(result)
+    assert {"stop_sequence", "bucket", "n", "bunched_share", "below_min_n"} <= set(data.columns)
+    assert meta["chart"] == "B8"
+    assert meta["options"]["route"] == "11"
+    assert meta["options"]["threshold"] == 0.25
+
+
+def test_h28_ranks_every_route_present(table, tmp_path):
+    frame, source = table
+
+    result = headway.regularity_ranking(frame, out_prefix=tmp_path / "h28", source=source,
+                                        min_n=2)
+
+    data, meta = _artefacts(result)
+    assert set(data.route_short_name) == {"10B", "11"}
+    assert {"n", "cv", "below_min_n"} <= set(data.columns)
+    assert meta["chart"] == "H28"
+
+
+def test_h29_carries_both_absolute_and_relative_ewt(table, tmp_path):
+    frame, source = table
+
+    result = headway.excess_wait_ranking(frame, out_prefix=tmp_path / "h29", source=source,
+                                         min_n=2)
+
+    data, meta = _artefacts(result)
+    assert set(data.route_short_name) == {"10B", "11"}
+    assert {"ewt_min", "ewt_ratio", "n", "below_min_n"} <= set(data.columns)
+    assert meta["chart"] == "H29"
+
+
+def test_h30_pivots_route_by_hour(table, tmp_path):
+    frame, source = table
+
+    result = headway.bunching_by_route_heatmap(
+        frame, out_prefix=tmp_path / "h30", source=source, min_n=2
+    )
+
+    data, meta = _artefacts(result)
+    assert set(data.route_short_name) == {"10B", "11"}
+    assert {"bucket", "n", "bunched_share", "below_min_n"} <= set(data.columns)
+    assert meta["chart"] == "H30"
+    assert meta["options"]["threshold"] == 0.25
+
+
+def test_h28_h29_h30_refuse_an_empty_selection(table, tmp_path):
+    frame, source = table
+
+    with pytest.raises(ValueError):
+        headway.regularity_ranking(frame, out_prefix=tmp_path / "x", source=source,
+                                   routes=["does-not-exist"])
+    with pytest.raises(ValueError):
+        headway.excess_wait_ranking(frame, out_prefix=tmp_path / "x", source=source,
+                                    routes=["does-not-exist"])
+    with pytest.raises(ValueError):
+        headway.bunching_by_route_heatmap(frame, out_prefix=tmp_path / "x", source=source,
+                                          routes=["does-not-exist"])

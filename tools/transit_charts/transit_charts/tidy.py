@@ -488,6 +488,34 @@ def headway_cv(frame: pd.DataFrame, by: list[str], min_n: int = 3) -> pd.DataFra
     return out
 
 
+def bunching_rate(
+    frame: pd.DataFrame, by: list[str], threshold: float = 0.25, min_n: int = 3,
+) -> pd.DataFrame:
+    """Share of headways closed to under `threshold` of their OWN scheduled interval - the
+    B8/H30 bunching-frequency statistic.
+
+    Ratio to `sched_headway_s`, deliberately not a fixed number of minutes: a 5-minute service
+    and a 20-minute service must land on the same axis, and they only do that when "bunched"
+    means "closed to under a fraction of THIS pair's own interval" rather than "under N minutes"
+    - a fixed-minute threshold would make the 20-minute service nearly incapable of "bunching"
+    and the 5-minute one bunch under routine noise, two incomparable scales pretending to be one.
+
+    Rows with no usable scheduled headway (`sched_headway_s` NaN, or <= 0) are dropped before
+    grouping - same precedent as `wait_times`' SWT side, which has the identical gap. Undefined
+    below `min_n` ratios, same convention as `headway_cv`: reported with `n`, not silently
+    dropped, so a below-threshold group leaves a flagged row rather than a hole.
+    """
+    usable = frame.dropna(subset=["headway_s", "sched_headway_s"]).copy()
+    usable = usable[usable.sched_headway_s > 0]
+    usable["_ratio"] = usable.headway_s.astype(float) / usable.sched_headway_s.astype(float)
+    usable["_bunched"] = usable["_ratio"] < threshold
+    grouped = usable.groupby(by, dropna=False, sort=True)
+    out = grouped.agg(n=("_ratio", "count"), bunched_share=("_bunched", "mean")).reset_index()
+    out.loc[out.n < min_n, "bunched_share"] = float("nan")
+    out["below_min_n"] = out.n < min_n
+    return out
+
+
 def usable_segments(
     frame: pd.DataFrame,
     *,

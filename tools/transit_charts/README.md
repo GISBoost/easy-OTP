@@ -8,13 +8,34 @@
 > *English version: [README.en.md](README.en.md).*
 
 Buduje wykresy z katalogu `docs/handoffs/gtfs-rt-visualisation-catalogue_handoff.md` —
-punktualność, regularność, prędkość — z dopasowanych pozycji pojazdów Family A. Jedenaście
-gotowych wykresów, dwanasty (`F21`) świadomie zostawiony na później.
+punktualność, regularność, prędkość, oraz (od rozszerzenia „skala miasta") ranking i mapy
+cieplne po całej sieci naraz — z dopasowanych pozycji pojazdów Family A. Piętnaście gotowych
+wykresów (jedenaście per linia: A2, C9-C11, B5-B7, D14-D17, E20; cztery sieciowe: B8, H28-H30),
+`F21` świadomie zostawiony na później.
 
 Przykłady w tym pliku pochodzą z okna 10:07–21:59, więc nie ma w nich porannego szczytu.
 Komplet z **pełnej doby (06:00–21:59, Łódź 2026-07-23), osobno dla linii 10A, 11, 14, 15, 52,
 55 i 69**, leży w [`assets/full-day-example/`](assets/full-day-example/) — każdy folder ma
 własny `README.md`, w którym wszystkie wykresy tej linii widać od razu.
+
+## Słowniczek pojęć
+
+Skróty i żargon, które wracają w całym dokumencie bez rozwijania za każdym razem:
+
+| pojęcie | rozwinięcie | co znaczy tutaj |
+|---|---|---|
+| **CV** | *coefficient of variation*, współczynnik zmienności | `odchylenie standardowe / średnia` odstępu (headwayu). Bezwymiarowe — 0 = idealnie równo, 0,25 uchodzi za doskonałe, 0,42 to średnia amerykańskich autobusów. Linia co 5 minut i linia co 20 minut są na tej samej skali bez żadnej korekty (patrz B5, H28) |
+| **headway** | odstęp między kolejnymi pojazdami tej samej linii/kierunku na tym samym przystanku | zostaje po angielsku, bo tak nazywa się kolumna (`headway_s`) i tak mówi cała branżowa literatura, którą cytuje katalog wykresów |
+| **AWT** | *actual wait time* | rzeczywisty czas oczekiwania pasażera, który przychodzi na przystanek bez sprawdzania rozkładu: `E[H²] / (2·E[H])`, nie `E[H]/2` — bo nierówny odstęp wciąga więcej pasażerów w długie luki niż w krótkie |
+| **SWT** | *scheduled wait time* | ta sama formuła policzona na **rozkładowych** odstępach tej samej pary pojazdów — punkt odniesienia, ile czekałoby się, gdyby wszystko jechało dokładnie wg planu |
+| **EWT** | *excess wait time* | `EWT = AWT − SWT` — ile minut oczekiwania wynika **wyłącznie z nieregularności**, a nie z samej częstotliwości linii. To liczba, która przelicza się wprost na osobominuty (rama sprawiedliwości w B6/H29) |
+| **bunching** | zbijanie się pojazdów w stada | para (albo więcej) pojazdów jadących nienaturalnie blisko siebie, z dużą luką zaraz za nimi. B7/B8/H30 mierzą to jako udział headwayów poniżej `--threshold` **własnego** rozkładowego odstępu — ułamek, nie stała liczba minut, żeby linie o różnej częstotliwości były porównywalne |
+| **`seg_status`** | status segmentu w tabeli tidy | `ok` / `first_pair` / `stationary` / `implausible` / `gap` / `missing_stop_location` / `no_previous_stop` — odrzucenia z filtrów `FA-*` są **etykietowane, nie stosowane**; każdy wykres sam decyduje, co toleruje (patrz §5, tabela tidy) |
+| **`FA-13`/`FA-14`/`FA-18`/`FA-20`** | numery kamieni milowych `family_a_reconstruction` | filtry dziedziczone z rekonstrukcji GTFS: górny próg prędkości, przerwa w nawiasowaniu GPS, próg stacjonarności, pierwsza para przystanków (postój na pętli). Pełny opis w PRD tamtego narzędzia — tutaj liczy się tylko *co* filtrują |
+| **P50 / P85** | mediana / 85. percentyl | dwa warianty „zrealizowanego" GTFS budowane przez `family_a build` z zaobserwowanych czasów segmentów. **Nie są wejściem do tego narzędzia** — patrz dodatek na końcu dokumentu, dlaczego |
+| **`route_short_name` / `route_group`** | nazwa linii z rozkładu / wariant po zgrupowaniu | `route_group` to `route_short_name` po opcjonalnym `--group-variants` (np. `10A`+`10B` → `10`); większość wykresów pyta o `route_short_name`, chyba że jawnie powiedziano inaczej |
+| **`direction_id` / `trip_headsign`** | kierunek jako 0/1 z GTFS / kierunek jak na pojeździe | tytuły wykresów podają `trip_headsign` („Chocianowice IKEA"), a `direction_id` zostaje w nawiasie, bo to jego bierze `--direction` |
+| **tabela tidy** | wspólna tabela wyjściowa `extract` | jeden wiersz na rozkładowy przystanek każdego kursu; źródło każdego wykresu (§5) |
 
 ---
 
@@ -43,26 +64,7 @@ Gałąź D wymaga w zamian najostrzejszych filtrów (`seg_status == "ok"`, czyli
 bo bez nich postój na pętli renderuje się jako korek o prędkości 1,5 km/h i wygląda całkowicie
 wiarygodnie.
 
-## 2. Dlaczego nie buduje się tego z feedu P50
-
-Oczywistym wejściem byłby zrealizowany GTFS P50, który pipeline i tak publikuje. Nie działa,
-z trzech niezależnych powodów, i warto je znać, zanim ktoś spróbuje ponownie:
-
-- `rebuild_stop_times` kotwiczy każdy kurs na jego **rozkładowym pierwszym odjeździe**, więc
-  odchyłka na przystanku 1 jest zerowa *z definicji* — punktualność odjazdu w tym feedzie nie
-  istnieje;
-- mediany segmentów są kubełkowane w **blokach 2-godzinnych po rozkładowym odjeździe**, więc
-  profil doby narysowany z tego feedu ma ~12 realnych wartości, a wszystko drobniejsze jest
-  artefaktem granic kubełka, który przekonująco udaje szczyt komunikacyjny;
-- iteruje po **wszystkich kursach ze statycznego feedu**, także tych, których nikt nie
-  obserwował. To syntetyczny „typowy dzień", a nie zapis tego, co się wydarzyło.
-
-Dla gałęzi B feed P50 jest wręcz **niezdefiniowany**: nie ma w nim rozróżnialnych pojazdów, więc
-odstęp między nimi nie istnieje jako wielkość.
-
-`matched.csv` to produkt pośredni, w którym informacja o pojedynczym pojeździe jeszcze jest.
-
-## 3. Dlaczego osobny venv
+## 2. Dlaczego osobny venv
 
 `tools/family_a_reconstruction/requirements.txt` jest instalowany także na telefonie z Termuksem,
 który prowadzi nagrywanie, a **matplotlib nie ma wheeli dla Bionic (Android)**. Trzymanie
@@ -83,7 +85,7 @@ pip install -r requirements.txt
 
 ---
 
-## 4. Dwie komendy i co robi każda flaga
+## 3. Dwie komendy i co robi każda flaga
 
 Narzędzie ma dokładnie dwie komendy i to jest cała jego powierzchnia:
 
@@ -96,13 +98,13 @@ py -m transit_charts.cli chart  ...    # tanio, dowolnie wiele razy  -> PNG + CS
 rysowanie czyta gotową tabelę i trwa sekundy, więc przestawianie kubełków, progów i linii nic
 nie kosztuje.
 
-### 4.1. `extract` — z `matched.csv` + GTFS do tabeli tidy
+### 3.1. `extract` — z `matched.csv` + GTFS do tabeli tidy
 
 ```bat
-py -m transit_charts.cli extract ^
-  --matched ..\family_a_reconstruction\gtfs-manual-test\out_fa18\matched_lodz_2026-07-21.csv ^
-  --static  ..\family_a_reconstruction\gtfs-manual-test\static_gtfs\lodz_static_gtfs_2026-07-21.zip ^
-  --city lodz --route 10* --route 11 --route 55* --route 69* ^
+py -m transit_charts.cli extract 
+  --matched ..\family_a_reconstruction\gtfs-manual-test\out_fa18\matched_lodz_2026-07-21.csv 
+  --static  ..\family_a_reconstruction\gtfs-manual-test\static_gtfs\lodz_static_gtfs_2026-07-21.zip 
+  --city lodz --route 10* --route 11 --route 55* --route 69* 
   --out out\lodz_2026-07-21.csv.gz
 ```
 
@@ -127,47 +129,49 @@ wzorzec, jest wypisywane, bo prefiksy są tępsze, niż wyglądają:
   '55*' -> 55A, 55B, 55C
 ```
 
-### 4.2. `chart` — z tabeli tidy do wykresu
+### 3.2. `chart` — z tabeli tidy do wykresu
 
 ```bat
-py -m transit_charts.cli chart C9  --table out\lodz_2026-07-21.csv.gz --route 11 ^
+py -m transit_charts.cli chart C9  --table out\lodz_2026-07-21.csv.gz --route 11 
    --out-prefix out\charts\lodz_C9
-py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz ^
+py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz 
    --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C10
 ```
 
 | flaga | domyślnie | co robi |
 |---|---|---|
-| `name` (pozycyjny) | — | `A2`, `C9`, `C10`, `C11`, `B5`, `B6`, `B7`, `D14`, `D15`, `D17`, `E20` |
-| `--table` | **wymagana** | tabela z `extract`; **powtarzalna**. Wszystkie podane tabele są sklejane — patrz §8, bo dla części wykresów to pomaga, a dla części szkodzi |
+| `name` (pozycyjny) | — | `A2`, `C9`, `C10`, `C11`, `B5`, `B6`, `B7`, `B8`, `D14`, `D15`, `D17`, `E20`, `H28`, `H29`, `H30` |
+| `--table` | **wymagana** | tabela z `extract`; **powtarzalna**. Wszystkie podane tabele są sklejane — patrz §7, bo dla części wykresów to pomaga, a dla części szkodzi |
 | `--out-prefix` | **wymagana** | prefiks ścieżki; powstają `.png`, `.csv` i `.json` (i `.html` przy `--html`) |
-| `--route` | wszystkie | `route_short_name`; powtarzalna. `C9`, `A2`, `B5`, `B7`, `D14`, `D17` przyjmują **dokładnie jedną** i odmawiają przy większej liczbie |
+| `--route` | wszystkie | `route_short_name`; powtarzalna. `C9`, `A2`, `B5`, `B7`, `B8`, `D14`, `D17` przyjmują **dokładnie jedną** i odmawiają przy większej liczbie |
+| `--exclude-route` | brak | `route_short_name` do wykluczenia z zestawu; powtarzalna, to samo dopasowanie `NAZWA`/`PREFIKS*` co `--route`. Składa się z `--route` (najpierw dołączenie, potem odjęcie); bez `--route` odejmuje od wszystkich linii obecnych w tabeli. **Tylko dla wykresów wielolinijkowych** (`C10`, `C11`, `B6`, `D15`, `H28`, `H29`, `H30`) — jedna zanieczyszczona/skrajnie spóźniona linia potrafi rozjechać skalę koloru albo medianę wykresu sieciowego, i to jest dokładnie ten przypadek. Świadomie na poziomie `chart`, nie `extract`: jedna wyekstrahowana tabela całego feedu ma dziś obsługiwać **wszystkie** wykresy naraz, więc wykluczenie linii na etapie ekstrakcji zepsułoby ją dla wykresu **o tej linii** |
 | `--direction` | busiest | `direction_id`. Bez tej flagi wybierany jest kierunek z większą liczbą obserwacji — i wykres mówi, który to |
-| `--bucket-minutes` | zależnie | szerokość kubełka czasu doby: C10 15, C11 30, B5/B6/B7 60, D14/D17 120 |
+| `--bucket-minutes` | zależnie | szerokość kubełka czasu doby: C10 15, C11 30, B5/B6/B7/B8/H30 60, D14/D17 120 |
 | `--min-n` | 20 | kubełki poniżej progu są rysowane jako „za mało danych", a nie pomijane. **Znaczy co innego na wykresie seryjnym i siatkowym** — patrz niżej |
 | `--min-trip-coverage` | 0.6 | odrzuca kursy, z których zaobserwowano mniej niż taki ułamek przystanków (zabezpieczenie przed krawędzią okna nagrywania). Używane przez C9 i A2 |
 | `--combine` | wył. | **tylko C11**: dodaje panel zbiorczy „wszystkie linie" nad panelami poszczególnych linii |
 | `--annotate N` | 6 | **tylko D15**: podpisuje N najbardziej odstających segmentów. `0` wyłącza podpisy |
+| `--threshold` | 0.25 | **tylko B8/H30**: headway poniżej tego ułamka **własnego** rozkładowego odstępu liczy się jako zbunchowany — ułamek, nie minuty, żeby linia co 5 min i linia co 20 min były porównywalne |
 | `--html` | wył. | dodatkowo interaktywna strona obok PNG (C9, C10, B6) |
 
 Flaga adresowana do jednego wykresu, podana przy innym, **mówi na stderr, że jest ignorowana**.
 Flaga, która wygląda na przyjętą, a nie zadziałała, to najkrótsza droga do zaufania wykresowi,
 który nigdy jej nie uwzględnił.
 
-### 4.3. `--min-n` znaczy co innego na wykresie seryjnym i na siatkowym
+### 3.3. `--min-n` znaczy co innego na wykresie seryjnym i na siatkowym
 
 Kubełek czasu doby w C10 zbiera **wszystkie przystanki linii** i osiąga `n` w setkach. Jedna
 komórka segment × godzina w D14 zbiera **jedną parę przystanków** i jest ograniczona liczbą
 pojazdów, które przejechały — na linii z częstotliwością 15 minut to jakieś cztery.
 
-Dlatego wykresy siatkowe (`B5`, `B7`, `D14`, `D17`) trzymają własne, osiągalne domyślne wartości
+Dlatego wykresy siatkowe (`B5`, `B7`, `B8`, `D14`, `D17`, `H30`) trzymają własne, osiągalne domyślne wartości
 (pasma 2-godzinne, `min_n=3`), chyba że `--min-n` zostanie podany **jawnie**. Dodatkowo **każdy
 wykres siatkowy, który skończy wygaszony w ponad połowie, mówi o tym na stderr i we własnym
 podpisie**, podając medianę osiągalnego `n`. To zabezpieczenie powstało po tym, jak pierwsza
 wersja D14 ukryła 97 % komórek za nieosiągalnym progiem i wyglądała dokładnie jak linia bez
 danych.
 
-### 4.4. Trzy pliki na wykres
+### 3.4. Trzy pliki na wykres
 
 Każdy wykres zapisuje **trzy** pliki: `<prefix>.png`, `<prefix>.csv` z liczbami, które są na
 rysunku, oraz `<prefix>.json` z parametrami i odciskiem SHA-256 tabeli tidy, z której powstał.
@@ -178,14 +182,14 @@ Kubełki poniżej `--min-n` są rysowane jako szary trójkąt przy osi i **nazwa
 zamiast zostawiać pustkę — dziura na wykresie czyta się jak zero, a jawny znacznik czyta się
 jak „za mało danych".
 
-### 4.5. Jednostki
+### 3.5. Jednostki
 
 Tabela tidy trzyma **sekundy**, bo w tej jednostce wyrażony jest każdy próg w `family_a`, a jedna
 kanoniczna jednostka bije pytanie o konwersję w każdym miejscu użycia. Wykresy przeliczają na
 **minuty** na granicy rysowania, bo tak się te opóźnienia czyta, a boczny CSV niesie wartości
 już przeliczone z sufiksem `_min`, więc zawsze zgadza się z osią.
 
-### 4.6. Kierunek jest podpisany tak, jak na pojeździe
+### 3.6. Kierunek jest podpisany tak, jak na pojeździe
 
 Tytuł podaje `trip_headsign` ze statycznego feedu, a `direction_id` zostaje w nawiasie, bo to
 jego bierze `--direction`:
@@ -201,7 +205,7 @@ osi, i są w bocznym CSV.
 
 ---
 
-## 5. Katalog wykresów — co pokazuje, jak czytać, jak zrobić
+## 4. Katalog wykresów — co pokazuje, jak czytać, jak zrobić
 
 Każda komenda zakłada, że tabela tidy już istnieje (patrz `extract` wyżej) i że jesteś
 w `tools/transit_charts` z aktywnym venvem. Podstaw własną tabelę i linie.
@@ -289,7 +293,7 @@ uśrednianie pozwoliłoby linii z dziesięcioma kursami ważyć tyle, co linii z
 tego panelu mają w bocznym CSV `route_short_name = ALL`. Uwaga przy czytaniu: pula prawie zawsze
 przekracza `--min-n`, także tam, gdzie pojedyncza linia go nie osiąga.
 
-### B5 · regularność odstępów (CV), przystanek × godzina
+### B5 · regularność odstępów (CV — coefficient of variation, współczynnik zmienności), przystanek × godzina
 
 ![B5 — mapa cieplna CV odstępów, przystanek × godzina](assets/examples/lodz_B5.png)
 
@@ -316,10 +320,11 @@ py -m transit_charts.cli chart B6 --table out\lodz_2026-07-21.csv.gz ^
    --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_B6 --html
 ```
 
-Jeden panel na linię. Ciągła = oczekiwanie, którego realnie doświadcza pasażer przychodzący bez
-rozkładu, `E[H²]/(2·E[H])`; przerywana = ta sama formuła na **rozkładowych** odstępach **tej samej
-pary pojazdów**; zacieniony obszar między nimi to nadmiar. Kropkowana = oczekiwanie rzeczywiste
-bez przycięcia.
+Jeden panel na linię. Ciągła = **AWT** (*actual wait time*, oczekiwanie, którego realnie
+doświadcza pasażer przychodzący bez rozkładu), `E[H²]/(2·E[H])`; przerywana = **SWT** (*scheduled
+wait time*, ta sama formuła na **rozkładowych** odstępach **tej samej pary pojazdów**); zacieniony
+obszar między nimi to **EWT** (*excess wait time*, nadmiar oczekiwania ponad rozkład,
+`EWT = AWT − SWT`). Kropkowana = AWT bez przycięcia.
 
 **Jak to czytać.** To linia przerywana czyni ciągłą interpretowalną: łódzkie 10B czeka o 18:00
 31 minut, a rozkład mówi 30 — ten szczyt jest planem, nie awarią. Szeroki zacieniony obszar to
@@ -345,6 +350,78 @@ przy mniej więcej podwójnym odstępie — to zbijanie się w stada**: para poj
 dogoniły, i dziura, którą po sobie zostawiły. Długi ogon w prawo to sporadyczne duże luki na
 skądinąd porządnej obsłudze. Każdy grzbiet podaje i `n`, i liczbę *niezależnych pojazdów* za nim;
 ufaj tej drugiej liczbie.
+
+### B8 · częstość bunchingu, przystanek × godzina — jedna linia
+
+![B8 — częstość bunchingu, linia 11](assets/examples/lodz_B8.png)
+
+```bat
+py -m transit_charts.cli chart B8 --table out\lodz_2026-07-21.csv.gz --route 11 ^
+   --out-prefix out\charts\lodz_B8
+```
+
+Ten sam układ co B5 (wiersze = przystanki, kolumny = godziny), ale kolor to **udział headwayów
+poniżej `--threshold`** (domyślnie 0,25) **własnego** rozkładowego odstępu tej samej pary
+pojazdów — ułamek, nie stała liczba minut, żeby linia co 5 min i linia co 20 min były
+porównywalne na jednej skali.
+
+**Jak to czytać.** To lokalizator, którego brakuje w B7: ridgeline pokazuje, że bunching *gdzieś*
+na trasie się zdarza, ten wykres pokazuje **gdzie**. Pionowy czerwony pas to przystanek, na
+którym pary pojazdów regularnie się doganiają — zwykle tuż za faktyczną przyczyną (światła,
+wąska jezdnia, przystanek na żądanie), nie w miejscu samej przyczyny.
+
+### H28 · ranking regularności (CV) wszystkich linii
+
+![H28 — ranking regularności wszystkich linii](assets/examples/lodz_H28.png)
+
+```bat
+py -m transit_charts.cli chart H28 --table out\lodz_2026-07-21.csv.gz ^
+   --out-prefix out\charts\lodz_H28
+```
+
+Bez `--route` (albo z kilkoma) — jeden słupek na linię, posortowany malejąco po CV, obie
+kierunki połączone (ten sam precedens co B6). Kreski odniesienia przy 0,25 („doskonale") i 0,42
+(średnia autobusowa w USA), jak w B5.
+
+**Jak to czytać.** Sieciowa odpowiedź na pytanie, które dziś wymaga N heatmap B5 — która linia
+w mieście jest najbardziej nieregularna, jednym spojrzeniem. CV jest już bezwymiarowe, więc
+linia co 5 min i linia co 20 min stoją na tym samym wykresie bez korekty. Szare słupki to linie
+poniżej `--min-n`, podpisane liczbą `n` zamiast zniknąć.
+
+### H29 · ranking nadmiaru oczekiwania (EWT) wszystkich linii, dwa panele
+
+![H29 — ranking EWT, dwa panele](assets/examples/lodz_H29.png)
+
+```bat
+py -m transit_charts.cli chart H29 --table out\lodz_2026-07-21.csv.gz ^
+   --out-prefix out\charts\lodz_H29
+```
+
+Dwa panele: lewy to EWT bezwzględny w minutach (rama sprawiedliwości — „gdzie tracimy najwięcej
+osobominut"), prawy to EWT względem AWT (rama regularności — „która linia jest proporcjonalnie
+najgorsza"). Ten sam kolor per linia w obu panelach.
+
+**Jak to czytać.** Te dwa panele **celowo** dają różną kolejność słupków, i to nie jest błąd:
+ranking bezwzględny strukturalnie faworyzuje linie rzadkie (większy rozkładowy odstęp → większe
+`E[H²]/(2E[H])` nawet przy identycznej proporcjonalnej regularności), a panel względny to
+koryguje. Czytać jako dwa różne pytania, nie jako niezgodność.
+
+### H30 · częstość bunchingu, linia × godzina — całe miasto
+
+![H30 — częstość bunchingu, całe miasto](assets/examples/lodz_H30.png)
+
+```bat
+py -m transit_charts.cli chart H30 --table out\lodz_2026-07-21.csv.gz ^
+   --out-prefix out\charts\lodz_H30
+```
+
+Sieciowe B8: wiersze to linie zamiast przystanków jednej linii, kolumny to godziny, kolor to ten
+sam udział headwayów poniżej `--threshold` rozkładowego odstępu.
+
+**Jak to czytać.** Które linie i które godziny mają realny problem ze zbijaniem się w stada,
+przekrój przez całe miasto naraz. To jest wykres, w który `--exclude-route` wpada najbardziej
+wprost — jedna patologiczna linia (np. gubiący się GPS produkujący fałszywe zera odstępu)
+rozjeżdża skalę kolorów dla reszty miasta; wyklucz ją i policz resztę bez niej.
 
 ### D14 · prędkość segmentowa, segment × pasmo czasu
 
@@ -386,8 +463,8 @@ opóźnienia linii dokładnie na przystankach 22–23.
 ![D15 — strata systematyczna kontra losowa, z podpisanymi segmentami odstającymi](assets/examples/lodz_D15.png)
 
 ```bat
-py -m transit_charts.cli chart D15 --route 11 --out-prefix out\charts\lodz_D15 ^
-   --table out\lodz_2026-07-21.csv.gz --table out\lodz_2026-07-22.csv.gz ^
+py -m transit_charts.cli chart D15 --route 11 --out-prefix out\charts\lodz_D15 
+   --table out\lodz_2026-07-21.csv.gz --table out\lodz_2026-07-22.csv.gz 
    --table out\lodz_2026-07-23.csv.gz
 ```
 
@@ -427,7 +504,7 @@ między panelami.
 
 ---
 
-## 6. Tabela tidy
+## 5. Tabela tidy
 
 Jeden wiersz na **rozkładowy przystanek** każdego przetworzonego kursu, łącznie z przystankami,
 które nie wygenerowały przejazdu — pokrycie widać tylko wtedy, gdy braki są obecne. Kolumny są
@@ -445,7 +522,7 @@ wypisane w `tidy.TIDY_COLUMNS`; te, które niosą decyzje projektowe:
 | `trip_headsign` | kierunek tak, jak jest wypisany na pojeździe. Opcjonalny w GTFS; puste pole oznacza feed, który go nie wypełnia, a nie błąd ekstrakcji. |
 | `service_date_plausible` | `False`, gdy żadna kandydująca data serwisowa nie tłumaczy obserwacji (recyklowany `trip_id`, zła wersja feedu). Oznaczane, nigdy nieusuwane. |
 
-## 7. Czego te liczby dowodzą, a czego nie
+## 6. Czego te liczby dowodzą, a czego nie
 
 - **Pokrycie przejazdów przez przystanki jest wysokie, ale braki nie są losowe.** Łódź
   2026-07-21, sześć obserwowanych linii: 15 089 z 17 276 rozkładowych przystanków (**87,3 %**).
@@ -461,7 +538,7 @@ wypisane w `tidy.TIDY_COLUMNS`; te, które niosą decyzje projektowe:
 - **Interpolacja to nie obserwacja.** Przejazd przez przystanek jest interpolowany liniowo między
   pingami GPS oddalonymi nawet o 300 s.
 
-## 8. Kilka dni: które wykresy tego chcą, a którym to szkodzi
+## 7. Kilka dni: które wykresy tego chcą, a którym to szkodzi
 
 `--table` jest powtarzalna i każdy wykres skleja to, co dostanie. Dla jednych jest to przydatne,
 dla innych mylące, więc narzędzie **mówi na stderr, ilekroć weszło więcej niż jeden dzień
@@ -492,7 +569,7 @@ linii 11, kierunek 1:
 - **Wielodniowe z założenia: `D15`, `E20`.** D15 na jednym dniu w ogóle nie działa; E20 łączy to,
   co wniesie każde miasto.
 
-## 9. E20 — międzymiastowy profil artefaktu
+## 8. E20 — międzymiastowy profil artefaktu
 
 `E20` jest wyjątkiem i to celowo: **jako jedyny zachowuje pierwszy przystanek każdego kursu**,
 bo wielkość tego pierwszego przyrostu *jest* tematem. Wszędzie indziej pierwszy przystanek jest
@@ -528,7 +605,7 @@ Uporządkowanie zgadza się na obu końcach (Rzym i Boston najgorsze, Łódź cz
 w środku: **Gdańsk jest tu 6. z 7, a w tabeli prędkości pierwszej pary w PRD 4. z 9** — co jest
 niewyjaśnione i warte sprawdzenia, zanim którakolwiek z tabel zostanie zacytowana.
 
-## 10. Interaktywny HTML (opcjonalnie)
+## 9. Interaktywny HTML (opcjonalnie)
 
 `--html` zapisuje `<prefix>.html` obok PNG dla `C9`, `C10` i `B6`. Jeden samowystarczalny plik:
 CSS i JS inline, referencyjny PNG osadzony jako data URI, żadnego dostępu do sieci. Renderuje
@@ -538,7 +615,7 @@ daje dokładne wartości i `n` za każdym punktem, a tabela danych sortuje się 
 Wykresy bez sensownej formy interaktywnej (mapy cieplne, ridgeline) mówią to i zapisują wyłącznie
 PNG, zamiast produkować gorszą wersję samych siebie.
 
-## 11. Publikacja — co przetrwa w release, a co nie
+## 10. Publikacja — co przetrwa w release, a co nie
 
 Ustalenie do zapisania, zanim ktokolwiek zaplanuje te wykresy na dashboardzie:
 **opublikowany CSV nie wystarcza do ich zbudowania.**
@@ -553,14 +630,14 @@ Ustalenie do zapisania, zanim ktokolwiek zaplanuje te wykresy na dashboardzie:
 - `matched.csv` powstaje na runnerze i **nigdy nie jest wgrywany** — ginie razem z jobem. Surowe
   snapshoty `.pb` idą do release'u `positions-raw-*`, który ten sam workflow kasuje po zbudowaniu
   feedu.
-- Feed P50 nie jest zamiennikiem wejścia z powodów z §2, a dla gałęzi B jest wręcz
-  niezdefiniowany.
+- Feed P50 nie jest zamiennikiem wejścia z powodów opisanych w dodatku „Dlaczego nie buduje się
+  tego z feedu P50" na końcu dokumentu, a dla gałęzi B jest wręcz niezdefiniowany.
 - Co przeżywa i naprawdę się liczy: `<city>_static_gtfs_<date>.zip`, czyli **ta** publikacja
   rozkładu, która pasuje do dnia. To połowa tego, czego potrzebuje `extract`.
 
 **Rekomendacja:** dopiąć do workflow krok `transit_charts extract` i wgrywać
 `<city>_tidy_<date>.csv.gz` do release'u. Tabela tidy jest spakowana gzipem, ma jeden wiersz na
-rozkładowy przystanek (a nie na ping), niesie wszystkie kolumny czytane przez jedenaście wykresów
+rozkładowy przystanek (a nie na ping), niesie wszystkie kolumny czytane przez piętnaście wykresów
 i dziedziczy filtry FA-13/18/20 przez `seg_status`, zamiast je odtwarzać. Matplotlib nie jest tu
 przeszkodą: runner i tak go instaluje na potrzeby wykresu diff, a telefon nigdy nie dotyka
 `transit_charts/requirements.txt`.
@@ -568,7 +645,7 @@ przeszkodą: runner i tak go instaluje na potrzeby wykresu diff, a telefon nigdy
 Do czasu tej zmiany jedyne, co da się opublikować, to rendery z dni-miast leżących lokalnie na
 dysku. To przesądza kolejność prac: najpierw utrwalanie tabeli tidy, potem strona.
 
-## 12. F21 — kontrakt danych dla porównania dostępności (niezbudowane)
+## 11. F21 — kontrakt danych dla porównania dostępności (niezbudowane)
 
 `F21` (dostępność realizowalna kontra rozkładowa) potrzebuje łańcucha OpenTripPlanner /
 service-time, który mieszka we wtyczce, nie w tym narzędziu. To, co `transit_charts` jest mu
@@ -589,7 +666,7 @@ tego wszystkiego:
   dzień) czy P85 (pesymistyczny). To decyzja modelowa o tym, co znaczy „realizowalna", i należy
   do pytania badawczego, nie do tego narzędzia.
 
-## 13. Testy
+## 12. Testy
 
 ```bat
 set PYTHONPATH=.
@@ -601,3 +678,24 @@ Testy warte poznania, bo każdy pilnuje pułapki, a nie szczęśliwej ścieżki:
 z 08:00 na 09:00 przy zmianie czasu; biblioteka standardowa nie), przypadek przestarzałych
 znaczników czasu z Lizbony w `test_quality.py` oraz przypadki trasy pętlowej i pierwszego pojazdu
 w `test_tidy.py`.
+
+---
+
+## 13. Dlaczego nie buduje się tego z feedu P50
+
+Oczywistym wejściem byłby zrealizowany GTFS P50, który pipeline i tak publikuje. Nie działa,
+z trzech niezależnych powodów, i warto je znać, zanim ktoś spróbuje ponownie:
+
+- `rebuild_stop_times` kotwiczy każdy kurs na jego **rozkładowym pierwszym odjeździe**, więc
+  odchyłka na przystanku 1 jest zerowa *z definicji* — punktualność odjazdu w tym feedzie nie
+  istnieje;
+- mediany segmentów są kubełkowane w **blokach 2-godzinnych po rozkładowym odjeździe**, więc
+  profil doby narysowany z tego feedu ma ~12 realnych wartości, a wszystko drobniejsze jest
+  artefaktem granic kubełka, który przekonująco udaje szczyt komunikacyjny;
+- iteruje po **wszystkich kursach ze statycznego feedu**, także tych, których nikt nie
+  obserwował. To syntetyczny „typowy dzień", a nie zapis tego, co się wydarzyło.
+
+Dla gałęzi B feed P50 jest wręcz **niezdefiniowany**: nie ma w nim rozróżnialnych pojazdów, więc
+odstęp między nimi nie istnieje jako wielkość.
+
+`matched.csv` to produkt pośredni, w którym informacja o pojedynczym pojeździe jeszcze jest.

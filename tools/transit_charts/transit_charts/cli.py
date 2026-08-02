@@ -100,6 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--route", action="append", default=[],
         help="route_short_name to chart; repeatable. C9 and A2 take exactly one.",
     )
+    p_chart.add_argument(
+        "--exclude-route", action="append", default=[], metavar="NAME",
+        help="route_short_name to drop from the working set; repeatable, same NAME/'PREFIX*' "
+             "matching as --route. Composes with --route (include first, then subtract); with "
+             "no --route, subtracts from every route present in the table(s). For multi-route "
+             "charts only (C10/C11/B6/D15/H28/H29/H30) - a single-route chart ignores it, since "
+             "there is nothing left to subtract from one explicit --route.",
+    )
     p_chart.add_argument("--direction", default=None,
                          help="direction_id; defaults to whichever has more observations")
     p_chart.add_argument("--bucket-minutes", type=int, default=None,
@@ -126,6 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
              "labels off). Labelling every point would obliterate the cloud.",
     )
     p_chart.add_argument(
+        "--threshold", type=float, default=0.25,
+        help="B8/H30 only: a headway below this fraction of its OWN scheduled interval counts "
+             "as bunched (default: %(default)s, matching the handoff's definition). Ratio, not "
+             "minutes, so lines of different frequency are comparable.",
+    )
+    p_chart.add_argument(
         "--html", action="store_true",
         help="also write a self-contained interactive page beside the PNG (C9, C10, B6). "
              "Built from the same sidecar table, so the two cannot disagree.",
@@ -144,10 +158,14 @@ CHARTS = {
     "B5": ("headway regularity (CV) by stop and hour", True),
     "B6": ("actual vs scheduled wait, excess as the gap", False),
     "B7": ("headway distribution by hour, as a ridgeline", True),
+    "B8": ("bunching frequency by stop and hour", True),
     "D14": ("segment speed by segment and hour", True),
     "D17": ("schedule slack: observed minus scheduled running time", True),
     "D15": ("systematic vs stochastic loss per segment (needs several days)", False),
     "E20": ("terminus-layover artifact profile across cities", False),
+    "H28": ("network-wide headway regularity ranking", False),
+    "H29": ("network-wide excess wait ranking (absolute + relative)", False),
+    "H30": ("network-wide bunching frequency, route by hour", False),
 }
 
 # Charts with a sensible interactive form. The rest are heatmaps and ridgelines, where a
@@ -158,6 +176,12 @@ INTERACTIVE = {"C9", "C10", "B6"}
 # persistent offset from run-to-run variability and cannot work on one day; E20 compares
 # cities and pools whatever each contributes.
 MULTI_DAY_BY_DESIGN = {"D15", "E20"}
+
+# Charts that take a `routes: list[str] | None` selection and so can honour --exclude-route.
+# E20 is multi-route in the CHARTS table (no single --route requirement) but pools whatever
+# each input table contributes with no route filter of its own - excluded here explicitly so
+# it gets the same "ignored" note as a single-route chart, rather than silently doing nothing.
+EXCLUDE_ROUTE_AWARE = {"C10", "C11", "B6", "D15", "H28", "H29", "H30"}
 
 
 def _cmd_extract(args: argparse.Namespace) -> int:
@@ -185,6 +209,51 @@ def _grid_min_n(args: argparse.Namespace) -> dict:
     the chart's own default unless --min-n was passed explicitly.
     """
     return {"min_n": args.min_n} if args.min_n_explicit else {}
+
+
+def _resolve_route_filter(args: argparse.Namespace, table: pd.DataFrame) -> list[str] | None:
+    """--route and --exclude-route composed into one list for the multi-route charts.
+
+    Deliberately chart-level, not extract-level: `--route` in `extract` exists purely for
+    speed (a filter BEFORE the interpolation loop), and one whole-feed tidy table today serves
+    every per-line and network chart at once. Excluding a route at extract time would make that
+    same table unusable for a chart ABOUT the excluded route - a second extraction for "city
+    minus X" alongside the one for "just X". The contaminated-line problem this flag answers is
+    a chart problem, not an extraction one, so the fix stays here.
+
+    No flags at all -> None ("every route in the table", unchanged behaviour). The base set for
+    subtraction is whatever the table(s) actually carry - not the full feed - so excluding a
+    route already absent from a route-filtered extraction is reported the same way a typo would
+    be, rather than silently doing nothing.
+    """
+    known = set(table.route_short_name.dropna()) | set(table.route_group.dropna())
+    if not args.exclude_route:
+        return args.route or None
+
+    if args.route:
+        _patterns, base, unmatched = sources.match_route_names(args.route, known)
+        if unmatched:
+            raise sources.InputError(
+                "no route matches " + ", ".join(repr(p) for p in unmatched)
+                + f"\n(routes present in this table: {', '.join(sorted(known))})"
+            )
+    else:
+        base = known
+
+    _patterns, excluded, unmatched = sources.match_route_names(args.exclude_route, base)
+    if unmatched:
+        raise sources.InputError(
+            "--exclude-route matches nothing in the working set for "
+            + ", ".join(repr(p) for p in unmatched)
+            + f"\n(routes available to exclude: {', '.join(sorted(base))})"
+        )
+
+    remaining = sorted(base - excluded)
+    if not remaining:
+        raise ValueError(
+            "--exclude-route removed every route from the working set - nothing left to chart"
+        )
+    return remaining
 
 
 def _cmd_chart(args: argparse.Namespace) -> int:
@@ -228,6 +297,12 @@ def _cmd_chart(args: argparse.Namespace) -> int:
         print(f"note: --combine applies to C11 only; {args.name} ignores it", file=sys.stderr)
     if args.annotate != 6 and args.name != "D15":
         print(f"note: --annotate applies to D15 only; {args.name} ignores it", file=sys.stderr)
+    if args.threshold != 0.25 and args.name not in ("B8", "H30"):
+        print(f"note: --threshold applies to B8/H30 only; {args.name} ignores it",
+              file=sys.stderr)
+    if args.exclude_route and args.name not in EXCLUDE_ROUTE_AWARE:
+        print(f"note: --exclude-route applies to {'/'.join(sorted(EXCLUDE_ROUTE_AWARE))} only; "
+              f"{args.name} ignores it", file=sys.stderr)
     if args.name == "C9":
         result = punctuality.dot_and_whisker(
             table, route=args.route[0], direction=args.direction, min_n=args.min_n,
@@ -235,12 +310,12 @@ def _cmd_chart(args: argparse.Namespace) -> int:
         )
     elif args.name == "C10":
         result = punctuality.percentile_fan(
-            table, routes=args.route or None, min_n=args.min_n,
+            table, routes=_resolve_route_filter(args, table), min_n=args.min_n,
             bucket_minutes=args.bucket_minutes or 15, **common,
         )
     elif args.name == "C11":
         result = punctuality.punctuality_bands(
-            table, routes=args.route or None, min_n=args.min_n,
+            table, routes=_resolve_route_filter(args, table), min_n=args.min_n,
             bucket_minutes=args.bucket_minutes or 30, combine=args.combine, **common,
         )
     elif args.name == "A2":
@@ -255,13 +330,34 @@ def _cmd_chart(args: argparse.Namespace) -> int:
         )
     elif args.name == "B6":
         result = headway.excess_wait(
-            table, routes=args.route or None, bucket_minutes=args.bucket_minutes or 60,
+            table, routes=_resolve_route_filter(args, table),
+            bucket_minutes=args.bucket_minutes or 60,
             min_n=max(5, args.min_n // 4), **common,
         )
     elif args.name == "B7":
         result = headway.headway_ridgeline(
             table, route=args.route[0], direction=args.direction,
             bucket_minutes=args.bucket_minutes or 60, min_n=args.min_n, **common,
+        )
+    elif args.name == "B8":
+        result = headway.bunching_heatmap(
+            table, route=args.route[0], direction=args.direction,
+            bucket_minutes=args.bucket_minutes or 60, threshold=args.threshold,
+            **_grid_min_n(args), **common,
+        )
+    elif args.name == "H28":
+        result = headway.regularity_ranking(
+            table, routes=_resolve_route_filter(args, table), min_n=args.min_n, **common,
+        )
+    elif args.name == "H29":
+        result = headway.excess_wait_ranking(
+            table, routes=_resolve_route_filter(args, table), min_n=args.min_n, **common,
+        )
+    elif args.name == "H30":
+        result = headway.bunching_by_route_heatmap(
+            table, routes=_resolve_route_filter(args, table),
+            bucket_minutes=args.bucket_minutes or 60,
+            threshold=args.threshold, **_grid_min_n(args), **common,
         )
     elif args.name == "D14":
         result = speed.speed_heatmap(
@@ -282,7 +378,8 @@ def _cmd_chart(args: argparse.Namespace) -> int:
     else:  # D15
         result = speed.systematic_vs_stochastic(
             tables, out_prefix=args.out_prefix, sources=args.table,
-            routes=args.route or None, direction=args.direction, annotate=args.annotate,
+            routes=_resolve_route_filter(args, table), direction=args.direction,
+            annotate=args.annotate,
         )
 
     print(f"{args.name}: {result.png}")

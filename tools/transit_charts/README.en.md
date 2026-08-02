@@ -8,13 +8,34 @@
 > *Wersja polska (główna): [README.md](README.md).*
 
 Builds the charts catalogued in `docs/handoffs/gtfs-rt-visualisation-catalogue_handoff.md` —
-punctuality, regularity, speed — from Family A's matched vehicle positions. Eleven charts are
-built; the twelfth (`F21`) is deliberately left for later.
+punctuality, regularity, speed, and (since the "city scale" extension) network-wide rankings and
+heatmaps — from Family A's matched vehicle positions. Fifteen charts are built (eleven per-route:
+A2, C9-C11, B5-B7, D14-D17, E20; four network-wide: B8, H28-H30); `F21` is deliberately left for
+later.
 
 The examples in this file come from a 10:07–21:59 window, so they contain no morning peak. A
 full set from **a whole day (06:00–21:59, Łódź 2026-07-23), one folder per route for 10A, 11,
 14, 15, 52, 55 and 69**, is in [`assets/full-day-example/`](assets/full-day-example/) — each
 folder has its own `README.md` showing every chart of that route at once.
+
+## Glossary
+
+Abbreviations and jargon that recur throughout without being spelled out every time:
+
+| term | expands to | what it means here |
+|---|---|---|
+| **CV** | *coefficient of variation* | `standard deviation / mean` of headway. Dimensionless — 0 is perfectly even, 0.25 is regarded as excellent, 0.42 is the US bus average. A 5-minute route and a 20-minute route sit on the same scale with no adjustment (see B5, H28) |
+| **headway** | interval between consecutive vehicles of the same route/direction at the same stop | kept in English because that is the column name (`headway_s`) and the term the cited literature uses throughout |
+| **AWT** | *actual wait time* | the wait a turn-up passenger who never checks the timetable actually experiences: `E[H²] / (2·E[H])`, not `E[H]/2` — an uneven interval pulls more passengers into the long gaps than the short ones |
+| **SWT** | *scheduled wait time* | the same formula computed on the **scheduled** headways of the same pair of vehicles — the baseline for how long you would wait if everything ran exactly to plan |
+| **EWT** | *excess wait time* | `EWT = AWT − SWT` — how many minutes of waiting come **purely from irregularity**, not from the route's frequency itself. Converts directly to passenger-minutes (the equity framing in B6/H29) |
+| **bunching** | vehicles closing up into clusters | a pair (or more) of vehicles running unnaturally close together, with a large gap right behind them. B7/B8/H30 measure it as the share of headways below `--threshold` of their **own** scheduled interval — a ratio, not a fixed number of minutes, so routes of different frequency are comparable |
+| **`seg_status`** | segment status in the tidy table | `ok` / `first_pair` / `stationary` / `implausible` / `gap` / `missing_stop_location` / `no_previous_stop` — `FA-*` rejections are **labelled, not applied**; every chart decides for itself what it tolerates (see §5, the tidy table) |
+| **`FA-13`/`FA-14`/`FA-18`/`FA-20`** | `family_a_reconstruction` milestone numbers | filters inherited from the GTFS reconstruction: implausible-speed ceiling, GPS-bracket gap, stationary threshold, first stop pair (terminus layover). Full detail lives in that tool's PRD — here only *what* they filter matters |
+| **P50 / P85** | median / 85th percentile | two "realized" GTFS variants `family_a build` produces from observed segment times. **Not the input to this tool** — see the appendix at the end of this document for why |
+| **`route_short_name` / `route_group`** | timetable route name / grouped variant | `route_group` is `route_short_name` after optional `--group-variants` (e.g. `10A`+`10B` → `10`); most charts ask for `route_short_name` unless stated otherwise |
+| **`direction_id` / `trip_headsign`** | 0/1 GTFS direction / the direction shown on the vehicle | chart titles give `trip_headsign` ("Chocianowice IKEA"), with `direction_id` kept in parentheses because that is what `--direction` takes |
+| **tidy table** | `extract`'s shared output table | one row per scheduled stop of every processed trip; the source every chart reads (§5) |
 
 ---
 
@@ -42,25 +63,7 @@ The D branch demands the sharpest filters in exchange (`seg_status == "ok"`, i.e
 FA-13/FA-18/FA-20), because without them a terminus layover renders as a 1.5 km/h jam and looks
 entirely plausible.
 
-## 2. Why this is not built on the P50 feed
-
-The obvious input would be the realized P50 GTFS the pipeline already publishes. It does not
-work, for three separate reasons, and they are worth knowing before anyone tries again:
-
-- `rebuild_stop_times` anchors every trip on its **scheduled first departure**, so deviation at
-  stop 1 is zero *by construction* — departure punctuality does not exist in that feed;
-- segment medians are bucketed into **2-hour blocks keyed on the scheduled departure**, so a
-  day profile drawn from it has ~12 real values and everything finer is a bucket-boundary
-  artifact that reads convincingly like a rush hour;
-- it iterates over **every trip in the static feed**, including ones nobody observed. It is a
-  synthetic "typical day", not a log of what happened.
-
-For the B branch the P50 feed is not merely degraded but **undefined**: it has no distinguishable
-vehicles, so the interval between them does not exist as a quantity.
-
-`matched.csv` is the intermediate product that still has the per-vehicle information in it.
-
-## 3. Why its own venv
+## 2. Why its own venv
 
 `tools/family_a_reconstruction/requirements.txt` is also installed on the Termux phone that does
 the recording, and **matplotlib has no wheels for Android's Bionic libc**. Keeping the plotting
@@ -81,7 +84,7 @@ pip install -r requirements.txt
 
 ---
 
-## 4. Two commands, and what every flag does
+## 3. Two commands, and what every flag does
 
 The tool has exactly two commands, and that is its entire surface:
 
@@ -93,7 +96,7 @@ py -m transit_charts.cli chart  ...    # cheap, as often as you like  -> PNG + C
 **`chart` is the one used daily.** `extract` is run once and forgotten; drawing reads the cached
 table and takes seconds, so changing buckets, thresholds and lines costs nothing.
 
-### 4.1. `extract` — from `matched.csv` + GTFS to a tidy table
+### 3.1. `extract` — from `matched.csv` + GTFS to a tidy table
 
 ```bat
 py -m transit_charts.cli extract ^
@@ -124,7 +127,7 @@ printed, because prefixes are blunter than they look:
   '55*' -> 55A, 55B, 55C
 ```
 
-### 4.2. `chart` — from a tidy table to a figure
+### 3.2. `chart` — from a tidy table to a figure
 
 ```bat
 py -m transit_charts.cli chart C9  --table out\lodz_2026-07-21.csv.gz --route 11 ^
@@ -135,35 +138,37 @@ py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz ^
 
 | flag | default | what it does |
 |---|---|---|
-| `name` (positional) | — | `A2`, `C9`, `C10`, `C11`, `B5`, `B6`, `B7`, `D14`, `D15`, `D17`, `E20` |
-| `--table` | **required** | tidy table from `extract`; **repeatable**. Everything passed is concatenated — see §8, because for some charts that helps and for others it misleads |
+| `name` (positional) | — | `A2`, `C9`, `C10`, `C11`, `B5`, `B6`, `B7`, `B8`, `D14`, `D15`, `D17`, `E20`, `H28`, `H29`, `H30` |
+| `--table` | **required** | tidy table from `extract`; **repeatable**. Everything passed is concatenated — see §7, because for some charts that helps and for others it misleads |
 | `--out-prefix` | **required** | path prefix; `.png`, `.csv` and `.json` are written (plus `.html` with `--html`) |
-| `--route` | all | `route_short_name`; repeatable. `C9`, `A2`, `B5`, `B7`, `D14`, `D17` take **exactly one** and refuse more |
+| `--route` | all | `route_short_name`; repeatable. `C9`, `A2`, `B5`, `B7`, `B8`, `D14`, `D17` take **exactly one** and refuse more |
+| `--exclude-route` | none | `route_short_name` to drop from the working set; repeatable, same `NAME`/`PREFIX*` matching as `--route`. Composes with `--route` (include first, then subtract); with no `--route`, subtracts from every route present in the table(s). **Multi-route charts only** (`C10`, `C11`, `B6`, `D15`, `H28`, `H29`, `H30`) — one contaminated or extremely late line can skew a colour scale or median for the whole network chart, and that is exactly the case this exists for. Deliberately a `chart`-level flag, not `extract`-level: one whole-feed tidy table is meant to serve every per-line and network chart at once, and excluding a route at extraction time would break that table for a chart **about** the excluded route |
 | `--direction` | busiest | `direction_id`. Without it the direction with more observations is used — and the chart says which |
-| `--bucket-minutes` | per chart | time-of-day bucket width: C10 15, C11 30, B5/B6/B7 60, D14/D17 120 |
+| `--bucket-minutes` | per chart | time-of-day bucket width: C10 15, C11 30, B5/B6/B7/B8/H30 60, D14/D17 120 |
 | `--min-n` | 20 | buckets below it are drawn as "insufficient data" rather than omitted. **It means different things on a series chart and a grid chart** — see below |
 | `--min-trip-coverage` | 0.6 | drops trip runs with less than this fraction of their stops observed (the recording-window edge guard). Used by C9 and A2 |
 | `--combine` | off | **C11 only**: adds a pooled "all routes" panel above the per-route ones |
 | `--annotate N` | 6 | **D15 only**: labels the N most extreme segments. `0` turns labels off |
+| `--threshold` | 0.25 | **B8/H30 only**: a headway below this fraction of its OWN scheduled interval counts as bunched — a ratio, not minutes, so a 5-minute and a 20-minute line are comparable |
 | `--html` | off | also writes a self-contained interactive page beside the PNG (C9, C10, B6) |
 
 A flag belonging to one chart, passed to another, **says on stderr that it is being ignored**. A
 flag that appears to have been accepted but did nothing is the shortest path to trusting a figure
 that never honoured it.
 
-### 4.3. `--min-n` means different things on a series chart and on a grid chart
+### 3.3. `--min-n` means different things on a series chart and on a grid chart
 
 A time-of-day bucket in C10 pools **every stop of a route** and reaches n in the hundreds. A
 single segment × hour cell in D14 pools **one stop pair** and is bounded by the vehicles that ran
 — on a 15-minute-headway route that is about four.
 
-The grid charts (`B5`, `B7`, `D14`, `D17`) therefore keep their own reachable defaults (2-hour
+The grid charts (`B5`, `B7`, `B8`, `D14`, `D17`, `H30`) therefore keep their own reachable defaults (2-hour
 bands, `min_n=3`) unless `--min-n` is passed **explicitly**. On top of that, **any grid chart that
 ends up more than half suppressed says so on stderr and in its own caption**, quoting the median
 achievable `n`. That guard exists because the first version of D14 hid 97 % of its cells behind
 an unreachable threshold and looked exactly like a route with no data.
 
-### 4.4. Three files per chart
+### 3.4. Three files per chart
 
 Every chart writes **three** files: `<prefix>.png`, `<prefix>.csv` with the numbers that are on
 the figure, and `<prefix>.json` with the parameters and a SHA-256 fingerprint of the tidy table it
@@ -174,14 +179,14 @@ Buckets below `--min-n` are drawn as a grey triangle on the axis and **named in 
 rather than left blank: a hole in a chart reads as zero, an explicit mark reads as "not enough
 data".
 
-### 4.5. Units
+### 3.5. Units
 
 The tidy table stores seconds, because that is the unit every threshold in `family_a` is
 expressed in and one canonical unit beats a conversion question at each call site. Charts convert
 to **minutes** at the rendering boundary, since that is how these delays are actually read, and
 the sidecar CSV carries the converted values with a `_min` suffix so it always matches the axis.
 
-### 4.6. Direction is labelled the way the vehicle is
+### 3.6. Direction is labelled the way the vehicle is
 
 The title carries `trip_headsign` from the static feed, with `direction_id` kept in brackets
 because that is what `--direction` takes:
@@ -196,7 +201,7 @@ stop numbers** — stop names are too long to fit on an axis, and they are in th
 
 ---
 
-## 5. Chart reference — what each shows, how to read it, how to make it
+## 4. Chart reference — what each shows, how to read it, how to make it
 
 Every command below assumes a tidy table already exists (see `extract` above) and that you are
 in `tools/transit_charts` with the venv active. Substitute your own table and routes.
@@ -282,7 +287,7 @@ a route with ten runs weigh as much as one with four hundred. Its rows are keyed
 `route_short_name = ALL` in the sidecar. One caveat when reading it: the pool almost always
 clears `--min-n`, including where a single route does not.
 
-### B5 · headway regularity (CV), stop × hour
+### B5 · headway regularity (CV — coefficient of variation), stop × hour
 
 ![B5 — headway CV heatmap, stop × hour](assets/examples/lodz_B5.png)
 
@@ -309,9 +314,10 @@ py -m transit_charts.cli chart B6 --table out\lodz_2026-07-21.csv.gz ^
    --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_B6 --html
 ```
 
-One panel per route. Solid = the wait a turn-up passenger actually experiences,
-`E[H²]/(2·E[H])`; dashed = the same formula on the scheduled headways of **the same two
-vehicles**; the shaded gap between them is the excess. Dotted = the untrimmed actual wait.
+One panel per route. Solid = **AWT** (*actual wait time*, the wait a turn-up passenger actually
+experiences), `E[H²]/(2·E[H])`; dashed = **SWT** (*scheduled wait time*, the same formula on the
+scheduled headways of **the same two vehicles**); the shaded gap between them is **EWT** (*excess
+wait time*, `EWT = AWT − SWT`). Dotted = the untrimmed AWT.
 
 **Reading it.** The dashed line is what makes the solid one interpretable: Łódź 10B waits 31
 minutes at 18:00, and the timetable says 30 — that peak is the plan, not a failure. A wide
@@ -336,6 +342,76 @@ shifted right = thinner but still even. **Two humps — one near 0–5 min and o
 interval — is bunching**: a pair of vehicles that caught each other up, and the hole they left
 behind. A long right tail is occasional big gaps on otherwise tidy service. Each ridge names
 both `n` and the number of *independent vehicles* behind it; trust the second number.
+
+### B8 · bunching frequency, stop × hour — one route
+
+![B8 — bunching frequency, route 11](assets/examples/lodz_B8.png)
+
+```bat
+py -m transit_charts.cli chart B8 --table out\lodz_2026-07-21.csv.gz --route 11 ^
+   --out-prefix out\charts\lodz_B8
+```
+
+Same layout as B5 (rows = stops, columns = hours), but colour is the **share of headways below
+`--threshold`** (default 0.25) of their **own** scheduled interval — a ratio, not a fixed number
+of minutes, so a 5-minute line and a 20-minute line are comparable on one scale.
+
+**Reading it.** The localiser B7 is missing: the ridgeline shows bunching happens *somewhere* on
+the route at some hour, this chart shows **where**. A vertical red band is a stop where pairs
+routinely close up — usually just downstream of the actual cause (a signal, a pinch point, a
+request stop), not at the cause itself.
+
+### H28 · network-wide headway regularity (CV) ranking
+
+![H28 — network-wide regularity ranking](assets/examples/lodz_H28.png)
+
+```bat
+py -m transit_charts.cli chart H28 --table out\lodz_2026-07-21.csv.gz ^
+   --out-prefix out\charts\lodz_H28
+```
+
+No `--route` (or several) — one bar per route, ranked descending by CV, both directions pooled
+(same precedent as B6). Reference ticks at 0.25 ("excellent") and 0.42 (US bus average), as in B5.
+
+**Reading it.** The network-wide answer to a question that today needs N separate B5 heatmaps —
+which line in the city is least regular, at a glance. CV is already scale-free, so a 5-minute and
+a 20-minute line sit on the same chart with no adjustment. Grey bars are routes below `--min-n`,
+labelled with `n` rather than vanishing.
+
+### H29 · network-wide excess wait (EWT) ranking, two panels
+
+![H29 — EWT ranking, two panels](assets/examples/lodz_H29.png)
+
+```bat
+py -m transit_charts.cli chart H29 --table out\lodz_2026-07-21.csv.gz ^
+   --out-prefix out\charts\lodz_H29
+```
+
+Two panels: left is absolute EWT in minutes (the equity framing — "where do we lose the most
+passenger-minutes"), right is EWT relative to AWT (the regularity framing — "which line is
+proportionally worst"). Same colour per route in both.
+
+**Reading it.** The two panels give a **deliberately different** bar order, and that is not a
+bug: the absolute ranking structurally favours low-frequency lines (a bigger scheduled headway
+means a bigger `E[H²]/(2E[H])` even at identical proportional regularity), and the relative panel
+corrects for that. Read them as two different questions, not a disagreement.
+
+### H30 · network-wide bunching frequency, route × hour
+
+![H30 — network-wide bunching frequency](assets/examples/lodz_H30.png)
+
+```bat
+py -m transit_charts.cli chart H30 --table out\lodz_2026-07-21.csv.gz ^
+   --out-prefix out\charts\lodz_H30
+```
+
+The city-wide B8: rows are routes instead of one route's stops, columns are hours, colour is the
+same share-of-headways-below-`--threshold` statistic.
+
+**Reading it.** Which lines and which hours have a real bunching problem, across the whole city
+at once. This is the chart `--exclude-route` was built for most directly — one pathological line
+(GPS dropping out and producing false zero-length gaps, say) can dominate the colour scale for
+everyone else; exclude it and read the rest of the city without it.
 
 ### D14 · segment speed, segment × time band
 
@@ -414,7 +490,7 @@ bars mean the city does not have it. Compare within a panel, never across them.
 
 ---
 
-## 6. The tidy table
+## 5. The tidy table
 
 One row per **scheduled stop** of every processed trip run, including stops that produced no
 crossing — coverage is only visible if the misses are present. Columns are listed in
@@ -432,7 +508,7 @@ crossing — coverage is only visible if the misses are present. Columns are lis
 | `trip_headsign` | the direction as written on the vehicle. Optional in GTFS; an empty value means a feed that does not populate it, not a failed extraction. |
 | `service_date_plausible` | `False` when no candidate service date explains the observations (recycled `trip_id`, wrong feed version). Flagged, never dropped. |
 
-## 7. What the numbers do and do not support
+## 6. What the numbers do and do not support
 
 - **Stop-crossing coverage is high but the misses are not random.** Łódź 2026-07-21, six
   observed routes: 15,089 of 17,276 scheduled stops crossed (**87.3 %**). A vehicle that
@@ -446,7 +522,7 @@ crossing — coverage is only visible if the misses are present. Columns are lis
 - **Interpolation is not observation.** A stop crossing is interpolated linearly between GPS
   pings up to 300 s apart.
 
-## 8. Several days: which charts want them, and which are harmed by them
+## 7. Several days: which charts want them, and which are harmed by them
 
 `--table` is repeatable and every chart concatenates what it is given. That is useful for some
 charts and misleading for others, so the tool **says on stderr whenever more than one service day
@@ -475,7 +551,7 @@ direction 1:
 - **Already multi-day by design: `D15`, `E20`.** D15 cannot work on one day at all; E20 pools
   whatever each city contributes.
 
-## 9. E20 — the cross-city artifact profile
+## 8. E20 — the cross-city artifact profile
 
 `E20` is the odd one out and deliberately so: **it is the only chart that keeps each trip's
 first stop**, because the size of that first increment *is* the subject. Everywhere else the
@@ -512,7 +588,7 @@ agrees at both ends (Rome and Boston worst, Łódź clean) but not in the middle
 6th of 7 here and 4th of 9 in the PRD's first-pair speed table**, which is unexplained and worth
 a look before either table is cited.
 
-## 10. Interactive HTML (optional)
+## 9. Interactive HTML (optional)
 
 `--html` writes `<prefix>.html` beside the PNG for `C9`, `C10` and `B6`. One self-contained
 file: inline CSS and JS, the reference PNG embedded as a data URI, no network access needed. It
@@ -522,7 +598,7 @@ values and `n` behind any point, and the data table sorts on any column.
 Charts with no sensible interactive form (heatmaps, the ridgeline) say so and write the PNG only
 rather than producing a worse version of themselves.
 
-## 11. Publishing — what survives in a release and what does not
+## 10. Publishing — what survives in a release and what does not
 
 A finding to record before anyone plans these charts onto the dashboard: **the published CSV is
 not enough to rebuild them.**
@@ -536,14 +612,14 @@ not enough to rebuild them.**
 - `matched.csv` is written on the runner and **never uploaded** — it dies with the job. The raw
   `.pb` snapshots go to a `positions-raw-*` release, which the same workflow deletes once the
   corrected feed is published.
-- The P50 feed is not a substitute input, for the reasons in §2, and for the B branch it is
-  undefined.
+- The P50 feed is not a substitute input, for the reasons in the "Why this is not built on the
+  P50 feed" appendix at the end of this document, and for the B branch it is undefined.
 - What survives and genuinely matters: `<city>_static_gtfs_<date>.zip`, i.e. **the** timetable
   publication that matches the day. That is half of what `extract` needs.
 
 **Recommendation:** add a `transit_charts extract` step to the workflow and upload
 `<city>_tidy_<date>.csv.gz` to the release. The tidy table is gzipped, has one row per scheduled
-stop (not per ping), carries every column the eleven charts read, and inherits the FA-13/18/20
+stop (not per ping), carries every column the fifteen charts read, and inherits the FA-13/18/20
 filters through `seg_status` rather than re-deriving them. Matplotlib is not an obstacle here:
 the runner already installs it for the diff chart, and the phone never touches
 `transit_charts/requirements.txt`.
@@ -551,7 +627,7 @@ the runner already installs it for the diff chart, and the phone never touches
 Until that change, the only thing publishable is renders from the city-days sitting on local
 disk. That settles the order of work: persist the tidy table first, then the page.
 
-## 12. F21 — data contract for the accessibility comparison (not implemented)
+## 11. F21 — data contract for the accessibility comparison (not implemented)
 
 `F21` (realizable vs scheduled accessibility) needs the OpenTripPlanner / service-time chain,
 which lives in the plugin, not in this tool. What `transit_charts` owes it is written down here
@@ -570,7 +646,7 @@ so that side can be built without re-deriving it:
   (typical day) or P85 (pessimistic). That is a modelling decision about what "realizable" means
   and belongs with the research question, not with this tool.
 
-## 13. Tests
+## 12. Tests
 
 ```bat
 set PYTHONPATH=.
@@ -581,3 +657,23 @@ The tests worth knowing about, because each pins a trap rather than a happy path
 `test_pandas_timedelta_arithmetic_is_the_thing_this_module_avoids` (pandas puts an 08:00
 departure at 09:00 across a spring-forward; the stdlib does not), the Lisbon stale-timestamp
 case in `test_quality.py`, and the loop-route and first-vehicle headway cases in `test_tidy.py`.
+
+---
+
+## 13. Why this is not built on the P50 feed
+
+The obvious input would be the realized P50 GTFS the pipeline already publishes. It does not
+work, for three separate reasons, and they are worth knowing before anyone tries again:
+
+- `rebuild_stop_times` anchors every trip on its **scheduled first departure**, so deviation at
+  stop 1 is zero *by construction* — departure punctuality does not exist in that feed;
+- segment medians are bucketed into **2-hour blocks keyed on the scheduled departure**, so a
+  day profile drawn from it has ~12 real values and everything finer is a bucket-boundary
+  artifact that reads convincingly like a rush hour;
+- it iterates over **every trip in the static feed**, including ones nobody observed. It is a
+  synthetic "typical day", not a log of what happened.
+
+For the B branch the P50 feed is not merely degraded but **undefined**: it has no distinguishable
+vehicles, so the interval between them does not exist as a quantity.
+
+`matched.csv` is the intermediate product that still has the per-vehicle information in it.

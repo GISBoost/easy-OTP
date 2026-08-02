@@ -99,6 +99,37 @@ class RouteSelection:
         return "\n".join(lines)
 
 
+def match_route_names(
+    patterns: list[str], known: set[str],
+) -> tuple[dict[str, list[str]], set[str], list[str]]:
+    """(matches per pattern, union of matched names, patterns with no hit).
+
+    Each pattern matches a name exactly, or as a prefix when it ends in `*` (`55*` catches
+    `55A`, `55B`, `55C`). Matching is case-insensitive because feeds are not consistent about
+    it. Shared by `resolve_routes` below (extract time - needs `route_id` from `routes.txt`)
+    and `cli._resolve_route_filter` (chart time - matches directly against the
+    `route_short_name`/`route_group` values already carried by the tidy table, with no GTFS
+    file in reach), so the two never quietly drift into different wildcard semantics.
+    """
+    matched_patterns: dict[str, list[str]] = {}
+    selected_names: set[str] = set()
+    unmatched: list[str] = []
+
+    for pattern in patterns:
+        if pattern.endswith("*"):
+            prefix = pattern[:-1].casefold()
+            hits = {n for n in known if n.casefold().startswith(prefix)}
+        else:
+            hits = {n for n in known if n.casefold() == pattern.casefold()}
+        if not hits:
+            unmatched.append(pattern)
+            continue
+        matched_patterns[pattern] = sorted(hits)
+        selected_names |= hits
+
+    return matched_patterns, selected_names, unmatched
+
+
 def resolve_routes(
     static_zip: Path,
     patterns: list[str],
@@ -123,21 +154,7 @@ def resolve_routes(
     routes = routes.assign(route_short_name=routes.route_short_name.fillna(""))
 
     known = {name for name in routes.route_short_name if name}
-    matched_patterns: dict[str, list[str]] = {}
-    selected_names: set[str] = set()
-    unmatched: list[str] = []
-
-    for pattern in patterns:
-        if pattern.endswith("*"):
-            prefix = pattern[:-1].casefold()
-            hits = {n for n in known if n.casefold().startswith(prefix)}
-        else:
-            hits = {n for n in known if n.casefold() == pattern.casefold()}
-        if not hits:
-            unmatched.append(pattern)
-            continue
-        matched_patterns[pattern] = sorted(hits)
-        selected_names |= hits
+    matched_patterns, selected_names, unmatched = match_route_names(patterns, known)
 
     if unmatched:
         raise InputError(
