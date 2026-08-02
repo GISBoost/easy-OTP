@@ -11,6 +11,23 @@ The plugin UI is available in English and **Polish** *(new in v0.5)*.
 
 ---
 
+Besides the QGIS plugin, easy-OTP is the hub of a small analytical suite for transit
+data — standalone tools that reconstruct, analyse, and chart real service, plus two
+companion repositories that automate recording and publishing the results.
+
+| Location | What it does |
+| --- | --- |
+| [`tools/`](tools/README.md) | Parent folder for every standalone tool below — none of it is part of the QGIS plugin |
+| [`tools/family_a_reconstruction/`](tools/family_a_reconstruction/README.md) | Reconstructs an observed GTFS (P50/P85) from recorded GTFS-RT VehiclePositions, for cities with no `TripUpdates` feed |
+| [`tools/transit_charts/`](tools/transit_charts/README.md) | Charts scheduled-vs-observed transit — punctuality, regularity, speed — from `family_a_reconstruction`'s output |
+| [`tools/analysis/`](tools/analysis/README.md) | Ad-hoc population and GTFS-RT analysis scripts |
+| [`tools/rt_diagnose/`](tools/rt_diagnose/README.md) | Diagnoses why a live GTFS-RT feed isn't matching a static GTFS (the RT-1 "0 trip updates" blocker) |
+| [`tools/network/`](tools/network/README.md) | Guide for preparing a custom OSM network |
+| [`easy-GTFS-RT`](https://github.com/GISBoost/easy-GTFS-RT) | CI/CD workflows that record GTFS-RT on a schedule and run `family_a_reconstruction` automatically |
+| [`gtfs-dashboard`](https://github.com/GISBoost/gtfs-dashboard) | Static site publishing the resulting realized GTFS feeds and charts |
+
+---
+
 ## Example result
 
 ![easy-OTP service-time map](assets/result_map.jpg)
@@ -246,6 +263,10 @@ Copy those directly into the **OSM extract** and **GTFS folder** parameters of
   than the query area; only city- and sub-regional feeds are downloaded.
 - **Missing operator:** if a local operator is not yet in Transitland, add
   their `.zip` manually to `DEST_DIR/gtfs/` after the algorithm finishes.
+- **Realized GTFS feeds:** for a feed corrected against actually-observed vehicle
+  positions rather than the planned timetable, see
+  [`gtfs-dashboard`](https://github.com/GISBoost/gtfs-dashboard), which publishes
+  the P50/P85 output of `tools/family_a_reconstruction/` for several cities.
 
 #### Own network
 

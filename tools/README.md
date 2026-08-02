@@ -18,11 +18,3 @@ itself, and the root `CLAUDE.md` for the constraints that apply repo-wide (Engli
 | [`analysis/`](analysis/README.md) | Ad-hoc population/GTFS-RT analysis scripts — some run in the QGIS Python Console, some are plain CLI. One-off research scripts kept for reuse, not a packaged tool. |
 | [`rt_diagnose/`](rt_diagnose/README.md) | Standalone diagnostic for the "RT-1 applied 0 trip updates" blocker — checks whether a static GTFS and a live GTFS-RT feed actually share `trip_id`s. |
 | [`network/`](network/README.md) | Guide for preparing a custom `.osm.pbf` network (manual edits, converting a QGIS vector layer, tag/speed edits, merging into an existing extract) — for modelling network changes without touching the plugin. `zasieg.gpkg` alongside it is local scratch data, not tracked. |
-| `i18n/` | QGIS plugin UI translation pipeline (`.ts` ↔ local LLM ↔ `.qm`). Has its own README, but the whole folder is gitignored — developer-only tooling, never distributed. |
-| `poznan-rt-feed/` | Local OTP working directory used while testing Poznań's GTFS-RT feed (graphs, pointsets, surfaces, logs). Pure runtime output, not tracked, no code. |
-
-## Untracked scratch at the top level
-
-`converter-pdf.py` (a one-off PDF→Markdown conversion script for a single paper) and any
-stray `test.qgs` / `test_attachments.zip` files are personal scratch, not part of any
-tool above — ignore them unless you know why you're touching them.
