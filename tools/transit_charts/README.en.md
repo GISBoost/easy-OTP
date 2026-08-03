@@ -627,6 +627,13 @@ the runner already installs it for the diff chart, and the phone never touches
 Until that change, the only thing publishable is renders from the city-days sitting on local
 disk. That settles the order of work: persist the tidy table first, then the page.
 
+**Implemented 2026-08-03** (`easy-GTFS-RT`, `family_a_build_and_notify_from_phone.yml`): a
+whole-feed `transit_charts extract` step (no `--route` filter — the table has to serve any chart,
+not one line) runs as a best-effort step after the release is published, uploading the result as
+`<city>_tidy_<date>.csv.gz`. Forward-only from the day it shipped — releases published before that
+do not get this asset retroactively (the raw recordings behind them are already deleted). See
+`HOW-IT-WORKS.md` §6 in `easy-GTFS-RT` for the asset table.
+
 ## 11. F21 — data contract for the accessibility comparison (not implemented)
 
 `F21` (realizable vs scheduled accessibility) needs the OpenTripPlanner / service-time chain,

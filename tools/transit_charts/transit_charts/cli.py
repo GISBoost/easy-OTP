@@ -1,6 +1,6 @@
 """Command-line entry point.
 
-    py -m transit_charts extract --matched <table.csv> --static <gtfs.zip> --city lodz \\
+    py -m transit_charts.cli extract --matched <table.csv> --static <gtfs.zip> --city lodz \\
         --route 10* --route 11 --out out/lodz_2026-07-21.csv.gz
 
 No interactive prompts and no hardcoded paths anywhere: this starts as a research tool but is

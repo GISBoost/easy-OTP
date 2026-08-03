@@ -645,6 +645,13 @@ przeszkodą: runner i tak go instaluje na potrzeby wykresu diff, a telefon nigdy
 Do czasu tej zmiany jedyne, co da się opublikować, to rendery z dni-miast leżących lokalnie na
 dysku. To przesądza kolejność prac: najpierw utrwalanie tabeli tidy, potem strona.
 
+**Wdrożone 2026-08-03** (`easy-GTFS-RT`, `family_a_build_and_notify_from_phone.yml`): krok
+`transit_charts extract` całego feedu (bez filtra `--route` — tabela ma obsłużyć dowolny wykres,
+nie jedną linię) doklejony jako best-effort po publikacji release'u, wynik wgrywany jako
+`<city>_tidy_<date>.csv.gz`. Działa tylko w przód od dnia wdrożenia — release'y opublikowane
+wcześniej nie dostają tego załącznika retroaktywnie (surowe nagrania za nimi są już skasowane).
+Szczegóły załącznika: `HOW-IT-WORKS.md` §6 w `easy-GTFS-RT`.
+
 ## 11. F21 — kontrakt danych dla porównania dostępności (niezbudowane)
 
 `F21` (dostępność realizowalna kontra rozkładowa) potrzebuje łańcucha OpenTripPlanner /
