@@ -12,56 +12,6 @@
             <translation>4 · Czas rzeczywisty</translation>
         </message>
         <message>
-            <source>Reconstructs a 'realized timetable' from an RT-2 snapshot archive and a matching static GTFS feed.
-
-Outputs two modified GTFS .zip files:
-  &lt;prefix&gt;_p50.zip — P50 (median) segment travel times (typical conditions)
-  &lt;prefix&gt;_p85.zip — P85 (85th percentile) travel times (reliability / TTV)
-
-Run the standard RunTemporalAccessibility algorithm on each output to compare schedule-based, median-realized, and reliability-adjusted accessibility.
-
-Method: Braga et al. (2023) stop-pair segment aggregation across all trips and days. Segments with no observations keep their scheduled duration (gap). CANCELED trips are dropped from the output.
-
-IMPORTANT — same-day static required:
-If the archive's trip_ids embed the service date (e.g. Gdańsk), the static GTFS must be downloaded the same day as the archive. A wrong-day static will yield near-zero overlap and the output will be uncorrected.
-
-Dependency:
-This algorithm requires google.protobuf and gtfs-realtime-bindings. If missing, the error message includes install instructions. This is the only easy-OTP feature that needs this dependency.
-
-Methodological limitations:
-- TripUpdates carry predicted times / delay offsets, not empirically recorded stop events (Wessel 2017, rt2gtfs 2026). The realized feed reflects predicted operations.
-- P50 ≈ typical conditions; P85 ≈ reliability bound (travel-time variability).
-- Aggregation is by stop-pair segment across all trips/days, not per trip_id.
-- Gaps (unobserved segments) fall back to scheduled travel time.
-- Output is a reproducible static GTFS feed; it is not a record of any single actual day.
-
-See docs/RT-3_realized-gtfs-notes.md for full methodology and references.</source>
-            <translation>Rekonstruuje „zrealizowany rozkład jazdy” na podstawie archiwum migawek RT-2 i pasującego statycznego feedu GTFS.
-
-Wyprowadza dwa zmodyfikowane pliki GTFS .zip:
-  &lt;prefix&gt;_p50.zip — Czasy przejazdu segmentów P50 (warunki typowe)
-  &lt;prefix&gt;_p85.zip — Czasy przejazdu segmentów P85 (wiarygodność / TTV)
-
-Uruchom standardowy algorytm RunTemporalAccessibility na każdym z wyników, aby porównać dostępność opartą na rozkładzie, medianową zrealizowaną i skorygowaną pod kątem wiarygodności.
-
-Metoda: Braga et al. (2023) agregacja segmentów par przystanków dla wszystkich przejazdów i dni. Segmenty bez obserwacji zachowują swój zaplanowany czas trwania (luka). PRZEJAZDY ANULOWANE są usuwane z wyniku.
-
-WAŻNE — wymagany statyczny na dany dzień:
-Jeśli identyfikatory przejazdów w archiwum zawierają datę usługi (np. Gdańsk), statyczny GTFS musi zostać pobrany tego samego dnia co archiwum. Statyka z innego dnia spowoduje bliskie zeru nakładanie się i wynik nie zostanie skorygowany.
-
-Zależność:
-Ten algorytm wymaga google.protobuf oraz gtfs-realtime-bindings. Jeśli są brakujące, komunikat o błędzie zawiera instrukcje instalacji. Jest to jedyna funkcja easy-OTP, która wymaga tej zależności.
-
-Ograniczenia metodologiczne:
-- TripUpdates zawierają przewidywane czasy / przesunięcia opóźnień, a nie empirycznie zarejestrowane zdarzenia przystankowe (Wessel 2017, rt2gtfs 2026). Zrealizowany feed odzwierciedla operacje przewidywane.
-- P50 ≈ warunki typowe; P85 ≈ granica wiarygodności (zmienność czasu przejazdu).
-- Agregacja odbywa się według segmentu pary przystanków dla wszystkich przejazdów/dni, a nie na podstawie pojedynczego trip_id.
-- Luki (nieobserwowane segmenty) przyjmują zaplanowany czas trwania.
-- Wynik jest powtarzalnym statycznym feedem GTFS; nie jest to zapis jakiegokolwiek konkretnego dnia rzeczywistego.
-
-Zobacz docs/RT-3_realized-gtfs-notes.md po pełną metodologię i odniesienia.</translation>
-        </message>
-        <message>
             <source>RT-2 snapshot archive directory</source>
             <translation>Katalog archiwum migawek RT-2</translation>
         </message>
@@ -176,22 +126,8 @@ Upewnij się, że jest to katalog archiwum RT-2 wygenerowany przez RecordGtfsRt.
             <translation>Pokrycie trip-id: {overlap:.0%} ({'OK' if overlap &gt;= 0.05 else 'LOW — see warning below'})</translation>
         </message>
         <message>
-            <source>Only {overlap:.0%} of TripUpdate trip_ids are present in the static feed. Likely causes:
-  • The static GTFS is from a different service date than the archive (feeds whose trip_ids embed the date, e.g. Gdańsk).
-  • The static GTFS is from a different city or agency.
-The output will be produced but most segments will be uncorrected (gaps falling back to scheduled times).</source>
-            <translation>Tylko {overlap:.0%} ID przejazdów z TripUpdate obecne jest w feedzie statycznym. Prawdopodobne przyczyny:
-  • Statyczny GTFS pochodzi z innego dnia usługi niż archiwum (feedy, których ID przejazdu zawierają datę, np. Gdańsk).
-  • Statyczny GTFS pochodzi z innego miasta lub agencji.
-Wynik zostanie wygenerowany, ale większość segmentów będzie niepoprawna (luki będą bazować na czasach rozkładu).</translation>
-        </message>
-        <message>
             <source>Parsing {len(snapshot_paths)} snapshot(s)…</source>
             <translation>Parsowanie {len(snapshot_paths)} zrzutu/zrzutów…</translation>
-        </message>
-        <message>
-            <source>Segments observed: {len(segment_times):,}  |  CANCELED trips: {len(canceled_trip_ids)}</source>
-            <translation>Zaobserwowano segmenty: {len(segment_times):,}  |  ANULOWANE przejazdy: {len(canceled_trip_ids)}</translation>
         </message>
         <message>
             <source>Aggregating segment statistics (P50, P85)…</source>
@@ -252,6 +188,201 @@ Gotowe.
         <message>
             <source>BuildRealizedGtfs failed: {exc}</source>
             <translation>BuildRealizedGtfs nie powiódł się: {exc}</translation>
+        </message>
+        <message>
+            <source>Reconstructs a 'realized timetable' from an RT-2 snapshot archive and a matching static GTFS feed.
+
+Outputs two modified GTFS .zip files:
+  &lt;prefix&gt;_p50.zip — P50 (median) segment travel times (typical conditions)
+  &lt;prefix&gt;_p85.zip — P85 (85th percentile) travel times (reliability / TTV)
+
+Run the standard RunTemporalAccessibility algorithm on each output to compare schedule-based, median-realized, and reliability-adjusted accessibility.
+
+Method: Braga et al. (2023) stop-pair segment aggregation across all trips and days. Segments with no observations keep their scheduled duration (gap). CANCELED trips are dropped from the output.
+
+IMPORTANT — same-day static required:
+If the archive's trip_ids embed the service date (e.g. Gdańsk), the static GTFS must be downloaded the same day as the archive. A wrong-day static will yield near-zero overlap and the output will be uncorrected. This requirement also applies to every file in STATIC_GTFS_EXTRA — all extra files must be the same service date as STATIC_GTFS and the RT archive.
+
+Multi-file static feeds (STATIC_GTFS_EXTRA):
+Some cities publish per-mode static feeds against one combined realtime feed — e.g. Kraków (ZTP) publishes GTFS_KRK_T.zip (tram) and GTFS_KRK_A.zip (bus) separately, but one combined TripUpdates.pb for both modes. Set STATIC_GTFS to one of the two (e.g. the tram feed) and STATIC_GTFS_EXTRA to a folder containing the other (e.g. the bus feed) so both modes' trip_ids are recognized when computing trip-id overlap and segment statistics. If a trip_id happens to appear in more than one file, the first file's (STATIC_GTFS's) version is kept and a warning is reported.
+
+Trip matching mode (MATCHING_MODE):
+By default (AUTO), trips are matched to the static feed by trip_id, exactly as before RT3-5. If trip_id overlap is below 5% but the archive's capability sample shows the feed carries usable route_id, stop_id, and absolute-time fields (route_id overlap, stop_id presence, stop_id overlap with the static feed, and absolute-time ratio ALL at least 50% — thresholds chosen as a reasonable starting point, revisit if a known-good feed narrowly misses them), AUTO falls back to matching by route_id + stop_id instead. This handles feeds (e.g. Poznań, Kraków) whose trip_id namespace is permanently disjoint from the static feed's — a different, larger problem than a wrong-day static feed. If neither join is usable, the algorithm fails fast with a message reporting the measured ratios, instead of silently producing an uncorrected result. ROUTE_STOP_FALLBACK matching cannot distinguish direction_id (direction is unknowable without a matched trip), only counts stop-time pairs with an absolute observed time (not a bare delay offset), and does not drop CANCELED trips from the output (canceled_trip_ids are collected via the RT-side trip_id, which by construction never matches a static trip_id in this mode). TRIP_ID and ROUTE_STOP_FALLBACK can also be forced explicitly (e.g. to compare both on the same archive); the four capability ratios are always logged, and a warning is shown if a forced mode looks unlikely to work well.
+
+Segment source mode (SEGMENT_SOURCE_MODE):
+By default (AUTO), segments are computed from adjacent StopTimeUpdate pairs within a single TripUpdate message (PER_MESSAGE) — this is the unchanged pre-0.7 behavior for every already-verified feed (e.g. Gdańsk, Szczecin, the Polish rail feed). Some feeds (e.g. Poznań) instead publish next-stop-only TripUpdates, carrying exactly one StopTimeUpdate per trip per message — for these, PER_MESSAGE's adjacent-pair loop never has a second stop to pair with, yielding zero segments even at high trip_id overlap (RT3-6, #18). When the archive's message-shape sample shows a median of &lt;= 1 StopTimeUpdate per TripUpdate (a provisional threshold, pending confirmation on a real Poznań archive), AUTO instead selects CROSS_SNAPSHOT: per trip_id, observations of each stop are stitched across the whole archive (the chronologically latest snapshot's observation of a given stop wins), and segments are computed only between strictly consecutive stop_sequence values. A stop_sequence gap (an intermediate stop never observed between polls) is skipped and counted, never interpolated — a polling interval too coarse relative to stop spacing will still produce sparse coverage, just fewer outright gaps than before. RECONCILE_LAST_SNAPSHOT has no additional effect when SEGMENT_SOURCE_MODE resolves to CROSS_SNAPSHOT: the equivalent reconciliation already happens per-stop while collecting. SEGMENT_SOURCE_MODE and MATCHING_MODE are independent axes — CROSS_SNAPSHOT composes with either TRIP_ID (uses the static schedule base exactly like PER_MESSAGE, no absolute-time requirement) or ROUTE_STOP_FALLBACK (inherits its absolute-time requirement). Both modes can also be forced explicitly.
+
+This algorithm assumes the archive covers a single service day. If the snapshot archive spans more than ~25 hours, a warning is logged (not blocking) noting that results may mix unrelated days.
+
+Frozen-feed deduplication (DEDUPLICATE_FROZEN_SNAPSHOTS):
+When an upstream feed freezes mid-recording — e.g. Poland's national rail aggregate feed (mkuran.pl) is documented to stop updating for over an hour, once or twice a day — RecordGtfsRt (RT-2) still writes one identical snapshot file per poll throughout the freeze. Left uncorrected, that period would be counted once per snapshot in the P50/P85 pool, skewing the aggregate toward whatever travel time happened to be observed the instant the feed froze. When enabled (default: on), consecutive snapshots whose raw bytes exactly match the immediately preceding kept snapshot are dropped before aggregation, so a frozen period contributes at most once. This does not affect the archive time-span warning above, which is always computed from the full, undeduplicated snapshot list.
+
+Prediction reconciliation (RECONCILE_LAST_SNAPSHOT):
+Each TripUpdate snapshot re-predicts a trip's future stop times as the trip progresses, so the same trip-segment is observed repeatedly across snapshots — predictions made closer to the actual event (shorter lead time) are more accurate. When enabled (default: on), only the observation from the chronologically last snapshot with a complete pair of stop-time events is kept per (trip_id, from_stop_sequence, to_stop_sequence); earlier, less mature predictions for the same trip-segment are discarded before P50/P85 aggregation. This is an intentional behavior change: P50/P85 values may shift slightly compared to archives processed before this feature — this is not a regression. Disable it to restore pre-0.7 behavior (every snapshot's observation counted), which is useful for very short test recordings where reducing each trip-segment to a single observation would leave too few data points for a meaningful P85.
+
+Dependency:
+This algorithm requires google.protobuf and gtfs-realtime-bindings. If missing, the error message includes install instructions. This is the only easy-OTP feature that needs this dependency.
+
+Methodological limitations:
+- TripUpdates carry predicted times / delay offsets, not empirically recorded stop events (Wessel 2017, rt2gtfs 2026). The realized feed reflects predicted operations.
+- P50 ≈ typical conditions; P85 ≈ reliability bound (travel-time variability).
+- Aggregation is by stop-pair segment across all trips/days, not per trip_id.
+- With RECONCILE_LAST_SNAPSHOT enabled, each trip-segment contributes exactly one observation regardless of how many snapshots covered it; disabling it weights repeated/evolving predictions of the same trip-segment equally.
+- Gaps (unobserved segments) fall back to scheduled travel time.
+- ROUTE_STOP_FALLBACK matching (auto-selected or forced) loses direction_id distinction and requires an absolute observed time per stop event; pairs lacking either are skipped rather than counted.
+- In ROUTE_STOP_FALLBACK mode, CANCELED-trip dropping does not apply: canceled_trip_ids are collected using the RT-side trip_id, which by construction does not match any static trip_id in this mode, so CANCELED RT trips remain in the output feed (unlike TRIP_ID mode).
+- CROSS_SNAPSHOT stitches per-stop observations across snapshots; a stop_sequence gap (a missed poll) is skipped and counted, never interpolated — polling must be frequent enough relative to stop spacing for good coverage.
+- Output is a reproducible static GTFS feed; it is not a record of any single actual day.
+
+See docs/RT-3_realized-gtfs-notes.md for full methodology and references.</source>
+            <translation>Rekonstruuje „rozliczony rozkład jazdy” z archiwum migawek RT-2 i pasującym statycznym feedem GTFS.
+
+Wyprowadza dwa zmodyfikowane pliki GTFS .zip:
+  &lt;prefix&gt;_p50.zip — Czas przejazdu segmentów P50 (warunki typowe)
+  &lt;prefix&gt;_p85.zip — Czas przejazdu segmentów P85 (wiarygodność / TTV)
+
+Uruchom standardowy algorytm RunTemporalAccessibility na każdym z wyników, aby porównać dostępność opartą o rozkład jazdy, medianową realizację i dostosowaną pod kątem wiarygodności.
+
+Metoda: Braga et al. (2023) agregacja segmentów par przystankowych dla wszystkich podróży i dni. Segmenty bez obserwacji zachowują swój zaplanowany czas trwania (luka). Podróże ANULOWANE są usuwane z wyniku.
+
+WAŻNE — wymagany statyczny na ten sam dzień:
+Jeśli identyfikatory podróży w archiwum zawierają datę usługi (np. Gdańsk), statyczny GTFS musi być pobrany tego samego dnia co archiwum. Statyka z innego dnia spowoduje bliskie zeru pokrycie, a wynik nie zostanie skorygowany. Wymóg ten dotyczy również każdego pliku w STATIC_GTFS_EXTRA — wszystkie dodatkowe pliki muszą mieć tę samą datę usługi co STATIC_GTFS i archiwum RT.
+
+Statyczne feedy wieloplikowe (STATIC_GTFS_EXTRA):
+Niektóre miasta publikują statyczne feedy według trybu transportu względem jednego połączonego feedu czasu rzeczywistego — np. Kraków (ZTP) publikuje GTFS_KRK_T.zip (tramwaj) i GTFS_KRK_A.zip (autobus) osobno, ale jeden połączony TripUpdates.pb dla obu trybów. Ustaw STATIC_GTFS na jeden z dwóch (np. feed tramwajowy), a STATIC_GTFS_EXTRA na folder zawierający drugi (np. feed autobusowy), aby oba identyfikatory podróży były rozpoznawane podczas obliczania pokrycia ID podróży i statystyk segmentów. Jeśli ID podróży przypadkowo pojawia się w więcej niż jednym pliku, zachowana jest wersja z pierwszego pliku (STATIC_GTFS) i wyświetlane jest ostrzeżenie.
+
+Tryb dopasowywania podróży (MATCHING_MODE):
+Domyślnie (AUTO), podróże są dopasowywane do statycznego feedu na podstawie trip_id, dokładnie tak jak wcześniej w RT3-5. Jeśli pokrycie trip_id jest poniżej 5%, ale próbka zdolności archiwum pokazuje, że feed zawiera użyteczne pola route_id, stop_id i czasu absolutnego (pokrycie route_id, obecność stop_id, pokrycie stop_id ze statycznym feedem oraz stosunek czasu absolutnego OBA co najmniej 50% — progi wybrane jako rozsądny punkt wyjścia, należy ponownie sprawdzić, jeśli znany dobry feed ledwo je nie osiąga), AUTO przechodzi na dopasowywanie według route_id + stop_id. Obsługuje to feedy (np. Poznań, Kraków), których przestrzeń nazw trip_id jest trwale rozłączna od statycznego feedu — co jest innym, większym problemem niż statyczny feed z innego dnia. Jeśli żaden z połączeń nie jest użyteczny, algorytm szybko się zawiesza z komunikatem o podanych stosunkach, zamiast cicho generować nieskorygowany wynik. Dopasowanie ROUTE_STOP_FALLBACK nie potrafi odróżnić direction_id (kierunek jest nieznany bez dopasowanej podróży), tylko liczy pary czas-przystanek z absolutnym czasem obserwacji (nie tylko surowym przesunięciem opóźnienia) i nie usuwa podróży ANULOWANYCH z wyniku (canceled_trip_ids są zbierane za pomocą trip_id po stronie RT, które z konstrukcji nigdy nie pasuje do statycznego trip_id w tym trybie). TRIP_ID i ROUTE_STOP_FALLBACK można również wymusić jawnie (np. aby porównać oba na tym samym archiwum); cztery stosunki zdolności są zawsze rejestrowane, a ostrzeżenie jest wyświetlane, jeśli wymuszony tryb wydaje się mało prawdopodobny do dobrej pracy.
+
+Tryb źródła segmentu (SEGMENT_SOURCE_MODE):
+Domyślnie (AUTO), segmenty są obliczane z sąsiadujących par StopTimeUpdate w ramach pojedynczej wiadomości TripUpdate (PER_MESSAGE) — jest to niezmieniony zachowanie przed wersją 0.7 dla każdego już zweryfikowanego feedu (np. Gdańsk, Szczecin, polski feed kolejowy). Niektóre feedy (np. Poznań) publikują zamiast tego tylko następny przystanek TripUpdates, zawierając dokładnie jedno StopTimeUpdate na podróż w wiadomości — dla tych PER_MESSAGE pętla sąsiednich par nigdy nie ma drugiego przystanku do sparowania, co daje zero segmentów nawet przy wysokim pokryciu trip_id (RT3-6, #18). Gdy próbka kształtu wiadomości archiwum pokazuje medianę &lt;= 1 StopTimeUpdate na TripUpdate (tymczasowy próg, oczekujący potwierdzenia na rzeczywistym archiwum z Poznania), AUTO wybiera zamiast tego CROSS_SNAPSHOT: dla każdego trip_id obserwacje każdego przystanku są łączone w całym archiwum (obserwacja danego przystanku z chronologicznie najnowszego snapshotu wygrywa), a segmenty są obliczane tylko między ściśle kolejnymi wartościami stop_sequence. Luka w stop_sequence (przystanek pośredni nigdy nie zaobserwowany między próbkami) jest pomijana i liczona, nigdy interpolowana — zbyt rzadki interwał próbkowania względem odstępu przystanków nadal spowoduje rzadkie pokrycie, tylko mniej jawnych luk niż wcześniej. RECONCILE_LAST_SNAPSHOT nie ma dodatkowego wpływu, gdy SEGMENT_SOURCE_MODE rozstrzyga się na CROSS_SNAPSHOT: równoważne ujednolicenie już zachodzi dla każdego przystanku podczas zbierania danych. SEGMENT_SOURCE_MODE i MATCHING_MODE są niezależnymi osiami — CROSS_SNAPSHOT łączy się z TRIP_ID (używa podstawy rozkładu jazdy statycznego dokładnie tak jak PER_MESSAGE, bez wymogu czasu absolutnego) lub ROUTE_STOP_FALLBACK (dziedziczy po nim wymóg czasu absolutnego). Oba tryby można również wymusić jawnie.
+
+Ten algorytm zakłada, że archiwum obejmuje jeden dzień usługi. Jeśli archiwum migawki rozciąga się na ponad ~25 godzin, rejestrowane jest ostrzeżenie (nie blokujące) informujące, że wyniki mogą mieszać niepowiązane dni.
+
+Usuwanie duplikatów dla zamrożonego feedu (DEDUPLICATE_FROZEN_SNAPSHOTS):
+Kiedy upstreamowy feed zamarza w trakcie nagrywania — np. polski agregat kolejowy krajowy (mkuran.pl) jest dokumentowany jako zatrzymujący aktualizacje przez ponad godzinę, raz lub dwa razy dziennie — RecordGtfsRt (RT-2) nadal zapisuje jeden identyczny plik snapshotu na każdą próbkę w trakcie zamrożenia. Pozostawiony nieskorygowany, ten okres byłby liczony raz na każdy snapshot w puli P50/P85, zniekształcając agregat w kierunku dowolnego czasu przejazdu, który przypadkowo został zaobserwowany w momencie zamrożenia feedu. Gdy jest włączone (domyślnie: tak), kolejne snapshoty, których surowe bajty dokładnie pasują do bezpośrednio poprzedniego zachowanego snapshotu, są usuwane przed agregacją, więc okres zamrożenia przyczynia się maksymalnie raz. Nie wpływa to na ostrzeżenie o zakresie czasowym archiwum powyżej, które jest zawsze obliczane z pełnej, nieudupkowanej listy snapshotów.
+
+Równoważenie predykcji (RECONCILE_LAST_SNAPSHOT):
+Każdy snapshot TripUpdate ponownie przewiduje przyszłe czasy przystankowe podróży w miarę postępu tej podróży, więc ten sam segment podróży jest obserwowany wielokrotnie w różnych snapshotach — predykcje dokonane bliżej rzeczywistego zdarzenia (krótszy czas wyprzedzający) są dokładniejsze. Gdy jest włączone (domyślnie: tak), zachowywana jest tylko obserwacja z chronologicznie ostatniego snapshotu z pełną parą zdarzeń czasu-przystanek dla każdego (trip_id, from_stop_sequence, to_stop_sequence); wcześniejsze, mniej dojrzałe predykcje tego samego segmentu podróży są odrzucane przed agregacją P50/P85. Jest to celowa zmiana zachowania: wartości P50/P85 mogą nieznacznie się zmienić w porównaniu do archiwów przetwarzanych przed tą funkcją — to nie jest regresja. Wyłącz je, aby przywrócić zachowanie sprzed wersji 0.7 (obserwacja każdego snapshotu liczona), co jest przydatne dla bardzo krótkich nagrań testowych, gdzie redukcja każdego segmentu podróży do jednej obserwacji pozostawi zbyt mało punktów danych dla znaczącego P85.
+
+Zależność:
+Ten algorytm wymaga google.protobuf i gtfs-realtime-bindings. Jeśli są brakujące, komunikat o błędzie zawiera instrukcje instalacji. Jest to jedyna funkcja easy-OTP, która wymaga tej zależności.
+
+Ograniczenia metodologiczne:
+- TripUpdates zawierają przewidywane czasy / przesunięcia opóźnień, a nie empirycznie zarejestrowane zdarzenia przystankowe (Wessel 2017, rt2gtfs 2026). Realizowany feed odzwierciedla operacje przewidziane.
+- P50 ≈ warunki typowe; P85 ≈ granica wiarygodności (zmienność czasu przejazdu).
+- Agregacja odbywa się według segmentu pary przystankowej dla wszystkich podróży/dni, nie na podstawie trip_id.
+- Przy włączonym RECONCILE_LAST_SNAPSHOT, każdy segment podróży przyczynia się dokładnie jedną obserwacją niezależnie od tego, ile snapshotów go pokryło; wyłączenie go równoważy powtarzające się/ewoluujące predykcje tego samego segmentu podróży.
+- Luki (nieobserwowane segmenty) przechodzą na czas przejazdu zaplanowany.
+- Dopasowanie ROUTE_STOP_FALLBACK (automatycznie wybrane lub wymuszone) traci rozróżnienie direction_id i wymaga absolutnego czasu obserwacji dla każdego zdarzenia przystankowego; pary bez któregoś są pomijane zamiast liczonych.
+- W trybie ROUTE_STOP_FALLBACK, usuwanie podróży ANULOWANYCH nie ma zastosowania: canceled_trip_ids są zbierane za pomocą trip_id po stronie RT, które z konstrukcji nie pasuje do żadnego statycznego trip_id w tym trybie, więc anulowane podróże RT pozostają w feedzie wyjściowym (w przeciwieństwie do trybu TRIP_ID).
+- CROSS_SNAPSHOT łączy obserwacje przystankowe w ramach snapshotów; luka w stop_sequence (pominięta próbka) jest pomijana i liczona, nigdy interpolowana — próbkowanie musi być wystarczająco częste względem odstępu przystanków dla dobrego pokrycia.
+- Wynik to powtarzalny statyczny feed GTFS; nie jest to zapis jakiegokolwiek pojedynczego rzeczywistego dnia.
+
+Zobacz docs/RT-3_realized-gtfs-notes.md po pełną metodologię i odniesienia.</translation>
+        </message>
+        <message>
+            <source>Additional static GTFS files (optional, folder of .zip files matching the same service date — e.g. Kraków: put the bus feed here if STATIC_GTFS above is the tram feed, or vice versa)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Deduplicate consecutive identical snapshots before aggregation (collapses frozen-feed periods so they don't bias P50/P85)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Keep only the latest-snapshot observation per trip-segment (reduces repeated/evolving RT predictions to one lead-time-accurate value)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Trip matching mode (AUTO: use TRIP_ID if trip_id overlap &gt;= 5%, else ROUTE_STOP_FALLBACK if the feed supports it, else fail)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Segment source mode (AUTO: use CROSS_SNAPSHOT if the archive's TripUpdates carry a median of &lt;= 1 StopTimeUpdate each, else PER_MESSAGE)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Deduplication: dropped {dropped_count} snapshot(s) identical to the immediately preceding kept snapshot ({len(snapshot_paths)} of {len(raw_snapshot_paths)} retained).</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Loading static GTFS: {static_gtfs} + {len(static_paths) - 1} extra file(s) from {static_gtfs_extra}</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>{collision_count} trip_id(s) appeared in more than one static file; for each, the version from whichever file listed earliest ({static_gtfs}, then STATIC_GTFS_EXTRA files in alphabetical order) was kept.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Only {overlap:.0%} of TripUpdate trip_ids are present in the static feed. Likely causes:
+  • The static GTFS is from a different service date than the archive (feeds whose trip_ids embed the date, e.g. Gdańsk).
+  • The static GTFS is from a different city or agency.
+  • The feed's trip_id namespace is permanently disjoint from the static feed's (e.g. Poznań, Kraków) — see the capability sample below for whether ROUTE_STOP_FALLBACK matching can be used instead.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Sampling feed capabilities (route_id / stop_id / absolute-time support)…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Capability sample failed: {exc}</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Capability sample — route_id overlap: {0:.0%}  |  stop_id presence: {1:.0%}  |  stop_id overlap: {2:.0%}  |  absolute time: {3:.0%}</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Matching mode: {matching_mode}</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>ROUTE_STOP_FALLBACK matching is in use: segments are joined on route_id + stop_id instead of trip_id, so direction_id cannot be distinguished (an intentional, documented limitation), and only stop-time pairs with absolute observed times are counted.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>TRIP_ID matching was forced, but trip_id overlap is only {overlap:.0%} — most segments will likely be uncorrected.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>ROUTE_STOP_FALLBACK matching was forced, but the capability sample suggests this feed may not support it well — most segments will likely be skipped.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Sampling message shape (StopTimeUpdate count per TripUpdate)…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Message-shape sample failed: {exc}</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Message shape sample — median StopTimeUpdate/TripUpdate: {0}  |  single-stop TripUpdates: {1:.0%}</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Segment source mode: {segment_source_mode}</source>
+            <translation>Tryb źródła segmentu: {segment_source_mode}</translation>
+        </message>
+        <message>
+            <source>RECONCILE_LAST_SNAPSHOT has no additional effect when SEGMENT_SOURCE_MODE resolves to CROSS_SNAPSHOT: per-stop reconciliation (latest snapshot wins) already happens unconditionally while collecting.</source>
+            <translation>RECONCILE_LAST_SNAPSHOT nie ma dodatkowego wpływu, gdy SEGMENT_SOURCE_MODE rozstrzyga się na CROSS_SNAPSHOT: rekonsyliacja na przystanek (najnowszy zrzut wygrywa) odbywa się już bezwarunkowo podczas zbierania.</translation>
+        </message>
+        <message>
+            <source>Archive spans more than one service day ({span_sec / 3600:.1f}h) — results may mix unrelated days.</source>
+            <translation>Archiwum obejmuje więcej niż jeden dzień usługi ({span_sec / 3600:.1f}h) — wyniki mogą mieszać niepowiązane dni.</translation>
+        </message>
+        <message>
+            <source>skipped (sequence gaps / no absolute time)</source>
+            <translation>pominięto (luki w sekwencji / brak czasu absolutnego)</translation>
+        </message>
+        <message>
+            <source>skipped (no absolute time)</source>
+            <translation>pominięto (brak czasu absolutnego)</translation>
+        </message>
+        <message>
+            <source>Segments observed: {len(segment_times):,}  |  CANCELED trips: {len(canceled_trip_ids)}  |  {skip_label}: {fallback_time_skipped:,}</source>
+            <translation>Zaobserwowano segmenty: {len(segment_times):,} | Anulowane przejazdy: {len(canceled_trip_ids)} | {skip_label}: {fallback_time_skipped:,}</translation>
         </message>
     </context>
     <context>
@@ -2108,22 +2239,6 @@ Statystyki {}: min={:.1f}  max={:.1f}  sum={:.1f}</translation>
             <translation>4 · Czas rzeczywisty</translation>
         </message>
         <message>
-            <source>Polls a GTFS-RT TripUpdates feed at regular intervals and saves each raw response as a .pb snapshot file.
-
-The output directory will contain one snapshot_YYYYmmdd-HHMMSS.pb file per successful poll plus a recording.json manifest.  Use the BuildRealizedGtfs (RT-3) algorithm to turn the archive into a modified static GTFS.
-
-A full service day (06:00–22:00) at 60 s interval yields ~960 snapshots (~28 MB for a typical TripUpdates feed).
-
-Only TripUpdates feeds are supported.  Cities with VehiclePositions-only feeds (e.g. Warsaw, Wrocław) cannot use this tool.</source>
-            <translation>Pobiera feed TripUpdates GTFS-RT w regularnych odstępach czasu i zapisuje każdą surową odpowiedź jako plik zrzutu .pb.
-
-Katalog wyjściowy będzie zawierał jeden plik snapshot_YYYYmmdd-HHMMSS.pb za każdy udany pobór wraz z manifestem recording.json. Użyj algorytmu BuildRealizedGtfs (RT-3), aby przekształcić archiwum w zmodyfikowany statyczny GTFS.
-
-Pełny dzień usługowy (06:00–22:00) przy interwale 60 s daje około 960 zrzutów (~28 MB dla typowego feedu TripUpdates).
-
-Wspierane są tylko feedy TripUpdates. Miasta z feedami zawierającymi tylko VehiclePositions (np. Warszawa, Wrocław) nie mogą używać tego narzędzia.</translation>
-        </message>
-        <message>
             <source>GTFS-RT TripUpdates URL</source>
             <translation>URL GTFS-RT</translation>
         </message>
@@ -2186,6 +2301,260 @@ Wspierane są tylko feedy TripUpdates. Miasta z feedami zawierającymi tylko Veh
         <message>
             <source>Recording finished: {ok_count} snapshots, {failed_count} failed, {size_kb:.1f} KB total. Manifest: {output_dir / 'recording.json'}</source>
             <translation>Nagrywanie zakończone: {ok_count} zrzutów, {failed_count} nieudane, łącznie {size_kb:.1f} KB. Manifest: {output_dir / 'recording.json'}</translation>
+        </message>
+        <message>
+            <source>Polls a GTFS-RT TripUpdates feed at regular intervals and saves each raw response as a .pb snapshot file.
+
+The output directory will contain one snapshot_YYYYmmdd-HHMMSS.pb file per successful poll plus a recording.json manifest.  Use the BuildRealizedGtfs (RT-3) algorithm to turn the archive into a modified static GTFS.
+
+A full service day (06:00–22:00) at 60 s interval yields ~960 snapshots (~28 MB for a typical TripUpdates feed).
+
+Recording duration is capped at 1500 minutes (25 h) per session — one service day plus margin for overnight trips crossing midnight. This keeps each archive tied to a single service day so BuildRealizedGtfs (RT-3) isn't fed a multi-day archive that would silently mix unrelated days.
+
+Frozen-feed detection:
+Some real-world GTFS-RT feeds occasionally stop updating without erroring — the HTTP poll still succeeds (HTTP 200) but returns byte-identical content. Poland's national rail aggregate feed (mkuran.pl) is documented to freeze like this for over an hour, once or twice a day. If FREEZE_WARNING_THRESHOLD (advanced, default 5) consecutive polls return identical bytes, a warning is logged once per frozen period; recording continues uninterrupted. The manifest's unchanged_streak_max field records the longest such run observed in the session, for later cross-reference against BuildRealizedGtfs's deduplication log.
+
+Only TripUpdates feeds are supported.  Cities with VehiclePositions-only feeds (e.g. Warsaw, Wrocław) cannot use this tool.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <source>Warn after this many consecutive identical polls (frozen-feed detection)</source>
+            <translation>Ostrzeż po tylu kolejnych identycznych pobraniach (wykrywanie zamrożonego strumienia)</translation>
+        </message>
+        <message>
+            <source>Feed unchanged for {streak} consecutive polls (~{(streak - 1) * interval_sec} s) — possible frozen upstream feed. Recording continues.</source>
+            <translation>Strumień niezmieniony przez {streak} następujących po sobie pobrania (~{(streak - 1) * interval_sec} s) — możliwe, że strumień źródłowy jest zamrożony. Nagrywanie trwa.</translation>
+        </message>
+    </context>
+    <context>
+        <name>RouteViaPoints</name>
+        <message>
+            <source>Route via points (city trip planner)</source>
+            <translation>Trasa przez punkty (planer wycieczek miejskich)</translation>
+        </message>
+        <message>
+            <source>3 · Analysis</source>
+            <translation>3 · Analiza</translation>
+        </message>
+        <message>
+            <source>Plan a city tour: supply a START point, an END point, and an optional layer of via-points (landmarks) in any order. The plugin automatically computes a sensible visit order (nearest-neighbour + 2-opt) and makes one OTP /plan query per segment (N+1 queries). Output: one line feature per leg, attributed with duration_min, distance_m, mode, and visit order.
+
+Transport mode: WALK (default), BICYCLE, CAR, or TRANSIT,WALK. TRANSIT,WALK requires a GTFS folder and uses the Analysis date / Departure time for routing; other modes ignore date and time.
+
+A soft warning is shown when more than {0} via-points are supplied.</source>
+            <translation>Zaplanuj wycieczkę miejską: podaj punkt START, punkt KOŃCOWY oraz opcjonalną warstwę punktów pośrednich (punktów orientacyjnych) w dowolnej kolejności. Plugin automatycznie obliczy sensowny porządek odwiedzin (najbliższy sąsiad + 2-opt) i wykona jedno zapytanie OTP/plan na każdy odcinek (N+1 zapytań). Wynik: jedna cecha liniowa na odcinek, atrybutowana czasem trwania_min, dystansem_m, trybem oraz kolejnością odwiedzin.
+
+Tryb transportu: CHODZENIE (domyślny), ROWER, SAMOCHÓD lub TRANSIT,CHODZENIE. TRANSIT,CHODZENIE wymaga folderu GTFS i używa daty analizy / czasu odjazdu do trasowania; inne tryby ignorują datę i czas.
+
+Wyświetlano ostrzeżenie miękkie, gdy podano więcej niż {0} punktów pośrednich.</translation>
+        </message>
+        <message>
+            <source>Start point</source>
+            <translation>Punkt startowy</translation>
+        </message>
+        <message>
+            <source>End point</source>
+            <translation>Punkt końcowy</translation>
+        </message>
+        <message>
+            <source>Via-points layer (optional; 0 features = direct A→B route)</source>
+            <translation>Warstwa punktów pośrednich (opcjonalnie; 0 cech = trasa bezpośrednia A→B)</translation>
+        </message>
+        <message>
+            <source>Transport mode</source>
+            <translation>Tryb transportu</translation>
+        </message>
+        <message>
+            <source>Analysis date (used for TRANSIT routing; ignored by WALK/BICYCLE/CAR)</source>
+            <translation>Data analizy (używana dla trasowania TRANSIT; ignorowana przez CHODZENIE/ROWER/SAMOCHÓD)</translation>
+        </message>
+        <message>
+            <source>Departure time (used for TRANSIT routing; ignored by WALK/BICYCLE/CAR)</source>
+            <translation>Czas odjazdu (używany dla trasowania TRANSIT; ignorowany przez CHODZENIE/ROWER/SAMOCHÓD)</translation>
+        </message>
+        <message>
+            <source>OSM extract (.osm.pbf) — street network</source>
+            <translation>Ekstrakt OSM (.osm.pbf) — sieć ulic</translation>
+        </message>
+        <message>
+            <source>GTFS folder — required for TRANSIT,WALK mode</source>
+            <translation>Folder GTFS — wymagany dla trybu TRANSIT,CHODZENIE</translation>
+        </message>
+        <message>
+            <source>Working directory (graph cache)</source>
+            <translation>Katalog roboczy (cache grafu)</translation>
+        </message>
+        <message>
+            <source>Output route (one feature per segment/leg)</source>
+            <translation>Trasa wyjściowa (jedna cecha na odcinek/leg)</translation>
+        </message>
+        <message>
+            <source>Maximum walk distance (m) — city tour default is 50 000; OTP will not route legs longer than this value</source>
+            <translation>Maksymalny dystans pieszy (m) — domyślny dla wycieczki miejskiej to 50 000; OTP nie trasuje odcinków dłuższych niż ta wartość</translation>
+        </message>
+        <message>
+            <source>Walk reluctance</source>
+            <translation>Niechęć do chodzenia</translation>
+        </message>
+        <message>
+            <source>Use Java path saved by 'Download Java Runtime Environment' (QSettings)</source>
+            <translation>Użyj ścieżki Java zapisanej przez 'Pobierz środowisko uruchomieniowe Java' (QSettings)</translation>
+        </message>
+        <message>
+            <source>Java 8 binary</source>
+            <translation>Binarny plik Java 8</translation>
+        </message>
+        <message>
+            <source>OpenTripPlanner 1.5.0 jar (otp-1.5.0-shaded.jar)</source>
+            <translation>Plik jar OpenTripPlanner 1.5.0 (otp-1.5.0-shaded.jar)</translation>
+        </message>
+        <message>
+            <source>OTP heap for graph build (e.g. 2G)</source>
+            <translation>Pamięć heap OTP do budowania grafu (np. 2G)</translation>
+        </message>
+        <message>
+            <source>OTP heap for server (e.g. 4G)</source>
+            <translation>Pamięć heap OTP dla serwera (np. 4G)</translation>
+        </message>
+        <message>
+            <source>OTP server port</source>
+            <translation>Port serwera OTP</translation>
+        </message>
+        <message>
+            <source>Existing graph router directory (skip build)</source>
+            <translation>Istniejący katalog routera grafu (pomijanie budowania)</translation>
+        </message>
+        <message>
+            <source>Keep OTP server alive after run</source>
+            <translation>Utrzymaj serwer OTP przy życiu po uruchomieniu</translation>
+        </message>
+        <message>
+            <source>No Java path saved in QSettings. Run 'Download Java Runtime Environment' first, or uncheck 'Use saved Java path'.</source>
+            <translation>Nie zapisana ścieżka Java w QSettings. Najpierw uruchom 'Pobierz środowisko wykonawcze Java', lub odznacz 'Użyj zapisanej ścieżki Java'.</translation>
+        </message>
+        <message>
+            <source>Java OK: version {0}</source>
+            <translation>Java OK: wersja {0}</translation>
+        </message>
+        <message>
+            <source>Download otp-1.5.0-shaded.jar from Maven Central and set the OTP jar parameter.</source>
+            <translation>Pobierz otp-1.5.0-shaded.jar z Maven Central i ustaw parametr jar OTP.</translation>
+        </message>
+        <message>
+            <source>Working directory is required.</source>
+            <translation>Wymagany jest katalog roboczy.</translation>
+        </message>
+        <message>
+            <source>GTFS folder is required for TRANSIT,WALK mode.</source>
+            <translation>Katalog GTFS jest wymagany dla trybu TRANSIT,WALK.</translation>
+        </message>
+        <message>
+            <source>Discovered {0} GTFS feed(s): {1}</source>
+            <translation>Odkryto {0} feed(y) GTFS: {1}</translation>
+        </message>
+        <message>
+            <source>Via-point feature {0} has null/empty geometry — skipped.</source>
+            <translation>Funkcja punktu pośredniego {0} ma geometrię null/pustą — pominięta.</translation>
+        </message>
+        <message>
+            <source>{0} via-points supplied (&gt;{1}). The route may be slow to compute and visually complex. Consider splitting the tour into smaller runs.</source>
+            <translation>{0} dostarczonych punktów pośrednich (&gt;{1}). Trasa może być wolna w obliczeniach i wizualnie złożona. Rozważ podział wycieczki na mniejsze przebiegi.</translation>
+        </message>
+        <message>
+            <source>Visit order (via-point feature ids): {0}</source>
+            <translation>Kolejność odwiedzin (ID funkcji punktu pośredniego): {0}</translation>
+        </message>
+        <message>
+            <source>Could not create output feature sink.</source>
+            <translation>Nie można utworzyć docelowego zbioru cech.</translation>
+        </message>
+        <message>
+            <source>EXISTING_GRAPH_DIR does not contain Graph.obj: {0}</source>
+            <translation>EXISTING_GRAPH_DIR nie zawiera Graph.obj: {0}</translation>
+        </message>
+        <message>
+            <source>Using existing graph: {0} (router_id={1}); skipping build.</source>
+            <translation>Używany istniejący graf: {0} (router_id={1}); pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Router ID: {0}</source>
+            <translation>ID routera: {0}</translation>
+        </message>
+        <message>
+            <source>Graph cache hit — skipping build.</source>
+            <translation>Cache grafu trafiony — pomijanie budowania.</translation>
+        </message>
+        <message>
+            <source>Building OTP graph (this can take minutes)...</source>
+            <translation>Budowanie grafu OTP (może to trwać kilka minut)...</translation>
+        </message>
+        <message>
+            <source>Reusing OTP already running on port {0} (version {1}).</source>
+            <translation>Ponowne użycie OTP już działającego na porcie {0} (wersja {1}).</translation>
+        </message>
+        <message>
+            <source>Port {0} is held by a non-OTP process. Pick a different OTP_PORT or stop the conflicting service.</source>
+            <translation>Port {0} jest zajęty przez proces niebędący OTP. Wybierz inny OTP_PORT lub zatrzymaj konfliktujący serwis.</translation>
+        </message>
+        <message>
+            <source>Starting OTP server on port {0}...</source>
+            <translation>Uruchamianie serwera OTP na porcie {0}...</translation>
+        </message>
+        <message>
+            <source>Querying OTP: {0} segment(s), mode={1}, date={2}, time={3}...</source>
+            <translation>Zapytanie do OTP: {0} segment(ów), tryb={1}, data={2}, czas={3}...</translation>
+        </message>
+        <message>
+            <source>Network error querying {0}→{1}: {2}</source>
+            <translation>Błąd sieciowy podczas zapytania {0}→{1}: {2}</translation>
+        </message>
+        <message>
+            <source>Skipping segment {0}→{1}: OTP cannot route (mode={2}, status {3}, via-point feature id: {4}).</source>
+            <translation>Pomijany segment {0}→{1}: OTP nie może ustalić trasy (tryb={2}, status {3}, ID cechy punktu pośredniego: {4}).</translation>
+        </message>
+        <message>
+            <source>Segment {0}→{1} returned no legs — skipped.</source>
+            <translation>Segment {0}→{1} zwrócił brak odcinków — pominięto.</translation>
+        </message>
+        <message>
+            <source>Segment {0} ({1}→{2}) leg '{3}' has fewer than 2 geometry points — skipped.</source>
+            <translation>Odcinek {0} ({1}→{2}) odcinek '{3}' ma mniej niż 2 punkty geometryczne — pominięto.</translation>
+        </message>
+        <message>
+            <source>{0} segment(s) skipped — move or remove the affected via-points and retry: {1}</source>
+            <translation>{0} segment(y) pominięte — spróbuj ponownie po przesunięciu lub usunięciu dotkniętych punktów pośrednich: {1}</translation>
+        </message>
+        <message>
+            <source>Route complete: {0} segment(s) routed ({1} feature(s) written), {2} skipped, {3} min total, {4} m total. Via-point count: {5}. Visit order (fids): {6}</source>
+            <translation>Trasa zakończona: {0} segment(ów) ustalone (zapisano {1} cechy), {2} pominięto, {3} min łącznie, {4} m łącznie. Liczba punktów pośrednich: {5}. Kolejność wizyt (fids): {6}</translation>
+        </message>
+        <message>
+            <source>ANALYSIS_DATE is a {0} ({1}). Weekend transit schedules may differ significantly from weekday analyses.</source>
+            <translation>DATA_ANALIZY to {0} ({1}). Rozkłady jazdy weekendowe mogą znacznie różnić się od analiz dni roboczych.</translation>
+        </message>
+        <message>
+            <source>No calendar.txt in {0} - cannot validate analysis date.</source>
+            <translation>Brak pliku calendar.txt w {0} - nie można zweryfikować daty analizy.</translation>
+        </message>
+        <message>
+            <source>{0}: no services active on {1}. OTP may return all-unreachable results.</source>
+            <translation>{0}: brak usług aktywnych w {1}. OTP może zwrócić wyniki całkowicie niedostępne.</translation>
+        </message>
+        <message>
+            <source>{0}: {1} service(s) active on {2}.</source>
+            <translation>{0}: {1} usługa(y) aktywna(e) w {2}.</translation>
+        </message>
+        <message>
+            <source>Could not read {0} for date validation: {1}</source>
+            <translation>Nie można odczytać {0} do walidacji daty: {1}</translation>
+        </message>
+        <message>
+            <source>{0} is required (parameter {1}).</source>
+            <translation>{0} jest wymagany (parametr {1}).</translation>
+        </message>
+        <message>
+            <source>{0} not found at: {1} (parameter {2}).</source>
+            <translation>{0} nie znaleziono pod adresem: {1} (parametr {2}).</translation>
         </message>
     </context>
     <context>
