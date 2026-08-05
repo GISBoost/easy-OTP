@@ -23,13 +23,27 @@ set -uo pipefail   # not -e: one city's failure shouldn't stop the others
 # family_a/recorder.py's "intentional duplicate" docstring) - the per-city TIMEZONE resolution
 # below is one such deliberate duplicate.
 #
-# Compression: solid tar+xz (`tar cJf` over every session directory for that city/month at once),
-# never per-file. Consecutive GTFS-RT snapshots are near-identical (same vehicles/trips/routes,
-# only position/timestamp drift) - a per-file compressor can't exploit that redundancy across
-# file boundaries and loses roughly 4x the ratio a single solid stream gets (measured packing the
-# July 2026 backlog by hand: solid xz -9e got the raw .pb data down to ~9% of its original size;
-# non-solid zip - the format sweep_and_upload.sh itself uses for the daily transient upload, fine
-# for that different purpose - only ~35%).
+# Compression: solid tar+xz (tar piped into xz over every session directory for that
+# city/month at once), never per-file. Consecutive GTFS-RT snapshots are near-identical (same
+# vehicles/trips/routes, only position/timestamp drift) - a per-file compressor can't exploit
+# that redundancy across file boundaries and loses roughly 4x the ratio a single solid stream
+# gets (measured packing the July 2026 backlog by hand on a PC: solid xz -9e got the raw .pb
+# data down to ~9% of its original size; non-solid zip - the format sweep_and_upload.sh itself
+# uses for the daily transient upload, fine for that different purpose - only ~35%).
+#
+# `-6 -T0` (multi-threaded, not `-9e`), a deliberate choice for THIS hardware after benchmarking
+# directly on the phone (MediaTek MT6769Z, 8 cores, ~4GB RAM) against real Prague data (its
+# largest city): single-threaded `-9e` was still running after 24 minutes on 1.16GB and was
+# killed rather than waited out; single-threaded `-6` finished a proportional sample at an
+# extrapolated ~20 minutes for the same input; multi-threaded `-6 -T0` finished the full 1.16GB
+# in 6m41s (6 threads, ~620MB peak RSS, comfortably under the phone's available memory) for a
+# 9.8% ratio - about 2 percentage points worse than -9e's, but roughly 3x faster wall-clock than
+# even single-threaded -6, let alone -9e. At that measured throughput, the full monthly backlog
+# across every configured city (~25-30GB combined, per 2026-08 volumes) runs in a bit over an
+# hour, not the many hours -9e would have needed - this only runs once a day for a few days each
+# month, but still has to share the phone with 20+ concurrent recording processes once the day's
+# 06:00 windows start, so wall-clock time matters here far more than it did compressing the same
+# backlog on a PC.
 #
 # Safe to re-run repeatedly (cron fires this daily): a city whose previous month is already
 # archived (.archived_<city>_<YYYY-MM> marker present) is a fast, silent no-op, same idempotency
@@ -38,7 +52,7 @@ set -uo pipefail   # not -e: one city's failure shouldn't stop the others
 # retried on every subsequent day's tick until it succeeds, same reliability class as
 # sweep_and_upload.sh's own upload/dispatch retries.
 #
-# Requires `xz` (not installed by termux_provision.sh before this script existed - added
+# Requires `xz-utils` (not installed by termux_provision.sh before this script existed - added
 # alongside it). Uploads via the same direct-curl-to-the-REST-API pattern sweep_and_upload.sh
 # already uses (no `gh` on the phone), reusing the same $GH_TOKEN.
 
@@ -116,7 +130,11 @@ for CITY_ENV in "$WORK_DIR"/cities/*.env; do
   for D in "${DIRS[@]}"; do
     BASENAMES+=("$(basename "$D")")
   done
-  if ! tar -C "$WORK_DIR" -cJf "$ARCHIVE_PATH" "${BASENAMES[@]}"; then
+  # Piped rather than tar's own `-J` shorthand, so xz's flags (multi-threaded `-6`, not `-9e` -
+  # see this script's header comment for the on-device benchmark behind that choice) can be
+  # controlled directly. `set -o pipefail` (top of this script) makes `$?` reflect either side's
+  # failure, not just tar's.
+  if ! tar -C "$WORK_DIR" -cf - "${BASENAMES[@]}" | xz -6 -T0 > "$ARCHIVE_PATH"; then
     echo "WARNING: tar/xz failed for ${CITY} ${MONTH} - will retry next run, source directories left untouched" >&2
     rm -f "$ARCHIVE_PATH"
     continue

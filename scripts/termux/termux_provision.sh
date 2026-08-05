@@ -6,7 +6,7 @@ set -euo pipefail
 # docs/handoffs/termux-migration_plan-for-michal.md, step TX-1.
 
 pkg update -y
-pkg install -y python build-essential cmake ninja libopenblas patchelf binutils git curl jq zip xz \
+pkg install -y python build-essential cmake ninja libopenblas patchelf binutils git curl jq zip xz-utils \
   termux-services termux-api cronie
 
 REPO_DIR="$HOME/easy-OTP"

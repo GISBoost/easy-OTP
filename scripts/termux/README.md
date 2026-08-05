@@ -226,8 +226,9 @@ healthcheck, and TX-7/TX-8's workflow half live in the `easy-GTFS-RT` repo
     (not once at a fixed time) - see "Recording window timezone" above and the script's own header
     comment for why: with cities in different timezones, no single daily trigger time is safe for
     all of them, so the script itself decides per city, per tick, whether it's actually time.
-12. Add the TX-9 monthly-archival crontab entry (`termux_provision.sh` installs `xz` for this -
-    re-run it, or just `pkg install -y xz`, on a phone provisioned before TX-9 existed):
+12. Add the TX-9 monthly-archival crontab entry (`termux_provision.sh` installs `xz-utils` for
+    this - re-run it, or just `pkg install -y xz-utils`, on a phone provisioned before TX-9
+    existed):
     ```
     (crontab -l 2>/dev/null; echo "0 5 * * * /data/data/com.termux/files/usr/bin/bash /data/data/com.termux/files/home/easy-gtfs-rt-termux/archive_monthly.sh >> /data/data/com.termux/files/home/easy-gtfs-rt-termux/logs/archive.log 2>&1") | crontab -
     ```
