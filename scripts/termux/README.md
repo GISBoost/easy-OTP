@@ -166,6 +166,7 @@ healthcheck, and TX-7/TX-8's workflow half live in the `easy-GTFS-RT` repo
 | `boot/start-services.sh` | TX-2 (boot-survival addendum) | invoked by Termux:Boot after every reboot | Starts `runsvdir` so every city's recording resumes without opening the Termux app manually |
 | `sweep_and_upload.sh` | TX-3 (+TX-7, +TX-8) | every 15 min, all day, via `cronie` | Per configured city: uploads unsent recordings as a raw GitHub pre-release once that city's own local window has closed, then fires (and retries, if needed) a `repository_dispatch` event (carrying that city's id) to start its build immediately |
 | `record_custom.sh <city>` | TX-5 (+TX-8) | manually, on demand | `record_custom.sh <city_id> <duration_min> <interval_sec> <suffix>` - one-off recording outside the normal window |
+| `archive_monthly.sh` | TX-9 | once a day, via `cronie` | Per configured city, once its previous local month has ended: solid tar+xz's that month's raw recording directories, uploads to a `raw-snapshots-<YYYY-MM>` release, then deletes them locally - a no-op on all but the first few days of a new month |
 
 ## One-time phone setup (how this was built)
 
@@ -225,6 +226,14 @@ healthcheck, and TX-7/TX-8's workflow half live in the `easy-GTFS-RT` repo
     (not once at a fixed time) - see "Recording window timezone" above and the script's own header
     comment for why: with cities in different timezones, no single daily trigger time is safe for
     all of them, so the script itself decides per city, per tick, whether it's actually time.
+12. Add the TX-9 monthly-archival crontab entry (`termux_provision.sh` installs `xz` for this -
+    re-run it, or just `pkg install -y xz`, on a phone provisioned before TX-9 existed):
+    ```
+    (crontab -l 2>/dev/null; echo "0 5 * * * /data/data/com.termux/files/usr/bin/bash /data/data/com.termux/files/home/easy-gtfs-rt-termux/archive_monthly.sh >> /data/data/com.termux/files/home/easy-gtfs-rt-termux/logs/archive.log 2>&1") | crontab -
+    ```
+    Once a day is enough - unlike TX-3's 15-minute sweep, this only ever does anything on the
+    first few days of a new month (see `archive_monthly.sh`'s own header comment) and is a fast,
+    silent no-op every other day. `crontab -l` should now show both this line and TX-3's.
 
 Nothing needs configuring on the GitHub side: as of 2026-07-29 `GISBoost/easy-GTFS-RT` requires
 no repository secrets at all (the `CALLMEBOT_*` pair went away with the notification steps).
@@ -245,6 +254,31 @@ There are none any more, in either direction:
   false positives, and nothing replaced it. No upload means no `repository_dispatch`, which means
   no workflow run, which means no failure email either - the only symptom is a missing Release,
   and you have to go looking for it.
+- **`archive_monthly.sh` (TX-9) also sends nothing on failure, deliberately, same reasoning as
+  above.** A month that fails to archive (network blip, expired token, etc.) is simply retried on
+  every subsequent day's cron tick until it succeeds - no `.archived_<city>_<YYYY-MM>` marker is
+  written until a run actually completes. Check `logs/archive.log` (or the presence of
+  `raw-snapshots-<YYYY-MM>` on GitHub) if you want to confirm a given month actually archived.
+
+### Monthly raw-data archival (TX-9)
+
+`sweep_and_upload.sh` (TX-3) never deletes a city's `positions_<city>_<date>_*` directories - only
+the transient per-day upload zip - so left alone, raw recordings accumulate on the phone forever.
+`archive_monthly.sh`, added 2026-08-05 after a one-off manual archival of the July 2026 backlog
+(published as `raw-snapshots-2026-07` on GitHub) made the problem concrete, closes this: once a
+day (crontab entry above), for each city, once that city's own previous local month has ended, it
+solid-compresses (`tar` + `xz -9e` - never per-file, see the script's own header comment for why
+that matters) every one of that city's recording directories from the month that just ended into
+one archive, uploads it to a `raw-snapshots-<YYYY-MM>` release (same city-independent
+"find-or-create the release, then add this city's asset" pattern TX-3 already uses for its own
+daily release), verifies the archive locally (`xz -t`) before ever touching the source
+directories, and only then deletes them.
+
+Self-gated per city on that city's own `TIMEZONE` (same reasoning as TX-3's Gate 1/Gate 2 - a
+single fixed trigger can't safely cover cities in different timezones, the lesson this project
+already learned once from the build workflow's removed 22:15-Europe/Warsaw fallback), with a
+few-day catch-up window in case the phone is off or throttled right at a month boundary. Fully
+independent of `sweep_and_upload.sh` and the GitHub Actions side - touches neither.
 
 ## Adding a new city
 
