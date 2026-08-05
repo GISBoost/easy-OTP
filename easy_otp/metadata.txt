@@ -2,14 +2,43 @@
 name=Easy-OTP
 qgisMinimumVersion=3.22
 description=Automated temporal accessibility analysis using OpenTripPlanner.
-about=Automates temporal accessibility analysis for public transport using OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts continuous service-time minutes per hexagonal grid cell, and classifies cells into four categories. Analysis algorithms: RunTemporalAccessibility (depart-at and arrive-by modes, optional XLSX report), CountFromExistingSurfaces, CompareTemporalAccessibility (delta analysis), GenerateHexGrid, PrepareStudentLayer, PopulationOverlay, GenerateIsochrones (isochrone polygons from/to 1..N points, one time, multiple cutoffs), GenerateIsochronesOverTime (one point, isochrones across the day for the Temporal Controller), RunServiceCoverage (count of service points reachable per cell within a threshold at one time; raster + optional grid), RunOriginDestinationTimes (per-origin trip stats to one destination: duration, in-vehicle, walk, wait, transfers; parallelised), RunTravelTimeMatrix (N×M origin–destination travel-time matrix), RouteViaPoints (city tour planner: ordered route through optional via-points using nearest-neighbour + 2-opt; modes: WALK, BICYCLE, CAR, TRANSIT,WALK). Realtime algorithms: RunRealtimeAccessibility (RT-1, live GTFS-RT feed integrated into OTP), RecordGtfsRt (RT-2, GTFS-RT TripUpdates archiver for offline analysis), BuildRealizedGtfs (RT-3, reconstructs a realized static GTFS — P50 median and P85 85th-percentile feeds — from a RecordGtfsRt snapshot archive; output feeds can be passed directly to RunTemporalAccessibility; requires google.protobuf bootstrapped on first use). Setup: DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256 verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS), TestOtpServer.
-version=0.6.1
+about=Automates temporal accessibility analysis for public transport using
+    OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts
+    continuous service-time minutes per hexagonal grid cell, and classifies
+    cells into four categories.
+    Analysis algorithms: RunTemporalAccessibility (depart-at and arrive-by
+    modes, optional XLSX report), CountFromExistingSurfaces,
+    CompareTemporalAccessibility (delta analysis), GenerateHexGrid,
+    PrepareStudentLayer, PopulationOverlay, GenerateIsochrones (isochrone
+    polygons from/to 1..N points, one time, multiple cutoffs),
+    GenerateIsochronesOverTime (one point, isochrones across the day for the
+    Temporal Controller), RunServiceCoverage (count of service points
+    reachable per cell within a threshold at one time; raster + optional
+    grid), RunOriginDestinationTimes (per-origin trip stats to one
+    destination: duration, in-vehicle, walk, wait, transfers; parallelised),
+    RunTravelTimeMatrix (N×M origin–destination travel-time matrix),
+    RouteViaPoints (city tour planner: ordered route through optional
+    via-points using nearest-neighbour + 2-opt; modes: WALK, BICYCLE, CAR,
+    TRANSIT,WALK).
+    Realtime algorithms: RunRealtimeAccessibility (RT-1, live GTFS-RT feed
+    integrated into OTP), RecordGtfsRt (RT-2, GTFS-RT TripUpdates archiver
+    for offline analysis), BuildRealizedGtfs (RT-3, reconstructs a realized
+    static GTFS — P50 median and P85 85th-percentile feeds — from a
+    RecordGtfsRt snapshot archive; output feeds can be passed directly to
+    RunTemporalAccessibility; requires google.protobuf bootstrapped on first
+    use; v0.7 adds auto-detected MATCHING_MODE and SEGMENT_SOURCE_MODE
+    fallbacks for feeds whose trip_id namespace or message shape differs
+    from Gdańsk's, e.g. Poznań/Kraków).
+    Setup: DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256
+    verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS),
+    TestOtpServer.
+version=0.7.0
 author=Michal Kaczorowski
 email=michal.kaczorowsx@gmail.com
 license=GPL-3.0-or-later
 category=Analysis
 icon=resources/icon.svg
-experimental=True
+experimental=False
 deprecated=False
 hasProcessingProvider=yes
 hasTranslations=yes
@@ -17,7 +46,7 @@ tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,t
 homepage=https://github.com/GISBoost/easy-OTP
 repository=https://github.com/GISBoost/easy-OTP
 tracker=https://github.com/GISBoost/easy-OTP/issues
-changelog=0.6.1
+changelog=0.7.0
     * Analysis — RouteViaPoints (N-6):
       - feat(analysis): RouteViaPoints — city tour planner: supply a START point,
         an END point, and an optional layer of via-points (landmarks) in any order;
@@ -34,6 +63,28 @@ changelog=0.6.1
       - Soft-fail: all unroutable segments collected and reported together so the
         user sees every problematic via-point at once.
       - Soft warning when more than 20 via-points are supplied.
+    * Realtime — RT-3 generalization:
+      - feat(realtime): RecordGtfsRt duration capped at 1500 min (25h); new
+        span-check warning in BuildRealizedGtfs when an archive spans more
+        than ~one service day (RT3-1).
+      - feat(realtime): BuildRealizedGtfs supports multi-file static GTFS via
+        STATIC_GTFS_EXTRA (e.g. Kraków's separate tram/bus feeds) (RT3-2).
+      - feat(realtime): frozen/stale GTFS-RT feed detection — hash-based
+        streak warning in RecordGtfsRt (FREEZE_WARNING_THRESHOLD), snapshot
+        deduplication in BuildRealizedGtfs (DEDUPLICATE_FROZEN_SNAPSHOTS)
+        (RT3-3).
+      - feat(realtime): reconcile repeated predictions for the same trip by
+        lead time — RECONCILE_LAST_SNAPSHOT (default True); documented,
+        intentional shift in P50/P85 output on existing archives (RT3-4).
+      - feat(realtime): MATCHING_MODE (AUTO/TRIP_ID/ROUTE_STOP_FALLBACK) —
+        route_id+stop_id fallback matching for feeds with a permanently
+        disjoint trip_id namespace vs. the static GTFS (Poznań/Kraków);
+        fails fast with a clear message instead of a silent empty result
+        (RT3-5).
+      - feat(realtime): SEGMENT_SOURCE_MODE (AUTO/PER_MESSAGE/
+        CROSS_SNAPSHOT) — stitches segment observations across snapshots for
+        next-stop-only GTFS-RT feeds (Poznań); PER_MESSAGE (today's
+        behaviour) is unchanged for already-working feeds (RT3-6).
     0.6.0
     * Analysis — Network & Accessibility (new algorithms):
       - feat(analysis): GenerateIsochrones (N-1) — /isochrone polygons for 1..N

@@ -81,15 +81,15 @@ Download the latest release ZIP from GitHub:
 
 **[easy-OTP Releases → https://github.com/GISBoost/easy-OTP/releases/latest](https://github.com/GISBoost/easy-OTP/releases/latest)**
 
-Download `easy_otp-0.6.0.zip` from the Assets section. This is the correctly
+Download `easy_otp-0.7.0.zip` from the Assets section. This is the correctly
 structured plugin ZIP — do **not** use the auto-generated "Source code" archives
 on the same page, as those have the wrong directory layout for QGIS.
 
 ### Plugin Installation
 
-1. Download `easy_otp-0.6.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
+1. Download `easy_otp-0.7.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
 2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
-3. Select the downloaded `easy_otp-0.6.0.zip` and click **Install Plugin**.
+3. Select the downloaded `easy_otp-0.7.0.zip` and click **Install Plugin**.
 4. After installation, **Plugins → easy-OTP → Enable** (if not enabled
    automatically).
 5. The algorithms appear in **Processing Toolbox** under the **easy-OTP** group.
@@ -824,7 +824,8 @@ manifest. Intended as input for RT-3.
 | **GTFS-RT feed URL** | HTTP(S) endpoint |
 | **Output directory** | Folder that will receive `*.pb` files and `recording.json` |
 | **Poll interval** | 15–600 seconds (default 60 s) |
-| **Recording duration** | Minutes to record (Cancel also stops safely) |
+| **Recording duration** | Minutes to record (Cancel also stops safely). *(new in v0.7)* Capped at 1500 min (25h) — one service day plus overnight margin, so an archive can't silently span multiple days. |
+| **Frozen-feed warning threshold** *(advanced, new in v0.7)* | Default 5 consecutive identical polls. Warns once if the feed stops updating (e.g. Poland's rail aggregate feed is documented to freeze for over an hour at a time); the `unchanged_streak_max` is also recorded in `recording.json`. |
 
 Cancel-safe: the manifest is written incrementally so a partial archive is always
 valid input for RT-3.
@@ -844,6 +845,16 @@ per-stop-pair segment times (keyed by `route_id`, `direction_id`, `from_stop_id`
 
 Both output feeds can be passed directly to `RunTemporalAccessibility` to produce
 a realized accessibility surface.
+
+#### Key parameters
+
+| Parameter | Notes |
+|---|---|
+| **Additional static GTFS files** *(`STATIC_GTFS_EXTRA`, new in v0.7)* | Optional folder of extra static `.zip` files, merged into the same static index as the primary static feed — e.g. Kraków publishes separate tram/bus static feeds against one combined RT feed. First-file-wins on any colliding `trip_id`. |
+| **Deduplicate frozen snapshots** *(`DEDUPLICATE_FROZEN_SNAPSHOTS`, new in v0.7)* | Default on. Drops consecutive snapshots with byte-identical content before aggregation, so a frozen upstream period counts once in the P50/P85 pool instead of once per poll. |
+| **Reconcile last snapshot** *(`RECONCILE_LAST_SNAPSHOT`, new in v0.7)* | Default on. Keeps only the latest, most lead-time-accurate observation per trip-segment instead of pooling every snapshot's prediction. **Intentional behaviour change**: P50/P85 values on existing archives may shift slightly versus pre-v0.7 output — not a regression. Disable to restore the old behaviour, useful for very short test recordings. |
+| **Trip matching mode** *(`MATCHING_MODE`, new in v0.7)* | `AUTO` (default) / `TRIP_ID` / `ROUTE_STOP_FALLBACK`. `AUTO` uses `TRIP_ID` when trip_id overlap with the static feed is ≥5%; otherwise it falls back to matching by `route_id`+`stop_id` if the archive shows usable route/stop/absolute-time coverage (e.g. Poznań, Kraków, whose trip_id namespace is permanently disjoint from the static feed). Fails fast with a clear message if neither join is usable, instead of silently producing an empty result. |
+| **Segment source mode** *(`SEGMENT_SOURCE_MODE`, new in v0.7)* | `AUTO` (default) / `PER_MESSAGE` / `CROSS_SNAPSHOT`. `PER_MESSAGE` is the pre-v0.7 behaviour (pairs of stops within one message) and stays the default for already-working feeds (Gdańsk, Szczecin, rail). `AUTO` switches to `CROSS_SNAPSHOT` for next-stop-only feeds (e.g. Poznań), stitching stop observations across snapshots instead. |
 
 > **Note — google.protobuf required.** On first use, the plugin prompts to
 > bootstrap `google.protobuf` via `dependencies.py` (same mechanism as openpyxl).
@@ -1031,9 +1042,12 @@ XLSX/CSV report export, scenario comparison, population overlays R1a/R1b, and th
 Java/OTP/data downloaders) are already part of v0.3.5. Planned and in-progress work:
 
 - **Realtime accessibility** (`RunRealtimeAccessibility`) — service time from actual
-  GTFS-RT delays instead of the planned timetable (v0.4, in progress on `feat/rt1-fix`).
+  GTFS-RT delays instead of the planned timetable: **done** (v0.4).
 - **GTFS-RT recording + realized timetable** (`RecordGtfsRt`, `BuildRealizedGtfs`) —
-  archive RT snapshots and reconstruct a "realized" timetable for re-analysis (v0.5).
+  archive RT snapshots and reconstruct a "realized" timetable for re-analysis: **done**
+  (v0.4/v0.5); generalized to feeds beyond Gdańsk (multi-file static, frozen-feed
+  detection, lead-time reconciliation, route/stop fallback matching, cross-snapshot
+  segment stitching) in v0.7.
 - **Validate GTFS feed** — diagnostic Setup algorithm checking feed correctness before analysis.
 - **Multi-destination accessibility** — batch routing from many origins to one
   destination: **done** (`RunOriginDestinationTimes`, v0.5).
@@ -1067,7 +1081,9 @@ A few confirmed limitations to be aware of:
 - **RT-1 infeasible for Poznań and Kraków** — the live GTFS-RT TripUpdates feed uses
   trip_ids from a pipeline independent of the static GTFS (zero overlap). OTP logs
   `No pattern found for tripId` for every update; output is correctly marked
-  `RT-NOT-APPLIED_`. Fix planned for v0.5 (RT-2/RT-3 path). Confirmed working city:
+  `RT-NOT-APPLIED_`. RT-1 itself has no fix; the forward path is RT-2/RT-3
+  (`RecordGtfsRt`/`BuildRealizedGtfs`), which as of v0.7 also matches these cities
+  via `MATCHING_MODE=ROUTE_STOP_FALLBACK`. Confirmed working city for RT-1:
   **Gdańsk** ([#10](../../issues/10)).
 - **Gdańsk (and similar feeds): same-day static GTFS required** — trip_ids encode the
   service date and regenerate daily; a stale static from the previous day causes all RT

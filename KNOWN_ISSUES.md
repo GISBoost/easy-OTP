@@ -100,7 +100,7 @@ Diagnostic (2026-06-20, time-matched fresh downloads):
 
 **Workaround:** none for RT-1. Forward path for these cities is RT-2 `RecordGtfsRt` + RT-3 `BuildRealizedGtfs` (v0.5) — record a day's `.pb` snapshots and synthesize a realized static GTFS whose ids match by construction. The output layer is correctly marked `RT-NOT-APPLIED_` so it cannot be mistaken for a realtime result.
 
-**Update (RT3-5, pending human verification):** `BuildRealizedGtfs` now has a `MATCHING_MODE` parameter with a `ROUTE_STOP_FALLBACK` mode — when trip_id overlap is too low to use, it instead joins on `route_id` + `stop_id`, gated by an empirical capability sample of the archive (`AUTO` picks it automatically when the sample looks usable). This narrows this issue for feeds like Poznań/Kraków whose trip_id namespace is permanently disjoint from the static feed's. It does **not** fully resolve Poznań yet — that feed also has a separate, independent defect (single-`StopTimeUpdate`-per-`TripUpdate`, see #18) that RT3-5 cannot fix; full correction there is pending RT3-6.
+**Update (RT3-5, v0.7):** `BuildRealizedGtfs` now has a `MATCHING_MODE` parameter with a `ROUTE_STOP_FALLBACK` mode — when trip_id overlap is too low to use, it instead joins on `route_id` + `stop_id`, gated by an empirical capability sample of the archive (`AUTO` picks it automatically when the sample looks usable). This narrows this issue for feeds like Poznań/Kraków whose trip_id namespace is permanently disjoint from the static feed's. It does **not** fully resolve Poznań yet — that feed also has a separate, independent defect (single-`StopTimeUpdate`-per-`TripUpdate`, see #18) that RT3-5 cannot fix; full correction there is pending RT3-6.
 
 ## 11. Date-embedded trip\_ids (Gdańsk) require same-day static GTFS re-download
 
@@ -177,7 +177,7 @@ Two related sub-issues:
 
 ## 18. `BuildRealizedGtfs`: single-stop RT feeds yield zero segments (Poznań)
 
-**Severity:** high (RT-3 produces no correction at all for affected cities). · **Tracker:** [#18](../../issues/18) · **Status:** Fixed (RT3-6), pending human verification of the final 0.6.x sign-off before the 0.7.0 release.
+**Severity:** high (RT-3 produces no correction at all for affected cities). · **Tracker:** [#18](../../issues/18) · **Status:** Fixed (RT3-6).
 
 `BuildRealizedGtfs` reported `Segments observed: 0` on a real Poznań archive in both
 `RECONCILE_LAST_SNAPSHOT` modes, despite 98% trip_id overlap against the static feed.
