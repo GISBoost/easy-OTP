@@ -1,6 +1,7 @@
 [general]
 name=Easy-OTP
 qgisMinimumVersion=3.22
+qgisMaximumVersion=3.99
 description=Automated temporal accessibility analysis using OpenTripPlanner.
 about=Automates temporal accessibility analysis for public transport using
     OpenTripPlanner 1.5.0. Generates per-minute travel-time surfaces, counts
