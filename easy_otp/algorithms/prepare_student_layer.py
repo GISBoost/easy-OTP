@@ -142,7 +142,7 @@ class PrepareStudentLayer(QgsProcessingAlgorithm):
         feedback: "QgsProcessingFeedback",
     ) -> dict:
         import json        # noqa: PLC0415
-        import subprocess  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415  # nosec B404 — needed for the nosec-annotated subprocess.run call below
         from pathlib import Path
 
         from ..core.dependencies import _get_python_executable, ensure_openpyxl  # noqa: PLC0415

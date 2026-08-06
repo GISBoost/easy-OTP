@@ -11,7 +11,7 @@ import hashlib
 import importlib
 import json
 import os
-import subprocess
+import subprocess  # nosec B404 — needed for the subprocess.run pip-fallback calls below
 import sys
 import tempfile
 import urllib.request
@@ -101,7 +101,7 @@ def _writable_target_dir() -> str:
                 pass
             os.remove(probe)
             return user_site
-    except Exception:
+    except Exception:  # nosec B110 — best-effort probe, explicit fallback follows
         pass
     # Fallback: easy_otp/_vendor/ (sibling of core/)
     vendor = os.path.join(os.path.dirname(os.path.dirname(__file__)), "_vendor")

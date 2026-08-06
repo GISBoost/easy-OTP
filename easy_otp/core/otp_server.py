@@ -17,7 +17,7 @@ import json
 import re
 import shutil
 import socket
-import subprocess
+import subprocess  # nosec B404 — needed to launch the Java/OTP process, see module docstring
 import sys
 import time
 from datetime import datetime, timezone
@@ -62,7 +62,7 @@ def check_java_version(java_path: Path) -> "tuple[bool, str, str]":
             "(or bin\\java.exe on Windows).",
         )
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # nosec B603 — java_path is the user's own configured local path
             [str(java_path), "-version"],
             capture_output=True,
             text=True,
@@ -310,7 +310,7 @@ def build_graph(
     feedback.pushInfo(f"$ {' '.join(cmd)}")
     feedback.pushInfo(f"Build log: {log_path}")
     with open(log_path, "wb") as log_fh:
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # nosec B603 — cmd built from user-configured java_path/jar_path
             cmd,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
@@ -380,7 +380,7 @@ def start_server(
     # Always log to file (crash-proof). log_fh stays open; closed by the OS when
     # proc exits / we kill it.
     log_fh = open(log_path, "wb")  # noqa: SIM115
-    proc = subprocess.Popen(
+    proc = subprocess.Popen(  # nosec B603 — cmd built from user-configured java_path/jar_path
         cmd,
         stdout=log_fh,
         stderr=subprocess.STDOUT,
@@ -462,7 +462,7 @@ def _terminate(proc: subprocess.Popen, feedback=None) -> None:
 
     if proc.poll() is None and sys.platform == "win32":
         try:
-            subprocess.run(
+            subprocess.run(  # nosec B603 B607 — "taskkill" is a fixed literal, pid is our own child's
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 timeout=10,
                 stdout=subprocess.DEVNULL,

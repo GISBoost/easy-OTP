@@ -751,7 +751,7 @@ def check_trip_overlap(
     for path in sample:
         try:
             feed = decode_snapshot(path.read_bytes())
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001  # nosec B112 — corrupt/unreadable snapshot, best-effort sample
             continue
         for entity in feed.entity:
             if entity.HasField("trip_update"):
@@ -785,7 +785,7 @@ def sample_feed_capabilities(
     for path in sample:
         try:
             feed = decode_snapshot(path.read_bytes())
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001  # nosec B112 — corrupt/unreadable snapshot, best-effort sample
             continue
         for entity in feed.entity:
             if not entity.HasField("trip_update"):
@@ -847,7 +847,7 @@ def sample_message_shape(snapshot_paths: list[Path]) -> dict:
     for path in sample:
         try:
             feed = decode_snapshot(path.read_bytes())
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001  # nosec B112 — corrupt/unreadable snapshot, best-effort sample
             continue
         for entity in feed.entity:
             if entity.HasField("trip_update"):
