@@ -126,6 +126,19 @@ def time_of_day_axis(ax, minute_ticks: int = 60) -> None:
     ax.tick_params(axis="x", rotation=45)
 
 
+def time_of_day_axis_y(ax, minute_ticks: int = 60) -> None:
+    """Format a y axis carrying minutes-since-local-midnight as HH:MM.
+
+    The rotated-orientation counterpart of `time_of_day_axis`: social renders (render/social.py)
+    put the categorical/time axis on y instead of x, and matplotlib's sharex/sharey machinery
+    never links the two, so this needs its own formatter/locator pair on `ax.yaxis`.
+    """
+    ax.yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda v, _pos: f"{int(v) // 60 % 24:02d}:{int(v) % 60:02d}")
+    )
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(minute_ticks))
+
+
 MINUTE = 60.0
 
 
