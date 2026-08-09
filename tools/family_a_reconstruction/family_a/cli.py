@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from family_a.build_gtfs import (
+    DEFAULT_DWELL_MODE,
     DEFAULT_MAX_UNKNOWN_TRIP_SHARE,
     DEFAULT_MIN_CORRECTED_ROUTE_SHARE,
     load_static_index,
@@ -55,6 +56,8 @@ from family_a.recorder import (
 )
 from family_a.segment_stats import (
     DEFAULT_MIN_PLAUSIBLE_SPEED_KMH,
+    DEFAULT_PERCENTILE_METHOD,
+    DEFAULT_TIME_BUCKET_SOURCE,
     _MAX_PLAUSIBLE_SPEED_MPS,
     aggregate_segments,
     collect_segment_observations,
@@ -919,21 +922,25 @@ def _cmd_build(args: argparse.Namespace) -> int:
         min_plausible_speed_mps=(
             args.min_plausible_speed_kmh / 3.6 if args.min_plausible_speed_kmh > 0 else None
         ),
+        time_bucket_source=args.time_bucket_source,
     )
     segment_times, dropped_count = filter_min_observations(
         segment_times, args.min_observations_per_segment
     )
-    p50_stats, p85_stats = aggregate_segments(segment_times)
+    p50_stats, p85_stats = aggregate_segments(
+        segment_times, percentile_method=args.percentile_method
+    )
 
     # FA-15: per-route split of corrected/gap, taken from the P50 pass only - P85 rebuilds the
     # same trips against the same segment keys, so counting it too would just double every number.
     route_counts: dict[str, dict[str, int]] = {}
     corrections_p50, corrected_count, gap_count = rebuild_stop_times(
         static_index, p50_stats, service_day_types, args.time_bucket_minutes,
-        route_counts=route_counts,
+        route_counts=route_counts, dwell_mode=args.dwell_mode,
     )
     corrections_p85, _corrected_p85, _gap_p85 = rebuild_stop_times(
-        static_index, p85_stats, service_day_types, args.time_bucket_minutes
+        static_index, p85_stats, service_day_types, args.time_bucket_minutes,
+        dwell_mode=args.dwell_mode,
     )
 
     out_p50 = f"{args.out_prefix}_p50.zip"
@@ -947,6 +954,13 @@ def _cmd_build(args: argparse.Namespace) -> int:
         matched, static_index, max_unknown_trip_share=args.max_unknown_trip_share
     )
 
+    # Printed on every run, defaults included: a published release's log is the only record of
+    # WHICH construction produced it, and the three switches below each move the headline
+    # numbers by tens of percent. A log that omits them cannot be audited after the fact.
+    print(
+        f"Construction: dwell={args.dwell_mode} percentile={args.percentile_method} "
+        f"time-bucket={args.time_bucket_source}"
+    )
     print(f"Agency timezone resolved: {agency_tz}")
     print(f"Trips processed: {collect_counts['trips_processed']}")
     print(f"  - skipped (no resolvable shape or fewer than 2 stops): {collect_counts['trips_skipped_unresolvable']}")
@@ -1238,6 +1252,60 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Time-of-day bucket width in minutes for segment correction scoping "
             "(default: 120, i.e. 2-hour blocks)."
+        ),
+    )
+    # --------------------------------------------------------------------------------------
+    # Construction switches (D1/D2/D3, 2026-08-09). Every default below is the CORRECTED
+    # behaviour; each legacy value exists only to rebuild a feed published before that date, or
+    # to measure the size of the defect on new data. See the constants' comments in
+    # build_gtfs.py / segment_stats.py and docs/reviews/family-a_experimental-verification.md.
+    # --------------------------------------------------------------------------------------
+    p_build.add_argument(
+        "--dwell-mode",
+        choices=("passage", "production"),
+        default=DEFAULT_DWELL_MODE,
+        help=(
+            "D1: what the reconstructed timetable's accumulator carries. 'passage' (default) "
+            "runs the chain in passage times - the arrival-to-arrival quantity the interpolation "
+            "actually measures - and writes arrival == departure, as Wessel et al., rt2gtfs and "
+            "Braga et al. all do. 'production' reproduces the pre-2026-08-09 output, which added "
+            "the SCHEDULED dwell on top of an observed interval that already contained the real "
+            "one, counting it twice and compounding along the trip. Measured on Prague "
+            "2026-07-18 changing only this switch: metro +239.0 s -> +16.1 s, rail +247.8 s -> "
+            "+12.2 s, whole feed +49.7 s -> +24.0 s (-51.7%%); tram and trolleybus, which have "
+            "no scheduled dwell, do not move by a second, and Lodz - which has no row at all "
+            "with a scheduled dwell - rebuilds byte-identically under both modes."
+        ),
+    )
+    p_build.add_argument(
+        "--percentile-method",
+        choices=("inclusive", "exclusive"),
+        default=DEFAULT_PERCENTILE_METHOD,
+        help=(
+            "D2: sample-quantile estimator for the P85 feed, passed to statistics.quantiles. "
+            "'inclusive' (default) agrees with numpy.percentile, pandas.quantile and R's type 7, "
+            "and never leaves the observed range. 'exclusive' is CPython's default and what this "
+            "tool used before 2026-08-09: it extrapolates BEYOND the largest observation for any "
+            "key with fewer than ~12 observations ([100, 200] -> 255.0 instead of 185.0), and "
+            "55.6-78.3%% of keys in these recordings have 2-5 - and every single one of them "
+            "overshoots, not merely some. Switching cuts sum(P85) by 11.2-13.2%% and the P85 "
+            "feed's own mean delay by ~35%% across four cities."
+        ),
+    )
+    p_build.add_argument(
+        "--time-bucket-source",
+        choices=("scheduled", "observed"),
+        default=DEFAULT_TIME_BUCKET_SOURCE,
+        help=(
+            "D3: which clock an observation is filed under. 'scheduled' (default) buckets it by "
+            "the observed trip's own scheduled departure from the 'from' stop - the same "
+            "quantity the rebuild step searches by, so the two sides agree. 'observed' is the "
+            "pre-2026-08-09 behaviour: it bucketed by the interpolated crossing time, so a "
+            "vehicle late enough to cross a bucket boundary was filed where nobody looks and "
+            "its observation was silently discarded - a one-directional loss of exactly the "
+            "largest delays, worth ~delay/bucket_width - measured at 0.68-1.57%% of observations "
+            "at the default 120 min width, but ~33%% at the 15 min resolution of Braga et al., "
+            "which is what this defect blocked moving to."
         ),
     )
     p_build.add_argument(

@@ -19,10 +19,18 @@ from google.transit import gtfs_realtime_pb2
 
 from family_a import matcher
 from family_a.cli import _cmd_build, _cmd_match, _cmd_record, _duration_minutes, build_parser
-from family_a.build_gtfs import DEFAULT_MAX_UNKNOWN_TRIP_SHARE, DEFAULT_MIN_CORRECTED_ROUTE_SHARE
+from family_a.build_gtfs import (
+    DEFAULT_DWELL_MODE,
+    DEFAULT_MAX_UNKNOWN_TRIP_SHARE,
+    DEFAULT_MIN_CORRECTED_ROUTE_SHARE,
+)
 from family_a.interpolate import DEFAULT_MAX_BRACKET_GAP_S
 from family_a.recorder import SnapshotFetchError
-from family_a.segment_stats import DEFAULT_MIN_PLAUSIBLE_SPEED_KMH
+from family_a.segment_stats import (
+    DEFAULT_MIN_PLAUSIBLE_SPEED_KMH,
+    DEFAULT_PERCENTILE_METHOD,
+    DEFAULT_TIME_BUCKET_SOURCE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1000,6 +1008,10 @@ def _make_build_args(tmp_path, **overrides):
         keep_first_segment = False
         # FA-18 default, likewise (km/h; 0 would disable the lower speed bound).
         min_plausible_speed_kmh = 2.0
+        # D1/D2/D3 construction switches, likewise - all three at their corrected defaults.
+        dwell_mode = DEFAULT_DWELL_MODE
+        percentile_method = DEFAULT_PERCENTILE_METHOD
+        time_bucket_source = DEFAULT_TIME_BUCKET_SOURCE
 
     ns = _NS()
     for key, value in overrides.items():
@@ -1055,6 +1067,133 @@ def test_cmd_build_end_to_end_writes_both_zips(tmp_path, capsys):
     assert "Segments corrected: 1" in captured.out
     assert "P50 output written to" in captured.out
     assert "P85 output written to" in captured.out
+
+
+def _make_dwelling_build_static_zip(tmp_path):
+    """Same three-stop fixture, but with a real 60 s scheduled dwell at B.
+
+    Every other build fixture here has arrival_time == departure_time, which is the natural
+    control for D1 - passage and production cannot differ on it. To exercise the switch at all
+    the feed has to book a dwell somewhere, so this one does.
+    """
+    path = tmp_path / "gtfs_build_dwell.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "trips.txt",
+            "trip_id,route_id,direction_id,shape_id,service_id\nt1,R1,0,shape1,svc1\n",
+        )
+        zf.writestr("stops.txt", "stop_id,stop_lat,stop_lon\nA,0.0,0.0\nB,0.01,0.0\nC,0.02,0.0\n")
+        zf.writestr(
+            "stop_times.txt",
+            "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
+            "t1,08:00:00,08:00:00,A,1\n"
+            "t1,08:10:00,08:11:00,B,2\n"
+            "t1,08:20:00,08:20:00,C,3\n",
+        )
+        zf.writestr(
+            "shapes.txt",
+            "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+            "shape1,0.0,0.0,0\nshape1,0.01,0.0,1\nshape1,0.02,0.0,2\n",
+        )
+        zf.writestr(
+            "calendar.txt",
+            "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,"
+            "start_date,end_date\n"
+            "svc1,1,1,1,1,1,0,0,20260101,20261231\n",
+        )
+    return path
+
+
+def _read_stop_times(zip_path):
+    with zipfile.ZipFile(zip_path) as zf:
+        rows = list(csv.DictReader(zf.read("stop_times.txt").decode("utf-8").splitlines()))
+    return {row["stop_sequence"]: (row["arrival_time"], row["departure_time"]) for row in rows}
+
+
+def test_build_parser_defaults_to_the_corrected_construction():
+    args = build_parser().parse_args(
+        ["build", "--matched", "m.csv", "--static", "g.zip", "--out-prefix", "out"]
+    )
+    assert args.dwell_mode == DEFAULT_DWELL_MODE == "passage"
+    assert args.percentile_method == DEFAULT_PERCENTILE_METHOD == "inclusive"
+    assert args.time_bucket_source == DEFAULT_TIME_BUCKET_SOURCE == "scheduled"
+
+    legacy = build_parser().parse_args(
+        ["build", "--matched", "m.csv", "--static", "g.zip", "--out-prefix", "out",
+         "--dwell-mode", "production", "--percentile-method", "exclusive",
+         "--time-bucket-source", "observed"]
+    )
+    assert (legacy.dwell_mode, legacy.percentile_method, legacy.time_bucket_source) == (
+        "production", "exclusive", "observed"
+    )
+
+
+def test_cmd_build_legacy_switches_reproduce_the_pre_fix_output(tmp_path, capsys):
+    """End-to-end proof that both arms are reachable and differ where they should.
+
+    Two recording days give the B->C key two observations, which is what makes the P85 feed
+    sensitive to the quantile method as well - 2-5 observations is where 'exclusive'
+    extrapolates past the largest one, and it is the modal key size in real recordings.
+    """
+    from family_a.matcher import project_point_to_polyline
+
+    gtfs = _make_dwelling_build_static_zip(tmp_path)
+    d_b = project_point_to_polyline(0.01, 0.0, _BUILD_SHAPE)[0]
+    d_c = project_point_to_polyline(0.02, 0.0, _BUILD_SHAPE)[0]
+
+    # 07:00Z = 08:00 local (Europe/Warsaw fallback, no DST in January), so the observation sits
+    # in the same bucket as the schedule. B->C is 240 s on day one and 300 s on day two.
+    matched_path = tmp_path / "matched.csv"
+    matched_path.write_text(
+        "trip_id,timestamp,distance_along_shape_m,recording_date\n"
+        f"t1,2026-01-01T07:00:00Z,0.0,2026-01-01\n"
+        f"t1,2026-01-01T07:04:00Z,{d_b},2026-01-01\n"
+        f"t1,2026-01-01T07:08:00Z,{d_c},2026-01-01\n"
+        f"t1,2026-01-02T07:00:00Z,0.0,2026-01-02\n"
+        f"t1,2026-01-02T07:04:00Z,{d_b},2026-01-02\n"
+        f"t1,2026-01-02T07:09:00Z,{d_c},2026-01-02\n",
+        encoding="utf-8",
+    )
+
+    fixed_prefix = str(tmp_path / "fixed")
+    assert _cmd_build(
+        _make_build_args(
+            tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=fixed_prefix,
+            min_observations_per_segment=2,
+        )
+    ) == 0
+    fixed_out = capsys.readouterr().out
+    assert "Construction: dwell=passage percentile=inclusive time-bucket=scheduled" in fixed_out
+
+    legacy_prefix = str(tmp_path / "legacy")
+    assert _cmd_build(
+        _make_build_args(
+            tmp_path, matched=str(matched_path), static=str(gtfs), out_prefix=legacy_prefix,
+            min_observations_per_segment=2,
+            dwell_mode="production", percentile_method="exclusive", time_bucket_source="observed",
+        )
+    ) == 0
+    legacy_out = capsys.readouterr().out
+    assert (
+        "Construction: dwell=production percentile=exclusive time-bucket=observed" in legacy_out
+    )
+
+    # P50: observations are 240 s and 300 s -> median 270. Passage books B at its scheduled
+    # 08:10:00 with no dwell, then 270 s to C. Production keeps the 60 s dwell and adds it on
+    # top, so C lands a full dwell later - the D1 artifact, with no delay in the input.
+    fixed_p50 = _read_stop_times(f"{fixed_prefix}_p50.zip")
+    legacy_p50 = _read_stop_times(f"{legacy_prefix}_p50.zip")
+    assert fixed_p50["2"] == ("08:10:00", "08:10:00")
+    assert legacy_p50["2"] == ("08:10:00", "08:11:00")
+    assert fixed_p50["3"] == ("08:14:30", "08:14:30")
+    assert legacy_p50["3"] == ("08:15:30", "08:15:30")
+
+    # P85 on two observations: inclusive gives 240 + 0.85*60 = 291 s, exclusive extrapolates to
+    # 1.55*300 - 0.55*240 = 333 s, i.e. 33 s beyond anything ever observed.
+    fixed_p85 = _read_stop_times(f"{fixed_prefix}_p85.zip")
+    legacy_p85 = _read_stop_times(f"{legacy_prefix}_p85.zip")
+    assert fixed_p85["3"] == ("08:14:51", "08:14:51")
+    assert legacy_p85["3"] == ("08:16:33", "08:16:33")
 
 
 def _write_stationary_matched(tmp_path):

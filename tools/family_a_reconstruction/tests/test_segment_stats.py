@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from family_a.build_gtfs import StaticIndex, segment_key_for
+from family_a.build_gtfs import StaticIndex, rebuild_stop_times, segment_key_for
 from family_a.calendar_scope import day_type_for_date, time_bucket_for_seconds
 from family_a.interpolate import stop_distance_along_shape
 from family_a.matcher import cumulative_distances
@@ -97,8 +97,41 @@ def test_aggregate_p85_value():
     values = list(range(1, 21))
     key = ("R1", "0", "A", "B")
     p50, p85 = aggregate_segments({key: values})
-    expected_p85 = statistics.quantiles(values, n=100)[84]
+    expected_p85 = statistics.quantiles(values, n=100, method="inclusive")[84]
     assert p85[key] == pytest.approx(expected_p85)
+
+
+def test_aggregate_p85_never_exceeds_the_observed_maximum():
+    """The D2 regression test.
+
+    CPython's default 'exclusive' method estimates a POPULATION quantile and extrapolates past
+    the largest observation whenever the sample is smaller than ~12 - which describes 56-78% of
+    the keys in a real recording. 'inclusive' agrees with numpy.percentile, pandas.quantile and
+    R's type 7, and stays inside [min, max] by construction. The existing p85 >= p50 clamp never
+    caught this: it only guards the bottom.
+    """
+    cases = {
+        ("R1", "0", "A", "B"): [100.0, 200.0],
+        ("R1", "0", "B", "C"): [60.0, 90.0, 300.0],
+        ("R1", "0", "C", "D"): [100.0, 200.0, 300.0, 400.0, 500.0],
+    }
+    _p50, p85 = aggregate_segments(cases)
+
+    for key, values in cases.items():
+        assert p85[key] <= max(values)
+    # The three numbers numpy/pandas/R produce for the same inputs.
+    assert p85[("R1", "0", "A", "B")] == pytest.approx(185.0)
+    assert p85[("R1", "0", "B", "C")] == pytest.approx(237.0)
+    assert p85[("R1", "0", "C", "D")] == pytest.approx(440.0)
+
+
+def test_aggregate_exclusive_mode_reproduces_the_pre_d2_output():
+    """The legacy arm, pinned - including the overshoot, which is the whole point of keeping it."""
+    key = ("R1", "0", "A", "B")
+    values = [100.0, 200.0]
+    _p50, p85 = aggregate_segments({key: values}, percentile_method="exclusive")
+    assert p85[key] == pytest.approx(255.0)
+    assert p85[key] > max(values)
 
 
 def test_aggregate_single_observation():
@@ -152,11 +185,13 @@ def test_collect_successful_interpolation_appends_segment_time():
     assert counts["rejected_seg_time"] == 0
 
 
-def test_collect_segment_observations_uses_local_time_not_utc_for_day_type_and_bucket():
+def test_collect_segment_observations_uses_local_time_not_utc_for_day_type():
     # Etc/GMT-9 is UTC+9 (Etc zone sign convention is inverted), no DST. A UTC
     # Saturday 23:00 observation lands on a local Sunday 08:00 - if the
-    # tz_convert step were accidentally skipped, day_type/time_bucket would
-    # be derived from the naive UTC Saturday 23:00 instead.
+    # tz_convert step were accidentally skipped, day_type would be derived from
+    # the naive UTC Saturday 23:00 instead. (Since D3 the time_bucket comes from
+    # the schedule, so only day_type still exercises the conversion; the bucket's
+    # own two sources have their own tests below.)
     idx = _two_stop_static_index()
     trip_shapes = {"t1": "shape1"}
     shapes = {"shape1": _STRAIGHT_LINE}
@@ -175,15 +210,83 @@ def test_collect_segment_observations_uses_local_time_not_utc_for_day_type_and_b
         matched, idx, trip_shapes, shapes, stop_locations, agency_tz="Etc/GMT-9", skip_first_segment=False
     )
 
-    # Local: 2026-01-04 08:00:00, a Sunday.
-    expected_bucket = time_bucket_for_seconds(8 * 3600, 120)
-    key = ("R1", "0", "A", "B", "SUNDAY", expected_bucket)
+    # Local: 2026-01-04 08:00:00, a Sunday. The bucket is A's scheduled departure (0).
+    key = ("R1", "0", "A", "B", "SUNDAY", time_bucket_for_seconds(0, 120))
     assert segment_times[key] == pytest.approx([100.0])
+    assert all(day_type == "SUNDAY" for *_rest, day_type, _bucket in segment_times)
 
-    naive_utc_bucket = time_bucket_for_seconds(23 * 3600, 120)
-    assert expected_bucket != naive_utc_bucket
-    wrong_key = ("R1", "0", "A", "B", "SATURDAY", naive_utc_bucket)
-    assert wrong_key not in segment_times
+
+def _late_vehicle_across_a_bucket_boundary():
+    """A trip scheduled to leave A at 07:50 whose vehicle only crosses A at 08:10.
+
+    With the default 120-minute buckets those two times sit on opposite sides of the 08:00
+    boundary: scheduled -> bucket 3, observed -> bucket 4. This is the exact situation D3 is
+    about, and 20 minutes of lateness is an ordinary rush-hour value, not a contrived one.
+    """
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 28200, 28200), (2, "B", 28800, 28800)]},  # 07:50, 08:00
+    )
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+    matched = _matched_df([
+        ("t1", _t(29400), 0.0),    # 08:10:00 UTC, Thursday -> WEEKDAY
+        ("t1", _t(29500), d_b),    # 100 s later
+    ])
+    common = dict(
+        trip_shapes={"t1": "shape1"},
+        shapes={"shape1": _STRAIGHT_LINE},
+        stop_locations={"A": (0.0, 0.0), "B": (0.01, 0.0)},
+        agency_tz="UTC",
+        skip_first_segment=False,
+    )
+    return idx, matched, common
+
+
+def test_bucket_source_scheduled_files_a_late_observation_where_the_rebuild_looks():
+    """The D3 regression test, end to end: archive side and apply side must agree.
+
+    rebuild_stop_times searches by the SCHEDULED departure from the previous stop. Filing the
+    observation by its scheduled departure too means a late vehicle is still found; filing it by
+    the observed crossing (the pre-2026-08-09 behaviour, asserted in the next test) means it is
+    filed in a bucket nobody ever searches, and the trip silently falls back to its schedule.
+    """
+    idx, matched, common = _late_vehicle_across_a_bucket_boundary()
+
+    segment_times, _counts = collect_segment_observations(matched, idx, **common)
+
+    scheduled_bucket = time_bucket_for_seconds(28200, 120)
+    observed_bucket = time_bucket_for_seconds(29400, 120)
+    assert scheduled_bucket != observed_bucket  # the fixture really does straddle a boundary
+    assert list(segment_times) == [
+        segment_key_for("R1", "0", "A", "B", "WEEKDAY", scheduled_bucket)
+    ]
+
+    # And the applying side actually consumes it.
+    p50 = {key: statistics.median(v) for key, v in segment_times.items()}
+    _corrections, corrected, _gaps = rebuild_stop_times(idx, p50, {"": {"WEEKDAY"}})
+    assert corrected == 1
+
+
+def test_bucket_source_observed_reproduces_the_pre_d3_loss():
+    """The legacy arm, pinned - and the demonstration that it loses the observation.
+
+    Same data, same rebuild: bucketing by the observed crossing puts the key in bucket 4 while
+    rebuild_stop_times looks in bucket 3, so a 20-minutes-late vehicle contributes nothing.
+    """
+    idx, matched, common = _late_vehicle_across_a_bucket_boundary()
+
+    segment_times, _counts = collect_segment_observations(
+        matched, idx, time_bucket_source="observed", **common
+    )
+
+    assert list(segment_times) == [
+        segment_key_for("R1", "0", "A", "B", "WEEKDAY", time_bucket_for_seconds(29400, 120))
+    ]
+
+    p50 = {key: statistics.median(v) for key, v in segment_times.items()}
+    _corrections, corrected, gaps = rebuild_stop_times(idx, p50, {"": {"WEEKDAY"}})
+    assert corrected == 0
+    assert gaps == 1
 
 
 def test_collect_one_sided_interpolation_failure_is_a_gap():
@@ -1051,13 +1154,12 @@ def _segments_from_crossings(crossings, agency_tz="UTC", bucket_minutes=120):
             if cur.seg_status != SEG_OK:
                 continue
             local_from = prev.obs_time.tz_convert(zone)
+            # day_type still comes from the observation; the bucket comes from the previous
+            # stop's SCHEDULED departure (D3), which the crossings table carries as sched_dep_s.
             key = segment_key_for(
                 cur.route_id, cur.direction_id, prev.stop_id, cur.stop_id,
                 day_type_for_date(local_from.date()),
-                time_bucket_for_seconds(
-                    local_from.hour * 3600 + local_from.minute * 60 + local_from.second,
-                    bucket_minutes,
-                ),
+                time_bucket_for_seconds(prev.sched_dep_s, bucket_minutes),
             )
             out[key].append(cur.seg_time_s)
     return dict(out)

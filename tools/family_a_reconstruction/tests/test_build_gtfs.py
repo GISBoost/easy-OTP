@@ -449,10 +449,44 @@ def test_rebuild_gap_fallback_uses_scheduled():
     assert gaps == 2  # two segments (A->B, B->C)
     # First stop unchanged
     assert corrections[("t1", 1)] == (0, 60)
-    # A->B scheduled travel = 120 - 60 = 60; dwell at B = 180 - 120 = 60
-    assert corrections[("t1", 2)] == (120, 180)
-    # B->C scheduled travel = 240 - 180 = 60; dwell at C = 0
+    # D1/passage: passage 0 is A's DEPARTURE (60), so A->B books arr[B] - dep[A] = 60 and
+    # lands on 120 - B's own scheduled arrival. No dwell is written.
+    assert corrections[("t1", 2)] == (120, 120)
+    # B->C books arr[C] - arr[B] = 120 (the scheduled gap INCLUDING B's dwell, since the
+    # observed quantity these numbers stand in for is arrival-to-arrival).
     assert corrections[("t1", 3)] == (240, 240)
+
+
+def test_rebuild_a_perfectly_punctual_vehicle_reproduces_the_schedule():
+    """The invariant D1 restores, and the cleanest statement of the defect.
+
+    Feed the observations a vehicle running EXACTLY to schedule would produce. Because
+    interpolate_stop_time returns the first bracketing pair, those observations are
+    passage-to-passage intervals: 60 s for A->B (dep A 60 -> arr B 120) and 120 s for B->C
+    (arr B 120 -> arr C 240, which contains B's 60 s dwell).
+
+    Passage mode gives back the schedule to the second. Production mode adds B's scheduled dwell
+    on top of an interval that already carried it, so the trip finishes 60 s late - exactly one
+    dwell - with no delay in the input at all. On Prague's metro, where a trip accumulates 410 s
+    of scheduled dwell, that is the +232.6 s the published feed was reporting.
+    """
+    idx = _simple_index()
+    bucket = time_bucket_for_seconds(60, 120)
+    b_bucket = time_bucket_for_seconds(180, 120)
+    on_time = {
+        segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): 60.0,
+        segment_key_for("R1", "0", "B", "C", "WEEKDAY", b_bucket): 120.0,
+    }
+
+    corrections, corrected, _gaps = rebuild_stop_times(idx, on_time, _DEFAULT_DAY_TYPES)
+    assert corrected == 2
+    assert corrections[("t1", 2)][0] == 120  # scheduled arrival at B
+    assert corrections[("t1", 3)][0] == 240  # scheduled arrival at C
+
+    legacy, _c, _g = rebuild_stop_times(
+        idx, on_time, _DEFAULT_DAY_TYPES, dwell_mode="production"
+    )
+    assert legacy[("t1", 3)][0] == 300  # 60 s of pure artifact: B's dwell, counted twice
 
 
 def test_rebuild_corrected_segment():
@@ -464,10 +498,32 @@ def test_rebuild_corrected_segment():
     corrections, corrected, gaps = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES)
     assert corrected == 1
     assert gaps == 1  # B->C still a gap
-    # new_arr[B] = 60 + 90 = 150; dwell = 60; new_dep[B] = 210
-    assert corrections[("t1", 2)] == (150, 210)
-    # B->C: travel = 240 - 180 = 60 (scheduled); but running_time is now 210
+    # new_arr[B] = 60 + 90 = 150; no dwell is added on top (D1)
+    assert corrections[("t1", 2)] == (150, 150)
+    # B->C: scheduled passage = arr[C] - arr[B] = 240 - 120 = 120; running_time is now 150
     assert corrections[("t1", 3)] == (270, 270)
+
+
+def test_rebuild_zero_dwell_feed_is_identical_in_both_modes():
+    """The natural control the D1 measurement rests on.
+
+    Gdansk and Lodz publish arrival_time == departure_time on every row, and their rebuilt
+    feeds came out identical to the second under both semantics. That is the mechanism's own
+    prediction - there is no dwell to count twice - so it is pinned here as a test.
+    """
+    idx = _make_static_index(
+        trips={"t1": ("R1", "0")},
+        stops={"t1": [(1, "A", 60, 60), (2, "B", 120, 120), (3, "C", 240, 240)]},
+        service_ids={"t1": "svc_weekday"},
+    )
+    bucket = time_bucket_for_seconds(60, 120)
+    stats = {segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): 90.0}
+
+    passage, _c1, _g1 = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES)
+    production, _c2, _g2 = rebuild_stop_times(
+        idx, stats, _DEFAULT_DAY_TYPES, dwell_mode="production"
+    )
+    assert passage == production
 
 
 def test_rebuild_monotonic_clamp():
@@ -501,13 +557,21 @@ def test_rebuild_gtfs_time_over_24():
     assert format_gtfs_time(arr_y) == "24:05:00"
 
 
-def test_rebuild_dwell_preserved():
+def test_rebuild_passage_collapses_dwell():
+    """D1: the output is a passage timetable, so arrival == departure at every non-origin stop.
+
+    That is what Wessel et al., rt2gtfs and Braga et al. all write, and it is the only way the
+    dwell already contained in an arrival-to-arrival observation is not counted a second time.
+    Total journey time is unaffected - the dwell lives inside the segment time.
+    """
     idx = _simple_index()
     bucket = time_bucket_for_seconds(60, 120)
     stats = {segment_key_for("R1", "0", "A", "B", "WEEKDAY", bucket): 90.0}
     corrections, _corrected, _gaps = rebuild_stop_times(idx, stats, _DEFAULT_DAY_TYPES)
     arr_b, dep_b = corrections[("t1", 2)]
-    assert dep_b - arr_b == 60  # scheduled dwell at B preserved
+    assert dep_b == arr_b
+    # The origin keeps its scheduled arrival/departure: it is the anchor, not a passage.
+    assert corrections[("t1", 1)] == (0, 60)
 
 
 def test_segment_key_for_builds_expected_tuple():
@@ -535,8 +599,8 @@ def test_rebuild_day_type_scoping_denies_wrong_day_type():
 
     assert corrected == 1
     assert gaps == 1
-    assert corrections[("t_wd", 2)] == (150, 210)  # corrected: 60+90=150, dwell 60
-    assert corrections[("t_sun", 2)] == (120, 180)  # stays scheduled
+    assert corrections[("t_wd", 2)] == (150, 150)  # corrected: 60+90=150 (passage, no dwell)
+    assert corrections[("t_sun", 2)] == (120, 120)  # stays scheduled (arr[B] - dep[A] = 60)
 
 
 def test_rebuild_time_bucket_scoping_denies_wrong_bucket():
@@ -581,7 +645,7 @@ def test_rebuild_unknown_service_id_is_always_gap():
 
     assert corrected == 0
     assert gaps == 2
-    assert corrections[("t1", 2)] == (120, 180)  # stays scheduled
+    assert corrections[("t1", 2)] == (120, 120)  # stays scheduled
 
 
 def test_rebuild_multi_day_type_service_picks_deterministic_alphabetical_match():
@@ -603,7 +667,7 @@ def test_rebuild_multi_day_type_service_picks_deterministic_alphabetical_match()
 
     assert corrected == 1
     # SATURDAY sorts first -> its value (11.0) must be the one applied.
-    assert corrections[("t1", 2)] == (60 + 11, 60 + 11 + 60)
+    assert corrections[("t1", 2)] == (60 + 11, 60 + 11)
 
 
 # ---------------------------------------------------------------------------

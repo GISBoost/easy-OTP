@@ -116,6 +116,55 @@ _MAX_PLAUSIBLE_SPEED_MPS = 100.0 / 3.6  # 100 km/h ~= 27.78 m/s
 DEFAULT_MIN_PLAUSIBLE_SPEED_KMH = 2.0
 _MIN_PLAUSIBLE_SPEED_MPS = DEFAULT_MIN_PLAUSIBLE_SPEED_KMH / 3.6  # ~= 0.56 m/s
 
+# D2 (2026-08-09): quantile estimator for the P85 feed.
+#
+# Until this date aggregate_segments called statistics.quantiles(values, n=100)[84] with no
+# method= argument, i.e. CPython's default "exclusive". That method estimates a POPULATION
+# quantile and, for a small sample, clamps its index to n-1 and extrapolates BEYOND the largest
+# observation. For n = 2 it returns 1.55*max - 0.55*min; the condition for overshoot is
+# 85*(n+1)/100 > n-1, i.e. n < 12.33, so it bites every key with 2-12 observations - and the
+# median key in these recordings has 3.
+#
+#   values            exclusive (was)   inclusive (is)   numpy/pandas/R type 7   max
+#   [100, 200]              255.0            185.0             185.0            200
+#   [60, 90, 300]           384.0            237.0             237.0            300
+#
+# numpy.percentile, pandas.quantile and R's default type 7 agree with "inclusive" and disagree
+# with what was published: anyone recomputing these feeds with standard tools got a different
+# number. That makes it a REPRODUCIBILITY defect, not a matter of taste - and the existing
+# p85 >= p50 clamp never caught it, because it only guards the bottom.
+#
+# MEASURED on four archived city-days (matched tables in gtfs-manual-test/verify/), through the
+# CLI's own parameters: keys with 2-5 observations are 55.6% (Lodz) to 78.3% (Vilnius) of the
+# feed, and the count of keys where 'exclusive' exceeds the observed maximum equals that number
+# EXACTLY in every city - the overshoot is the rule for a small sample, not an occasional case.
+# sum(P85) falls 11.2-13.2% and the P85 feed's own mean delay falls ~35%, convergently across
+# four different feeds. See docs/reviews/family-a_experimental-verification.md §2.
+#
+# Hyndman & Fan (1996) catalogue nine sample-quantile definitions, and R still exposes all of
+# them via type=; picking one is legitimate. Picking the only one that leaves the data range
+# is not, and neither is doing it by omission.
+DEFAULT_PERCENTILE_METHOD = "inclusive"
+
+# D3 (2026-08-09): which clock a segment observation is bucketed by.
+#
+# collect_segment_observations used to derive time_bucket from the OBSERVED crossing time,
+# while rebuild_stop_times looks the key up by the SCHEDULED departure from the previous stop.
+# The two therefore spoke about different quantities: a vehicle late enough to cross a bucket
+# boundary was filed in one bucket and searched for in another, so its observation could never
+# be applied to the trip it came from. The loss is systematic and one-directional - it discards
+# precisely the largest delays, which are the most informative ones.
+#
+# The affected share is roughly delay / bucket_width. MEASURED at the default 120-minute width:
+# 0.68% of observations (Prague) to 1.57% (Gdansk) are filed in a different bucket by the two
+# rules - small, as expected, but it scales linearly as the bucket narrows, reaching ~33% at the
+# 15-minute resolution Braga et al. (2023) use. Fixing it is what makes that resolution reachable
+# at all.
+#
+# "scheduled" makes both sides use the same quantity. "observed" reproduces the pre-2026-08-09
+# behaviour and exists only for that.
+DEFAULT_TIME_BUCKET_SOURCE = "scheduled"
+
 
 def collect_segment_observations(
     matched: pd.DataFrame,
@@ -131,6 +180,7 @@ def collect_segment_observations(
     max_bracket_gap_s: float | None = DEFAULT_MAX_BRACKET_GAP_S,
     skip_first_segment: bool = True,
     min_plausible_speed_mps: float | None = _MIN_PLAUSIBLE_SPEED_MPS,
+    time_bucket_source: str = DEFAULT_TIME_BUCKET_SOURCE,
 ) -> tuple[dict[SegmentKey, list[float]], dict[str, int]]:
     """For each trip's matched position series, interpolate every consecutive
     scheduled stop pair's crossing time and derive an observed segment
@@ -138,10 +188,19 @@ def collect_segment_observations(
 
     Returns (segment_times, counts). segment_times maps (route_id,
     direction_id, from_stop_id, to_stop_id, day_type, time_bucket) -> list of
-    observed travel times (seconds). day_type/time_bucket are derived from
-    the segment's own observation time, converted from UTC to agency_tz
-    (see calendar_scope.py) before deriving the local calendar date/time of
-    day.
+    observed travel times (seconds).
+
+    day_type is derived from the segment's own observation time, converted
+    from UTC to agency_tz (see calendar_scope.py) before deriving the local
+    calendar date.
+
+    time_bucket is derived from the observed trip's SCHEDULED departure from
+    the "from" stop (*time_bucket_source* = "scheduled", the default) - the
+    very quantity rebuild_stop_times looks the key up by, so the archiving
+    side and the applying side speak about the same thing. Passing "observed"
+    restores the pre-2026-08-09 behaviour of bucketing by the interpolated
+    crossing time instead; see DEFAULT_TIME_BUCKET_SOURCE for the defect that
+    caused and why it blocks 15-minute buckets.
 
     Groups matched's position series by (trip_id, recording_date) when a
     recording_date column is present (FA-6) - this prevents two physically
@@ -352,7 +411,7 @@ def collect_segment_observations(
             counts["first_segment_skipped"] += 1
 
         for idx in range(first_idx, len(stops) - 1):
-            seq_from, stop_from, _arr_from, _dep_from = stops[idx]
+            seq_from, stop_from, _arr_from, sched_dep_from = stops[idx]
             seq_to, stop_to, _arr_to, _dep_to = stops[idx + 1]
 
             if stop_from not in stop_locations or stop_to not in stop_locations:
@@ -401,9 +460,14 @@ def collect_segment_observations(
             # (trip_id, recording_date) grouping above prevents cross-day series mixing, but
             # does not fix this separate day_type-vs-service-day nuance.
             day_type = day_type_for_date(local_t_from.date())
+            # D3: bucket by the observed trip's own SCHEDULED departure from this stop, which is
+            # exactly what rebuild_stop_times searches by (its prev_dep). Bucketing by the
+            # observed crossing instead - the "observed" legacy mode - files a late vehicle in a
+            # bucket nobody ever looks in, so the largest delays are the ones systematically
+            # thrown away. time_bucket_for_seconds normalises >24:00:00 the same on both sides.
+            observed_s = local_t_from.hour * 3600 + local_t_from.minute * 60 + local_t_from.second
             time_bucket = time_bucket_for_seconds(
-                local_t_from.hour * 3600 + local_t_from.minute * 60 + local_t_from.second,
-                bucket_minutes,
+                observed_s if time_bucket_source == "observed" else sched_dep_from, bucket_minutes
             )
             key: SegmentKey = segment_key_for(
                 route_id, direction_id, stop_from, stop_to, day_type, time_bucket
@@ -689,18 +753,25 @@ def filter_min_observations(
 
 def aggregate_segments(
     collected: dict[SegmentKey, list[float]],
+    percentile_method: str = DEFAULT_PERCENTILE_METHOD,
 ) -> tuple[dict[SegmentKey, float], dict[SegmentKey, float]]:
     """Return (p50_stats, p85_stats) using stdlib statistics.
 
     P50 = median; P85 = 85th percentile. Invariant: p85 >= p50 per segment.
+
+    *percentile_method* is passed straight to statistics.quantiles (which rejects anything it
+    does not know): "inclusive", the default and the only defensible one, or "exclusive", the
+    legacy behaviour kept only to reproduce feeds published before 2026-08-09 - see D2 in the
+    constant's comment.
     """
     p50: dict[SegmentKey, float] = {}
     p85: dict[SegmentKey, float] = {}
     for key, values in collected.items():
         p50_val = statistics.median(values)
         if len(values) >= 2:
-            p85_val = statistics.quantiles(values, n=100)[84]
+            p85_val = statistics.quantiles(values, n=100, method=percentile_method)[84]
         else:
+            # A single observation is its own every percentile; quantiles() refuses n < 2.
             p85_val = values[0]
         p85_val = max(p85_val, p50_val)
         p50[key] = p50_val

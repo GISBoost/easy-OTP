@@ -39,7 +39,9 @@ All three subcommands are implemented and documented below:
   `shape_dist_traveled` as the live-matching distance axis (FA-10, see below).
 - `build` — implemented (FA-3), trustworthy `shape_dist_traveled` for stop anchoring (FA-10),
   sequential/monotonic stop-pattern anchoring as the geometric fallback for feeds without a
-  trustworthy `shape_dist_traveled` (FA-11).
+  trustworthy `shape_dist_traveled` (FA-11), three arithmetic corrections to the construction
+  itself (D1/D2/D3, 2026-08-09 — see **Construction semantics** below; **every feed published
+  before that date carries all three defects**).
 - Full end-to-end worked example and CLI polish — this document (FA-4).
 
 ## Setup (Windows)
@@ -261,6 +263,12 @@ py -m family_a.cli build --matched matched.csv --static warsaw.zip --out-prefix 
   trusted.
 - `--time-bucket-minutes` (default `120`) — time-of-day bucket width in minutes for segment
   correction scoping (see below); 12 buckets/day at the default 2-hour width.
+- `--dwell-mode` (default `passage`, legacy `production`) — **D1.** What the reconstructed
+  timetable's accumulator carries. See **Construction semantics** below.
+- `--percentile-method` (default `inclusive`, legacy `exclusive`) — **D2.** Sample-quantile
+  estimator for the P85 feed. See **Construction semantics** below.
+- `--time-bucket-source` (default `scheduled`, legacy `observed`) — **D3.** Which clock a
+  segment observation is filed under. See **Construction semantics** below.
 - `--min-plausible-speed-kmh` (default `2.0`, `0` disables) — **FA-18.** Reject a segment
   observation whose implied average speed falls below this. FA-13's speed check (below) is
   upper-bound only, deliberately so — but what that lets through is a vehicle **standing on a
@@ -436,6 +444,144 @@ layover (FA-20 — printed on every run, including the zero under `--keep-first-
 to judge how much of the recording actually corrected the schedule versus fell back to planned
 times.
 
+### Construction semantics — three corrections, 2026-08-09
+
+Three defects were found by auditing this tool against the four reference works and then
+measured end to end on four archived city-days — Prague 07-18, Gdańsk 07-22, Łódź 07-21,
+Vilnius 07-21, covering all three FA-12 position-signal classes. None of the three is a
+methodological choice; each is an arithmetic error whose direction and size are reproducible.
+All three are now fixed **by default**, and each legacy behaviour is still reachable through
+one flag, for exactly two purposes: rebuilding an already-published feed, and measuring the
+size of the defect on new data.
+
+**Every release published before 2026-08-09 was built with all three legacy semantics.** To
+reproduce one bit for bit, pass all three flags together:
+
+```bat
+py -m family_a.cli build --matched matched.csv --static gtfs.zip --out-prefix legacy ^
+   --dwell-mode production --percentile-method exclusive --time-bucket-source observed
+```
+
+`build` prints its construction on every run (`Construction: dwell=… percentile=… time-bucket=…`)
+and adds a warning line whenever any of the three is not the corrected default, so a release log
+records which arm produced it. That round trip is verified, not assumed: rebuilding all four
+archived city-days with the three legacy flags reproduces the pre-fix P50 and P85 zips
+**byte for byte**, all eight files.
+
+Note that P50 and P85 output under `passage` writes `arrival_time == departure_time` at every
+stop but each trip's origin. Total journey time is unchanged — the dwell lives inside the segment
+time, which is where the observation put it — so routing results are unaffected; only the split
+between "standing" and "moving" is no longer asserted, because this method never measured it.
+
+**D1 — scheduled dwell was counted twice (`--dwell-mode`).** `interpolate_stop_time` returns the
+*first* pair of observations bracketing a stop's distance, so a vehicle standing at a stop is
+credited with crossing it at the moment it *arrived*. The observed segment time is therefore an
+**arrival-to-arrival** interval and already contains the real dwell at the previous stop — and
+`rebuild_stop_times` then added the *scheduled* dwell on top of it, compounding along the trip.
+This is a units error, not a modelling choice: none of Wessel et al., rt2gtfs or Braga et al. has
+it, because all of them write a single time into both fields. `passage` runs the whole chain in
+passage times and writes `arrival == departure`; a perfectly punctual vehicle now reproduces the
+schedule exactly, which under `production` it could not. Measured on Prague 07-18, P50 feed,
+mean arrival delay, changing **only** `--dwell-mode` (rows with a delay of exactly 0 dropped, as
+in the published charts):
+
+| `route_type` | scheduled dwell | `production` | `passage` | change |
+|---|---|---:|---:|---:|
+| 0 tram | ~0 | +23.4 s | **+23.4 s** | **0** ← natural control |
+| 11 trolleybus | 0 | +84.2 s | **+84.2 s** | **0** ← natural control |
+| 3 bus | ~0 | +27.4 s | +24.6 s | −2.8 s |
+| **1 metro** | 410 s/trip | **+239.0 s** | **+16.1 s** | **−222.9 s** |
+| **2 rail** | large | **+247.8 s** | **+12.2 s** | **−235.6 s** |
+| **whole feed** | | **+49.7 s** | **+24.0 s** | **−51.7%** |
+
+The two zero-dwell route types do not move by a single second, and the size of the metro's shift
+matches the scheduled dwell the static feed itself books (410 s per trip, ~205 s per row) — a
+prediction made from the static feed alone, before the experiment. Whole-city controls behave the
+same way: **Łódź, whose feed has no row at all with `arrival_time != departure_time`, rebuilds
+byte-for-byte identically under both modes**, and Gdańsk (845 such rows out of 2.2 M, 0.038%)
+changes 0.047% of its rows and no delay statistic at the printed precision.
+
+This also closes the "unexplained Prague baseline offset" that earlier documentation listed as an
+open question: its metro reporting a large constant delay on a closed right-of-way was this
+artifact, not a property of Prague.
+
+**D2 — the P85 estimator left the data range (`--percentile-method`).** `aggregate_segments`
+called `statistics.quantiles(values, n=100)[84]` with no `method=`, i.e. CPython's default
+`exclusive`, which estimates a *population* quantile and extrapolates **beyond the largest
+observation** for any key with fewer than ~12 observations. `[100, 200]` returned `255.0`;
+`numpy.percentile`, `pandas.quantile` and R's default type 7 all return `185.0`. That makes it a
+**reproducibility** defect: anyone recomputing these feeds with standard tools got a different
+number. The existing `p85 >= p50` clamp never caught it — it only guards the bottom.
+
+| city-day | keys with 2–5 obs. | keys where `exclusive` exceeds the observed max | `sum(P85)` excl vs incl | P85 feed mean delay |
+|---|---:|---:|---:|---|
+| Łódź 07-21 | 55.6% | 55.6% | +12.90% | 591.6 → 382.2 s (**−35.4%**) |
+| Vilnius 07-21 | 78.3% | 78.3% | +11.15% | 391.2 → 255.7 s (**−34.6%**) |
+| Gdańsk 07-22 | 67.5% | 67.5% | +13.15% | 508.9 → 326.0 s (**−35.9%**) |
+| Prague 07-18 | 61.3% | 61.3% | +11.79% | 347.9 → 192.1 s (−44.8%) |
+
+The two middle columns are the same number in every city, which is the mechanism stated as a
+measurement: for a key with 2–5 observations, `exclusive` overshoots the largest one *every time*,
+never occasionally. The last column is the whole corrected construction rather than D2 alone —
+for the three cities with negligible scheduled dwell it is effectively pure D2 and lands at
+−35 ± 1%; Prague falls further because D1 acts on the same feed.
+
+Hyndman & Fan (1996) catalogue nine sample-quantile definitions and R still exposes all of them,
+so *picking* one is legitimate; picking the only one that leaves the observed range, by omission,
+is not.
+
+**D3 — the two sides bucketed by different clocks (`--time-bucket-source`).**
+`collect_segment_observations` derived `time_bucket` from the **observed** crossing time, while
+`rebuild_stop_times` looks the key up by the **scheduled** departure from the previous stop. A
+vehicle late enough to cross a bucket boundary was therefore filed in one bucket and searched for
+in another, and its observation could never be applied to the trip it came from. The loss is
+systematic and one-directional: it discards precisely the largest delays. The affected share is
+roughly `delay / bucket_width` — measured at **0.68% (Prague) to 1.57% (Gdańsk)** of observations
+landing in a different bucket under the default 120-minute width, but the share scales linearly as
+the bucket narrows, reaching **~33% at the 15-minute resolution of Braga et al.**, so this is what
+blocked moving to that resolution at all. `scheduled` puts both sides on the same quantity.
+`day_type` is unaffected and still comes from the observation's own local date.
+
+### What this feed measures, and what it does not
+
+The corrections above remove three arithmetic errors. They do not change what the method *is*,
+and that is worth stating plainly, because the same measurement campaign also quantified it.
+
+This tool pools observations per `(route, direction, stop pair, day_type, time_bucket)`, reduces
+each pool to a P50/P85, and rebuilds every trip in the static feed anchored on its own scheduled
+first departure. What comes out is therefore a **conditional typical timetable** — an estimator of
+the *systematic*, repeatable component of delay, in the sense of Aemmer et al. (2022) — and
+deliberately not a record of what happened to any individual vehicle. Three mechanisms remove the
+stochastic component: anchoring each trip on its scheduled departure, pooling to a median, and
+day-type/bucket scoping combined with `--min-observations-per-segment` (a key with too little
+coverage reverts to the schedule, i.e. to zero delay).
+
+The size of that gap has been measured, using this repository's own `collect_stop_crossings` —
+which produces one interpolated crossing per scheduled stop, with no pooling, no percentile and
+no anchoring — on the **identical set of (trip, stop) pairs**:
+
+| city-day | direct observation (mean / median) | published P50 feed | ratio |
+|---|---|---|---|
+| Łódź 07-21 | 122.2 s / 62.9 s | 42.7 / 13.0 s | **0.35× / 0.21×** |
+| Gdańsk 07-22 | 131.8 s / 46.6 s | 59.3 / 26.0 s | **0.45× / 0.56×** |
+| Prague 07-18 (after D1) | 55.4 s / 45.4 s | 17.6 / 0.0 s | **0.32× / 0.00×** |
+| Vilnius 07-21 | 67.9 s / 24.8 s | 8.5 / 0.0 s | **0.13× / 0.00×** |
+
+**The feed reports 13–45% of the delay contained in its own observations**, and in three of the
+four cities its median delay is 0 s where direct observation of the same crossings gives +25 to
++63 s. This is not a bug introduced or removed by the fixes above — it is the architecture, the
+same one Braga et al. use, and it is why a "static vs realized" accessibility comparison built on
+this feed lands near ±1% while methods that preserve trip identity (Wessel & Farber 2019; Webb et
+al. 2025) report 4–15%. That number is a signature of the method family, not a punctuality
+measurement of the city.
+
+**One consequence to expect when comparing before and after.** On Prague the D1 artifact and this
+architectural damping partially cancelled: the pre-fix feed sat at 0.64× of direct observation,
+apparently the closest of the four cities, because double-counted dwell inflated exactly where
+pooling deflated. Fixing D1 moves Prague to 0.32×, in line with everywhere else. Agreement with
+direct observation therefore gets *worse* on that one city, and that is the correct outcome, not
+a regression.
+
 **Blank scheduled times are interpolated, not read as midnight (FA-19).** GTFS only requires
 `arrival_time`/`departure_time` at timepoints; leaving them blank in between is legal and the
 consumer is expected to fill them in. Until 2026-07-30 this tool coerced a blank to `00:00:00`
@@ -463,11 +609,15 @@ Family A has no trip-cancellation signal (unlike RT-3, which can read `ScheduleR
 from `TripUpdate`s) — every trip in the static feed is reconstructed, cancelled or not.
 
 **Corrections are scoped by day-type and time-of-day.** A segment is keyed by
-`(route_id, direction_id, from_stop_id, to_stop_id, day_type, time_bucket)`, where `day_type`
-(`WEEKDAY`/`SATURDAY`/`SUNDAY`, derived from the observation's local calendar date) and
-`time_bucket` (`--time-bucket-minutes`-wide blocks of the observation's local time of day) are
-resolved from the static feed's `agency_timezone` (falls back to `Europe/Warsaw` with a warning
-if `agency.txt` is missing or lacks the column). A correction is only applied to a static trip
+`(route_id, direction_id, from_stop_id, to_stop_id, day_type, time_bucket)`. `day_type`
+(`WEEKDAY`/`SATURDAY`/`SUNDAY`) is derived from the observation's local calendar date, resolved
+through the static feed's `agency_timezone` (falls back to `Europe/Warsaw` with a warning if
+`agency.txt` is missing or lacks the column). `time_bucket` (`--time-bucket-minutes`-wide blocks)
+is derived from the **scheduled** departure of the observed trip from the "from" stop — the same
+quantity the rebuild step searches by. Until 2026-08-09 it came from the observation's own local
+clock instead, which silently discarded any observation late enough to cross a bucket boundary;
+see **D3** under Construction semantics above, and `--time-bucket-source` to reproduce it.
+A correction is only applied to a static trip
 whose own service actually runs on a day type the recording covered, at a scheduled time in the
 same bucket the recording observed — a trip departing at 3:48 AM is never corrected by an
 afternoon-only recording, even if it shares a route and stop pair with trips that were observed.

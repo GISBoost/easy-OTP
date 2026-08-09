@@ -82,6 +82,52 @@ DEFAULT_MIN_CORRECTED_ROUTE_SHARE = 0.40
 # corruption below 20% would pass unreported - immaterial, since the dtype fix removes its cause.
 DEFAULT_MAX_UNKNOWN_TRIP_SHARE = 0.20
 
+# D1 (2026-08-09): what the reconstructed timetable's accumulator is measuring.
+#
+# interpolate_stop_time returns the FIRST pair of real observations bracketing a stop's
+# distance, so a vehicle standing at a stop is credited with crossing it at (or before) the
+# moment it arrived. The observed segment time is therefore an ARRIVAL-TO-ARRIVAL interval,
+# and it already contains the real dwell at the "from" stop.
+#
+# Until this date rebuild_stop_times took that interval and then added the SCHEDULED dwell on
+# top of it:
+#
+#     new_arr[i] = running + travel          # travel already includes the real dwell at i-1
+#     new_dep[i] = new_arr[i] + dwell[i]     # scheduled dwell counted a second time
+#     running    = new_dep[i]
+#
+# so every stop of a trip inherited the whole accumulated scheduled dwell of the stops before
+# it. This is a UNITS error, not a modelling choice: none of the four reference works has it,
+# because all of them write a single time into both fields (Wessel et al., rt2gtfs, Braga
+# et al.).
+#
+# MEASURED end to end on Prague 2026-07-18, P50 feed, mean arrival delay, changing only this
+# switch (rows whose delay is exactly 0 dropped, as the published charts do):
+#
+#     route_type      scheduled dwell   production   passage     delta
+#     0  tram         ~0                 +23.4 s     +23.4 s     0      <- natural control
+#     11 trolleybus   0                  +84.2 s     +84.2 s     0      <- natural control
+#     3  bus          ~0                 +27.4 s     +24.6 s     -2.8 s
+#     1  metro        410 s/trip        +239.0 s     +16.1 s     -222.9 s
+#     2  rail         large             +247.8 s     +12.2 s     -235.6 s
+#     WHOLE FEED                         +49.7 s     +24.0 s     -51.7%
+#
+# The two zero-dwell route types do not move by a second, and the metro's shift matches the
+# scheduled dwell its own static feed books (410 s/trip, ~205 s/row) - a prediction made from
+# the static feed before the experiment. Whole-city controls agree: Lodz, which has no row at
+# all with arrival_time != departure_time, rebuilds BYTE-IDENTICALLY under both modes, and
+# Gdansk (845 such rows in 2.2M, 0.038%) changes 0.047% of rows and no printed statistic.
+#
+# (docs/reviews/family-a_experimental-verification.md §1 reports slightly different absolutes -
+# +232.6/+8.9/-54% - because its prototype called collect_segment_observations without FA-10
+# anchoring, which the CLI does use, and Prague is the one city of the four whose
+# shape_dist_traveled is trustworthy. The mechanism, the controls and the size all agree.)
+#
+# "passage" runs the whole chain in passage times, which is the quantity actually measured, and
+# writes arrival == departure. "production" reproduces the pre-2026-08-09 output and exists
+# only to rebuild feeds published before that date.
+DEFAULT_DWELL_MODE = "passage"
+
 
 def segment_key_for(
     route_id: str,
@@ -331,6 +377,7 @@ def rebuild_stop_times(
     service_day_types: dict[str, set[str]],
     bucket_minutes: int = 120,
     route_counts: dict[str, dict[str, int]] | None = None,
+    dwell_mode: str = DEFAULT_DWELL_MODE,
 ) -> tuple[dict[tuple[str, int], tuple[int, int]], int, int]:
     """Compute corrected arrival/departure times for every stop in every trip.
 
@@ -349,6 +396,21 @@ def rebuild_stop_times(
     Deliberately computed here rather than by a second function re-deriving which segment keys
     matched: segment_key_for exists precisely so two code paths cannot silently disagree about
     key construction, and a parallel re-derivation would be exactly that risk.
+
+    *dwell_mode* (D1) selects what the accumulator carries - see DEFAULT_DWELL_MODE above for
+    the defect and its measurement:
+
+    - "passage" (default): the whole chain runs in passage times, matching what the observed
+      segment time measures. Passage 0 is the trip's scheduled DEPARTURE from its origin (that
+      is when the vehicle leaves); every later passage is an arrival, so a gap segment's
+      scheduled equivalent is arr[i] - dep[i-1] for the first pair and arr[i] - arr[i-1]
+      afterwards. Output has arrival == departure at every stop but the origin, exactly as
+      Wessel et al. / rt2gtfs / Braga et al. write it. Total journey time is preserved: an
+      uncorrected trip still ends at its scheduled final arrival.
+    - "production": the pre-2026-08-09 behaviour, kept only to rebuild already-published feeds.
+      Scheduled dwell is added on top of an interval that already contains the real one.
+
+    Both modes anchor each trip on its scheduled first departure and clamp monotonically.
 
     Returns:
       corrections: (trip_id, stop_sequence) -> (new_arr_sec, new_dep_sec)
@@ -382,9 +444,18 @@ def rebuild_stop_times(
                 new_arr = float(arr_sec)
                 new_dep = float(dep_sec)
             else:
-                prev_seq, prev_stop_id, _prev_arr, prev_dep = stops[idx - 1]
-                sched_travel = max(0.0, float(arr_sec - prev_dep))
-                dwell = max(0.0, float(dep_sec - arr_sec))
+                prev_seq, prev_stop_id, prev_arr, prev_dep = stops[idx - 1]
+                if dwell_mode == "production":
+                    sched_travel = max(0.0, float(arr_sec - prev_dep))
+                    dwell = max(0.0, float(dep_sec - arr_sec))
+                else:
+                    # Passage 0 is the origin's DEPARTURE, every later passage an arrival - so
+                    # the first pair anchors on prev_dep and all others on prev_arr. Written as
+                    # the `else` deliberately: an unrecognised mode then lands on the corrected
+                    # semantics, not the defective one.
+                    anchor = prev_dep if idx == 1 else prev_arr
+                    sched_travel = max(0.0, float(arr_sec - anchor))
+                    dwell = 0.0
 
                 time_bucket = time_bucket_for_seconds(prev_dep, bucket_minutes)
                 travel = None
