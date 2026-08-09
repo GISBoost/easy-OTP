@@ -289,6 +289,41 @@ def test_bucket_source_observed_reproduces_the_pre_d3_loss():
     assert gaps == 1
 
 
+def test_rail_gets_a_higher_speed_ceiling_than_road():
+    """F12: 130 km/h is a rejection for a bus and ordinary running for a train.
+
+    Measured on Prague 2026-07-18: 85% of the observations the flat 100 km/h bound rejected are
+    route_type=2, at a median of 131 km/h.
+    """
+    idx = _two_stop_static_index()
+    d_b = stop_distance_along_shape(0.01, 0.0, _STRAIGHT_LINE)
+    # d_b is ~1112 m; crossing it in 30 s is ~133 km/h.
+    matched = _matched_df([("t1", _t(0), 0.0), ("t1", _t(30), d_b)])
+    common = dict(
+        trip_shapes={"t1": "shape1"},
+        shapes={"shape1": _STRAIGHT_LINE},
+        stop_locations={"A": (0.0, 0.0), "B": (0.01, 0.0)},
+        agency_tz="UTC",
+        skip_first_segment=False,
+    )
+
+    as_bus, bus_counts = collect_segment_observations(matched, idx, **common)
+    assert as_bus == {} and bus_counts["rejected_seg_time"] == 1
+
+    as_rail, rail_counts = collect_segment_observations(
+        matched, idx, route_types={"R1": "2"}, **common
+    )
+    assert rail_counts["segments_observed"] == 1 and rail_counts["rejected_seg_time"] == 0
+    assert list(as_rail.values()) == [pytest.approx([30.0])]
+
+    # Still catches a real teleport: the same stop pair crossed in 1 s is ~4000 km/h.
+    teleport = _matched_df([("t1", _t(0), 0.0), ("t1", _t(1), d_b)])
+    _out, counts = collect_segment_observations(
+        teleport, idx, route_types={"R1": "2"}, **common
+    )
+    assert counts["rejected_seg_time"] == 1
+
+
 def test_collect_one_sided_interpolation_failure_is_a_gap():
     idx = _two_stop_static_index()
     trip_shapes = {"t1": "shape1"}

@@ -252,6 +252,21 @@ def load_trip_route_index(gtfs_zip_path: str) -> dict[str, str]:
     return trip_routes
 
 
+def load_route_types(gtfs_zip_path: str) -> dict[str, str]:
+    """Load routes.txt into route_id -> route_type (F12).
+
+    Kept as a raw string, not an int: route_type is only ever compared against known values
+    here, and a feed with a blank or non-numeric one must not crash a build over a field this
+    tool uses for one speed threshold.
+    """
+    with zipfile.ZipFile(gtfs_zip_path) as zf:
+        if "routes.txt" not in zf.namelist():
+            return {}
+        with zf.open("routes.txt") as fh:
+            reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"))
+            return {row["route_id"]: (row.get("route_type") or "") for row in reader}
+
+
 def load_fallback_shapes_from_stops(
     gtfs_zip_path: str,
 ) -> dict[str, list[tuple[float, float]]]:

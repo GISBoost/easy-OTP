@@ -38,6 +38,7 @@ from family_a.matcher import (
     DEFAULT_MIN_OBSERVATIONS_FOR_ROUTE_ALERT,
     DEFAULT_POSITION_SIGNAL_COVERAGE_THRESHOLD,
     load_shape_dist_traveled,
+    load_route_types,
     load_stop_locations,
     load_trip_route_index,
     match_snapshots,
@@ -923,6 +924,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
             args.min_plausible_speed_kmh / 3.6 if args.min_plausible_speed_kmh > 0 else None
         ),
         time_bucket_source=args.time_bucket_source,
+        # F12: rail gets a higher upper speed bound than road vehicles.
+        route_types=load_route_types(args.static),
     )
     segment_times, dropped_count = filter_min_observations(
         segment_times, args.min_observations_per_segment

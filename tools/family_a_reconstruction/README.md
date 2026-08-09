@@ -542,6 +542,44 @@ the bucket narrows, reaching **~33% at the 15-minute resolution of Braga et al.*
 blocked moving to that resolution at all. `scheduled` puts both sides on the same quantity.
 `day_type` is unaffected and still comes from the observation's own local date.
 
+**F12 — the speed ceiling is per `route_type` (2026-08-09).** FA-13's upper bound of 100 km/h is
+a road-vehicle number and was rejecting legitimate rail wholesale: on Prague 07-18, **2,628 of the
+3,075 observations rejected for excess speed (85%) are `route_type=2`**, at a median of 131 km/h
+and a p90 of 179 — ordinary regional/InterCity running. Rail (GTFS `route_type` 2, plus the
+extended railway family 100–117) now gets 200 km/h, which still catches what the bound exists for:
+the same population's maximum is 3,587 km/h, a match teleporting across the shape. Verified end to
+end — Prague's FA-13 rejections fall from 5,951 to 3,375 (−43%), recovering 2,576 observations and
+2,177 corrected segments, while **Gdańsk, Łódź and Vilnius, which publish no rail, do not change by
+a single observation**. This matters beyond tidiness: rail is what carries suburban reach, so
+under-correcting it biases exactly the part of an accessibility surface that extends furthest.
+
+### The P85 feed is an upper bound, not the 85th percentile of a journey
+
+`sum(P85)` over the segments of a trip is **not** the 85th percentile of that trip's travel time.
+Summing per-segment percentiles assumes perfect rank correlation between consecutive segments —
+that a trip slow on one segment is slow on all of them. Real delays are not that correlated, so
+the true percentile grows like `√k` where the sum grows like `k`.
+
+Measured on Łódź 07-21 (12,089 trips with ≥8 observed segments, median 26 segments/trip, 4,000
+Monte Carlo replications on the observed distributions):
+
+| quantity | median |
+|---|---:|
+| `sum(P50)` — typical running time | 2,490 s |
+| **`sum(P85)` — what the P85 feed encodes** | **3,365 s** |
+| true P85 under perfect correlation (upper bound) | 3,155 s |
+| true P85 under independence (lower bound) | 2,688 s |
+
+`sum(P85)` exceeds even the perfectly-correlated upper bound, and exceeds the independent case by
+**+25.6%**. Measured as excess over the typical journey it is worse: the feed encodes 886 s where
+the truth is nearer 190 s, a **4.7× overstatement**. It shows up directly as a median delay at the
+end of a trip of 974 s (Łódź), 789 s (Gdańsk) and 479 s (Prague).
+
+**So read the P85 feed as a conservative upper bound on travel time, not as a percentile.** Braga
+et al. (2023) declare the same assumption as a limitation without quantifying it; Chen & Botta
+rejected it on UK data and compute percentiles *after* routing, on OD times, which is the correct
+way to get an actual percentile and is what a per-day or per-trip feed would enable here.
+
 ### What this feed measures, and what it does not
 
 The corrections above remove three arithmetic errors. They do not change what the method *is*,

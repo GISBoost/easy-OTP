@@ -54,6 +54,33 @@ _MAX_PLAUSIBLE_SEG_TIME_S = 7200.0
 # for FA-13.
 _MAX_PLAUSIBLE_SPEED_MPS = 100.0 / 3.6  # 100 km/h ~= 27.78 m/s
 
+# F12 (2026-08-09): the flat 100 km/h ceiling above is a road-vehicle number, and it was
+# rejecting legitimate rail. MEASURED on Prague 2026-07-18: of 3,075 observations rejected for
+# excess speed, 2,628 (85%) are route_type=2, at a median of 131 km/h and a p90 of 179 - i.e.
+# ordinary regional/InterCity running, thrown away wholesale, which systematically
+# under-corrects exactly the mode that carries suburban reach.
+#
+# 200 km/h still catches the real failure the bound exists for - the same population's maximum is
+# 3,587 km/h, a match teleporting across the shape. End to end on Prague it takes FA-13 rejections
+# from 5,951 to 3,375 (-43%), recovering 2,576 observations and 2,177 corrected segments, while
+# Gdansk/Lodz/Vilnius - no rail in those feeds - do not move by a single observation.
+# Applied to GTFS route_type 2 and to the extended railway family 100-117 (spec-defined:
+# "Railway Service" through "Rail Shuttle"), which is where high-speed rail is coded in feeds
+# that use extended types at all.
+_MAX_RAIL_SPEED_MPS = 200.0 / 3.6
+
+
+def _max_speed_mps_for_route(route_types: dict[str, str] | None, route_id: str) -> float:
+    """Upper speed bound for a route: rail gets _MAX_RAIL_SPEED_MPS, everything else 100 km/h.
+
+    *route_types* omitted (every pre-F12 call site, and any feed with no routes.txt) reproduces
+    the flat ceiling exactly.
+    """
+    route_type = (route_types or {}).get(route_id, "")
+    if route_type == "2" or (route_type.isdigit() and 100 <= int(route_type) <= 117):
+        return _MAX_RAIL_SPEED_MPS
+    return _MAX_PLAUSIBLE_SPEED_MPS
+
 # FA-18: lower bound on the same quantity. FA-13 above deliberately had none ("slow segments
 # (traffic, long dwells) are fully legitimate") - true as far as it went, but it was decided
 # without measuring, and what it lets through is a vehicle standing on a terminus during its
@@ -181,6 +208,7 @@ def collect_segment_observations(
     skip_first_segment: bool = True,
     min_plausible_speed_mps: float | None = _MIN_PLAUSIBLE_SPEED_MPS,
     time_bucket_source: str = DEFAULT_TIME_BUCKET_SOURCE,
+    route_types: dict[str, str] | None = None,
 ) -> tuple[dict[SegmentKey, list[float]], dict[str, int]]:
     """For each trip's matched position series, interpolate every consecutive
     scheduled stop pair's crossing time and derive an observed segment
@@ -393,6 +421,7 @@ def collect_segment_observations(
         group = group.sort_values("timestamp")
         position_series = list(zip(group["timestamp"], group["distance_along_shape_m"]))
         counts["trips_processed"] += 1
+        max_speed_mps = _max_speed_mps_for_route(route_types, route_id)
 
         cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
 
@@ -438,7 +467,7 @@ def collect_segment_observations(
             seg_time = (t_to - t_from).total_seconds()
             seg_distance_m = abs(d_to - d_from)
             implausible_speed = (
-                seg_time > 0 and seg_distance_m / seg_time > _MAX_PLAUSIBLE_SPEED_MPS
+                seg_time > 0 and seg_distance_m / seg_time > max_speed_mps
             )
             if seg_time <= 0 or seg_time > _MAX_PLAUSIBLE_SEG_TIME_S or implausible_speed:
                 counts["rejected_seg_time"] += 1
@@ -505,6 +534,7 @@ def collect_stop_crossings(
     max_bracket_gap_s: float | None = DEFAULT_MAX_BRACKET_GAP_S,
     skip_first_segment: bool = True,
     min_plausible_speed_mps: float | None = _MIN_PLAUSIBLE_SPEED_MPS,
+    route_types: dict[str, str] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Per-stop interpolated crossing times, the raw material collect_segment_observations
     computes internally and then throws away by differencing.
@@ -585,6 +615,7 @@ def collect_stop_crossings(
         group = group.sort_values("timestamp")
         position_series = list(zip(group["timestamp"], group["distance_along_shape_m"]))
         counts["trips_processed"] += 1
+        max_speed_mps = _max_speed_mps_for_route(route_types, route_id)
 
         cumulative = shape_cumulative_dist.get(shape_id) if shape_cumulative_dist else None
         trip_fully_trusted = trip_id in trusted_trip_ids
@@ -638,7 +669,7 @@ def collect_stop_crossings(
                 seg_time = (crossings[idx] - crossings[idx - 1]).total_seconds()
                 seg_dist = abs(distances[idx] - distances[idx - 1])
                 implausible_speed = (
-                    seg_time > 0 and seg_dist / seg_time > _MAX_PLAUSIBLE_SPEED_MPS
+                    seg_time > 0 and seg_dist / seg_time > max_speed_mps
                 )
                 if seg_time <= 0 or seg_time > _MAX_PLAUSIBLE_SEG_TIME_S or implausible_speed:
                     reason = SEG_IMPLAUSIBLE
