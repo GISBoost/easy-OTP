@@ -126,6 +126,48 @@ def _vehicle_entity(
     )
 
 
+def _f5_entity(entity_id: str, trip_id: str, lat: float, *, rich: bool):
+    """One entity with every F5 field set, or one with none of them (the proto defaults)."""
+    position = gtfs_realtime_pb2.Position(latitude=lat, longitude=0.0)
+    vp = gtfs_realtime_pb2.VehiclePosition(
+        trip=gtfs_realtime_pb2.TripDescriptor(trip_id=trip_id),
+        position=position,
+        timestamp=1_700_000_000,
+    )
+    if rich:
+        vp.vehicle.id = f"veh_{entity_id}"
+        vp.current_status = gtfs_realtime_pb2.VehiclePosition.STOPPED_AT
+        vp.position.bearing = 90.0
+        vp.position.speed = 5.0
+        vp.position.odometer = 1234.0
+    return gtfs_realtime_pb2.FeedEntity(id=entity_id, vehicle=vp)
+
+
+def test_f5_field_coverage_and_vehicle_id_column(tmp_path):
+    """F5: measure what the feed publishes, and carry vehicle_id into the matched table.
+
+    Two entities, one fully populated and one bare, so every share must be exactly 0.5 - a
+    counter wired to the wrong field or the wrong denominator cannot produce that by accident.
+    HasField is what makes the bare one count as absent: GTFS-RT defaults current_status to
+    IN_TRANSIT_TO and bearing/speed/odometer to 0.0, so a value test would report 100%.
+    """
+    trip_shapes, shapes = _shapes_and_trips()
+    path = _write_pb(
+        tmp_path / "snapshot_20260101-000000.pb",
+        _make_feed_message([
+            _f5_entity("a", "trip1", 0.000, rich=True),
+            _f5_entity("b", "trip1", 0.005, rich=False),
+        ]),
+    )
+
+    df = match_snapshots([path], trip_shapes, shapes)
+
+    assert df.attrs["field_coverage"] == {
+        "vehicle_id": 0.5, "current_status": 0.5, "bearing": 0.5, "speed": 0.5, "odometer": 0.5,
+    }
+    assert sorted(df["vehicle_id"]) == ["", "veh_a"]
+
+
 def _write_pb(path: Path, data: bytes) -> Path:
     path.write_bytes(data)
     return path
@@ -586,6 +628,7 @@ def test_match_snapshots_empty_input_returns_empty_dataframe_with_columns():
         "timestamp",
         "distance_along_shape_m",
         "perpendicular_dist_m",
+        "vehicle_id",
     ]
 
 

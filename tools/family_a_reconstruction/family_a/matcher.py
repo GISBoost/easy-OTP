@@ -61,7 +61,22 @@ logger = logging.getLogger(__name__)
 
 _R_M = 6_371_000.0
 
-_MATCHED_COLUMNS = ["trip_id", "timestamp", "distance_along_shape_m", "perpendicular_dist_m"]
+_MATCHED_COLUMNS = [
+    "trip_id", "timestamp", "distance_along_shape_m", "perpendicular_dist_m", "vehicle_id",
+]
+
+# F5: VehiclePosition fields this tool has never read, measured because the decision to ignore
+# them was recorded without data. Only vehicle_id is carried into the matched table - it is the
+# one with queued consumers (a vehicle-day anchor chain in the sense of Braga et al., and telling
+# apart Bucharest's metro departures that share a trip_id). bearing/speed/odometer/current_status
+# are counted and reported only: measuring is cheap, and storing a column no code reads is not.
+#
+# current_status is the interesting one. It is the direct signal of a vehicle standing at a stop,
+# i.e. the raw material for modelling dwell from data instead of assuming it - and it was
+# dismissed as "real feeds leave it unset almost always", which was never measured per city the
+# way current_stop_sequence/stop_id were. HasField is the honest test: GTFS-RT defaults it to
+# IN_TRANSIT_TO, so a feed that never sets it still reads as IN_TRANSIT_TO everywhere.
+_F5_FIELDS = ("vehicle_id", "current_status", "bearing", "speed", "odometer")
 
 # PRD FA-12, "otwarte kwestie" #4: fraction of a feed/day's VehiclePosition entities (with a
 # non-empty trip_id) that must carry a usable current_stop_sequence (or, failing that, stop_id)
@@ -830,7 +845,8 @@ def match_snapshots(
     # snapshot_YYYYmmdd-HHMMSS.pb naming) and one entity per vehicle per snapshot instant, same
     # assumption the rest of this function already makes (see this docstring's "Snapshots are
     # re-sorted..." paragraph and interpolate_stop_time's own chronological-scan design).
-    records: list[tuple[str, datetime, float, float, bool, int, str]] = []
+    records: list[tuple[str, datetime, float, float, bool, int, str, str]] = []
+    field_present = dict.fromkeys(_F5_FIELDS, 0)
     for path in ordered_paths:
         try:
             feed = _decode_snapshot(path.read_bytes())
@@ -854,7 +870,19 @@ def match_snapshots(
             has_seq = vp.HasField("current_stop_sequence")
             seq_val = vp.current_stop_sequence if has_seq else 0
             stop_id_val = vp.stop_id
-            records.append((trip_id, ts, lat, lon, has_seq, seq_val, stop_id_val))
+
+            # F5. Counted over the same population as FA-12's coverage above (entities with a
+            # trip_id), so the two lines of the capability report are directly comparable.
+            vehicle_id = vp.vehicle.id
+            if vehicle_id:
+                field_present["vehicle_id"] += 1
+            if vp.HasField("current_status"):
+                field_present["current_status"] += 1
+            for field in ("bearing", "speed", "odometer"):
+                if vp.position.HasField(field):
+                    field_present[field] += 1
+
+            records.append((trip_id, ts, lat, lon, has_seq, seq_val, stop_id_val, vehicle_id))
 
     # FA-12: per-day capability detection. trip_stop_anchors omitted/empty short-circuits to
     # "none" immediately - zero behaviour change, same convention as
@@ -895,7 +923,7 @@ def match_snapshots(
     # unattributable, i.e. as a perfect Bug-1 signature, on a feed that simply has no trips.
     track_routes = bool(trip_routes)
 
-    for trip_id, ts, lat, lon, has_seq, seq_val, stop_id_val in records:
+    for trip_id, ts, lat, lon, has_seq, seq_val, stop_id_val, vehicle_id in records:
         route_id = trip_routes.get(trip_id) if track_routes else None
         if track_routes and route_id is None:
             # trip_id is non-empty (records only holds those) but absent from the static feed's
@@ -960,7 +988,7 @@ def match_snapshots(
                 by_route[route_id]["too_far_from_route"] += 1
             continue
 
-        rows.append((trip_id, ts, dist_along_m, perp_m))
+        rows.append((trip_id, ts, dist_along_m, perp_m, vehicle_id))
         if route_id is not None:
             by_route[route_id]["accepted"] += 1
 
@@ -973,6 +1001,12 @@ def match_snapshots(
     df.attrs["snapshots_processed"] = len(ordered_paths)
     df.attrs["position_signal"] = signal
     df.attrs["position_signal_coverage"] = {"sequence": coverage_seq, "stop_id": coverage_stop_id}
+    # F5: share of entities carrying each field, over the same denominator as the FA-12 coverage
+    # above. Empty recording -> all zeros, not a division by zero.
+    df.attrs["field_coverage"] = {
+        field: (count / len(records) if records else 0.0)
+        for field, count in field_present.items()
+    }
     # dict(): a defaultdict would silently manufacture a zeroed entry for any route_id a caller
     # happened to look up, which is exactly the kind of "plausible-looking but wrong number" this
     # milestone exists to prevent.

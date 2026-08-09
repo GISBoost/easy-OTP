@@ -763,6 +763,17 @@ def _cmd_match(args: argparse.Namespace) -> int:
             f"stop_id coverage {coverage['stop_id'] * 100:.1f}%)"
         )
 
+        # F5: the rest of the VehiclePosition capability matrix, on the same denominator.
+        # Printed rather than acted on: the point is to replace an undocumented assumption
+        # about what feeds publish with a per-city measurement. Only vehicle_id is kept in the
+        # table; current_status is the one to watch, since it is the direct dwell signal.
+        field_coverage = df.attrs.get("field_coverage", {})
+        if field_coverage:
+            print(
+                f"  VehiclePosition fields (F5): "
+                + ", ".join(f"{name} {share * 100:.1f}%" for name, share in field_coverage.items())
+            )
+
         for reason, count in df.attrs.get("reject_counts", {}).items():
             total_reject_counts[reason] = total_reject_counts.get(reason, 0) + count
         _merge_route_counts(total_by_route, df.attrs.get("reject_counts_by_route", {}))

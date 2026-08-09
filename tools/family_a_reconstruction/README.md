@@ -553,6 +553,42 @@ end — Prague's FA-13 rejections fall from 5,951 to 3,375 (−43%), recovering 
 a single observation**. This matters beyond tidiness: rail is what carries suburban reach, so
 under-correcting it biases exactly the part of an accessibility surface that extends furthest.
 
+### VehiclePosition capability matrix (F5, measured 2026-08-09)
+
+The FA-12 windowing decision rests on a measured per-city matrix of `current_stop_sequence` /
+`stop_id` coverage. The *other* VehiclePosition fields were dismissed without one — in particular
+`current_status`, on the grounds that "real feeds leave it unset almost always". Measured across
+**26 recorded cities** (5 snapshots sampled per recording directory, 108 directories,
+`match` now reports the same counters per run as `VehiclePosition fields (F5)`):
+
+| field | cities at ~100% | cities at 0% | note |
+|---|---|---|---|
+| `vehicle.id` | **25 of 25 with data** | 0 | universal |
+| `current_status` | 10 (+ Kraków 94.7%, Poznań 28.7%) | 14 | the dwell signal |
+| `position.bearing` | 13 | 8 | Prague 83.6%, Szczecin 77.2%, Rome 19.0% |
+| `position.speed` | 6 | 15 | Kraków 72.1%, Prague 25.7%, Rome 20.0%, Boston 8.4% |
+| `position.odometer` | 0 (Rome 91.1% is the only feed at all) | 25 | effectively unavailable |
+
+Three findings worth acting on:
+
+- **`vehicle_id` is published by every single feed.** Nothing in this tool read it until now; it is
+  now carried in the matched table. That is what a vehicle-day anchor chain (Braga et al. anchor
+  the first departure of a *vehicle's day*, not of every trip), and telling apart Bucharest metro
+  departures that share a `trip_id`, both need.
+- **The `current_status` assumption was wrong.** Eleven of 25 feeds publish it, ten of them on
+  essentially every entity. That is a direct observation of a vehicle standing at a stop across
+  nearly half the monitored network — the raw material for modelling dwell from data rather than
+  taking it from the schedule.
+- **Gdańsk, the FA-12 worst case, is not signal-less.** It publishes no `current_stop_sequence` and
+  no `stop_id`, which is why windowed matching does nothing there — but it publishes `vehicle_id`
+  and `speed` on 100% of entities. The information that would constrain its matching is in the same
+  message, unread.
+
+Two feeds are unusable for a different reason, and the matrix makes it visible rather than
+reporting them as zeros: **Helsinki publishes no `trip_id` at all** (100% of its entities carry
+`route_id`/`direction_id`/`start_time` instead) and **Turin drops it on 47%** — the same failure
+class FA-15/FA-16 were built to catch, here confirmed at the source.
+
 ### The P85 feed is an upper bound, not the 85th percentile of a journey
 
 `sum(P85)` over the segments of a trip is **not** the 85th percentile of that trip's travel time.
