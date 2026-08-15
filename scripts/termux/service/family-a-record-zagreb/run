@@ -1,0 +1,7 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Standard F-Droid Termux $HOME/$PREFIX; confirm against `echo $HOME` on the
+# target phone if this Termux install differs.
+# TX-8: one service dir per city - this is the "zagreb" instance. To add another
+# city, copy this whole service/family-a-record-<city>/ directory and change
+# only the city_id argument below to match.
+exec /data/data/com.termux/files/home/easy-gtfs-rt-termux/record_supervised.sh zagreb
