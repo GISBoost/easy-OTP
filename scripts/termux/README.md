@@ -53,6 +53,12 @@ zone, so `TIMEZONE` is optional for them - only cosmetic if set). For the EU com
 | `lisbon` | `Europe/Lisbon` |
 | `boston` | `America/New_York` |
 | `brisbane` | `Australia/Brisbane` |
+| `helsinki` | `Europe/Helsinki` |
+| `amsterdam` | `Europe/Warsaw` (optional - same offset as Warsaw) |
+| `zagreb` | `Europe/Zagreb` (optional - same offset as Warsaw) |
+| `nicosia` | `Asia/Nicosia` |
+| `riga` | `Europe/Riga` |
+| `ljubljana` | `Europe/Ljubljana` (optional - same offset as Warsaw) |
 
 Without this, every city's recording window was silently evaluated in Europe/Warsaw wall-clock
 time regardless of the city's real timezone - for cities one hour ahead of Poland (Vilnius, Sofia,
@@ -80,6 +86,20 @@ not a re-run of the discovery spike. All verified `auth=none` (no API key needed
 | `lisbon` | `https://gateway.carris.pt/gateway/gtfs/api/v2.11/GTFS/realtime/vehiclepositions` |
 | `boston` | `https://cdn.mbta.com/realtime/VehiclePositions.pb` |
 | `brisbane` | `https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions` |
+| `amsterdam` | `http://gtfs.ovapi.nl/nl/vehiclePositions.pb` |
+| `zagreb` | `https://www.zet.hr/gtfs-rt-protobuf` |
+| `nicosia` | `http://20.19.98.194:8328/Api/api/gtfs-realtime` |
+| `riga` | `https://saraksti.rigassatiksme.lv/vehicle_positions.pb` |
+| `ljubljana` | `https://rt.gtfs.derp.si/sources/lpp/all` (community mirror, not LPP's own API - see note below) |
+
+**`helsinki` is deliberately NOT in `config/cities.json` and must stay that way.** HSL's
+`VehiclePositions.pb` has **zero populated `trip_id`** on every entity (only `route_id`,
+e.g. `31M2`) - confirmed 2026-08-15 by decoding the live feed. `family_a`'s matcher is keyed
+strictly on `trip_id` with no route_id fallback (`family_a/matcher.py`), so this feed can never
+be matched to static GTFS as things stand. Its phone-side recording (`cities/helsinki.env` +
+`family-a-record-helsinki` service) is left running anyway - harmless, and kept in case HSL's
+feed ever gains `trip_id` or a route_id-based matching path gets built - but **do not add a
+`helsinki` key to `cities.json`**; a build would either fail outright or silently match nothing.
 
 Notes from the spike:
 - **Prague (Golemio)** has historically required a free `X-Access-Token` for some endpoints; this
