@@ -145,6 +145,40 @@ def build_parser() -> argparse.ArgumentParser:
              "Built from the same sidecar table, so the two cannot disagree.",
     )
     p_chart.set_defaults(func=_cmd_chart)
+
+    p_stop_headway = sub.add_parser(
+        "stop-headway",
+        help="pooled-across-all-lines headway per stop: a CSV for the hex map plus the H31 "
+             "city-wide fluctuation chart",
+        description=(
+            "Always extracts the WHOLE feed (a --route filter would understate every stop's "
+            "real frequency, since a stop served by 3 lines would only see the ones kept). "
+            "Writes <out-prefix>_stops.csv (stop_id, lat, lon, n, median_headway_min - the "
+            "map's input, see gtfs-rt-visualisation-catalogue_handoff.md I37) and the H31 "
+            "chart (<out-prefix>_H31.png/.csv/.json)."
+        ),
+    )
+    p_stop_headway.add_argument("--matched", required=True, type=Path)
+    p_stop_headway.add_argument("--static", required=True, type=Path)
+    p_stop_headway.add_argument("--city", required=True)
+    p_stop_headway.add_argument("--out-prefix", required=True, type=Path)
+    p_stop_headway.add_argument(
+        "--min-n-stop", type=int, default=3,
+        help="a stop with fewer than this many pooled headways gets no median in the map CSV "
+             "(default: %(default)s, matching B5/B7/B8's grid-cell convention)",
+    )
+    p_stop_headway.add_argument(
+        "--min-n-hour", type=int, default=20,
+        help="H31 buckets below this many pooled headways are marked insufficient data "
+             "(default: %(default)s)",
+    )
+    p_stop_headway.add_argument("--bucket-minutes", type=int, default=60,
+                                help="H31 time-of-day bucket width (default: %(default)s)")
+    p_stop_headway.add_argument(
+        "--outage-gap-seconds", type=float, default=quality.DEFAULT_OUTAGE_GAP_S,
+        help="same feed-outage guard as `extract` (default: %(default)s)",
+    )
+    p_stop_headway.set_defaults(func=_cmd_stop_headway)
     return parser
 
 
@@ -197,6 +231,38 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     )
     written = extract_mod.write_table(result.table, args.out)
     print(f"Tidy table written to {written}")
+    return 0
+
+
+def _cmd_stop_headway(args: argparse.Namespace) -> int:
+    # Imported here for the same reason `_cmd_chart` does: extraction stays importable without
+    # matplotlib, which is the whole point of the extract/chart split.
+    from transit_charts import stop_headway
+    from transit_charts.render import stop_headway as render_stop_headway
+
+    result = extract_mod.extract(
+        matched_path=args.matched,
+        static_path=args.static,
+        city=args.city,
+        route_patterns=None,  # forced whole-feed - see class docstring in stop_headway.py
+        outage_gap_s=args.outage_gap_seconds,
+    )
+    locations = sources.stop_location_index(args.static)
+    stops, missing_coords = stop_headway.per_stop_summary(
+        result.table, result.report.outages, locations, min_n=args.min_n_stop,
+    )
+    stops_path = args.out_prefix.with_name(args.out_prefix.name + "_stops.csv")
+    stops_path.parent.mkdir(parents=True, exist_ok=True)
+    stops.to_csv(stops_path, index=False)
+    print(f"Stop-level headway CSV written to {stops_path}  ({len(stops)} stops, "
+          f"{missing_coords} missing coordinates)")
+
+    chart = render_stop_headway.fluctuation(
+        result.table, result.report.outages,
+        out_prefix=args.out_prefix.with_name(args.out_prefix.name + "_H31"),
+        source=args.matched, bucket_minutes=args.bucket_minutes, min_n=args.min_n_hour,
+    )
+    print(f"H31: {chart.png}")
     return 0
 
 

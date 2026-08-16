@@ -9,9 +9,10 @@
 
 Buduje wykresy z katalogu `docs/handoffs/gtfs-rt-visualisation-catalogue_handoff.md` —
 punktualność, regularność, prędkość, oraz (od rozszerzenia „skala miasta") ranking i mapy
-cieplne po całej sieci naraz — z dopasowanych pozycji pojazdów Family A. Piętnaście gotowych
-wykresów (jedenaście per linia: A2, C9-C11, B5-B7, D14-D17, E20; cztery sieciowe: B8, H28-H30),
-`F21` świadomie zostawiony na później.
+cieplne po całej sieci naraz — z dopasowanych pozycji pojazdów Family A. Siedemnaście gotowych
+wykresów (jedenaście per linia: A2, C9-C11, B5-B7, D14-D17, E20; pięć sieciowych: B8, H28-H31)
+plus jedna mapa (I37, §11a — jedyna pozycja wymagająca QGIS), `F21` świadomie zostawiony na
+później.
 
 Przykłady w tym pliku pochodzą z okna 10:07–21:59, więc nie ma w nich porannego szczytu.
 Komplet z **pełnej doby (06:00–21:59, Łódź 2026-07-23), osobno dla linii 10A, 11, 14, 15, 52,
@@ -85,14 +86,19 @@ pip install -r requirements.txt
 
 ---
 
-## 3. Dwie komendy i co robi każda flaga
+## 3. Trzy komendy i co robi każda flaga
 
-Narzędzie ma dokładnie dwie komendy i to jest cała jego powierzchnia:
+Narzędzie ma trzy komendy i to jest cała jego powierzchnia:
 
 ```
-py -m transit_charts.cli extract ...   # drogo, raz na miasto-dzień  -> tabela tidy
-py -m transit_charts.cli chart  ...    # tanio, dowolnie wiele razy  -> PNG + CSV + JSON
+py -m transit_charts.cli extract      ...   # drogo, raz na miasto-dzień  -> tabela tidy
+py -m transit_charts.cli chart        ...   # tanio, dowolnie wiele razy  -> PNG + CSV + JSON
+py -m transit_charts.cli stop-headway ...   # osobna ekstrakcja (zawsze cały feed) -> CSV + H31
 ```
+
+`stop-headway` stoi obok, nie nad `extract`/`chart`: liczy inną wielkość (headway pooled po
+`stop_id`, patrz H31 wyżej i I37 w §11a), której `chart` nie potrafiłby narysować z istniejącej
+tabeli tidy — ta jest kluczowana per linia, nie per fizyczny przystanek.
 
 **`chart` to ta, której używa się na co dzień.** `extract` uruchamia się raz i zapomina o nim;
 rysowanie czyta gotową tabelę i trwa sekundy, więc przestawianie kubełków, progów i linii nic
@@ -101,11 +107,7 @@ nie kosztuje.
 ### 3.1. `extract` — z `matched.csv` + GTFS do tabeli tidy
 
 ```bat
-py -m transit_charts.cli extract 
-  --matched ..\family_a_reconstruction\gtfs-manual-test\out_fa18\matched_lodz_2026-07-21.csv 
-  --static  ..\family_a_reconstruction\gtfs-manual-test\static_gtfs\lodz_static_gtfs_2026-07-21.zip 
-  --city lodz --route 10* --route 11 --route 55* --route 69* 
-  --out out\lodz_2026-07-21.csv.gz
+py -m transit_charts.cli extract --matched ..\family_a_reconstruction\gtfs-manual-test\out_fa18\matched_lodz_2026-07-21.csv --static ..\family_a_reconstruction\gtfs-manual-test\static_gtfs\lodz_static_gtfs_2026-07-21.zip --city lodz --route 10* --route 11 --route 55* --route 69* --out out\lodz_2026-07-21.csv.gz
 ```
 
 | flaga | wymagana | co robi i co się dzieje bez niej |
@@ -132,10 +134,8 @@ wzorzec, jest wypisywane, bo prefiksy są tępsze, niż wyglądają:
 ### 3.2. `chart` — z tabeli tidy do wykresu
 
 ```bat
-py -m transit_charts.cli chart C9  --table out\lodz_2026-07-21.csv.gz --route 11 
-   --out-prefix out\charts\lodz_C9
-py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz 
-   --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C10
+py -m transit_charts.cli chart C9 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_C9
+py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C10
 ```
 
 | flaga | domyślnie | co robi |
@@ -203,6 +203,21 @@ ostatniego przystanku najdłuższego wariantu; gdy i tego nie ma, w tytule zosta
 **Osie zostają numerami przystanków** — nazwy przystanków są za długie, żeby zmieściły się na
 osi, i są w bocznym CSV.
 
+### 3.7. `stop-headway` — flagi
+
+| flaga | domyślnie | co robi |
+|---|---|---|
+| `--matched` / `--static` / `--city` | **wymagane** | jak w `extract` |
+| `--out-prefix` | **wymagana** | prefiks; powstają `<prefix>_stops.csv` (wejście mapy I37) i `<prefix>_H31.png/.csv/.json` |
+| `--min-n-stop` | 3 | przystanek z mniejszą liczbą pooled odstępów dostaje `median_headway_min=NaN` w CSV zamiast zaniżać średnią heksa |
+| `--min-n-hour` | 20 | kubełek H31 poniżej tego progu rysowany jako „za mało danych" |
+| `--bucket-minutes` | 60 | szerokość kubełka H31 |
+| `--outage-gap-seconds` | 300 | ta sama osłona przed przerwą w nagrywaniu co w `extract` |
+
+Zawsze ekstrahuje **cały feed** — `--route` nie istnieje w tej komendzie, bo przefiltrowana
+tabela zaniżyłaby częstotliwość każdego przystanku, na którym zatrzymuje się więcej niż wybrana
+linia.
+
 ---
 
 ## 4. Katalog wykresów — co pokazuje, jak czytać, jak zrobić
@@ -215,8 +230,7 @@ w `tools/transit_charts` z aktywnym venvem. Podstaw własną tabelę i linie.
 ![A2 — trajektorie wszystkich kursów linii 11](assets/examples/lodz_A2.png)
 
 ```bat
-py -m transit_charts.cli chart A2 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_A2
+py -m transit_charts.cli chart A2 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_A2
 ```
 
 X to numer przystanku, Y to minuty od przystanku kotwiczącego. Jedna blada linia na kurs plus
@@ -235,8 +249,7 @@ spektakularnie szybko.
 ![C9 — rozkład opóźnień wzdłuż linii 11](assets/examples/lodz_C9.png)
 
 ```bat
-py -m transit_charts.cli chart C9 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_C9 --html
+py -m transit_charts.cli chart C9 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_C9 --html
 ```
 
 X to numer przystanku, Y to opóźnienie w minutach. Kropka = mediana, słupek = p25–p75.
@@ -256,8 +269,7 @@ ogon rozkładu.
 ![C10 — wachlarz percentyli opóźnienia, trzy linie](assets/examples/lodz_C10.png)
 
 ```bat
-py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz ^
-   --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C10 --html
+py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C10 --html
 ```
 
 Jeden panel na linię. X to czas lokalny, Y to opóźnienie w minutach; linia = mediana,
@@ -274,8 +286,7 @@ liniach zamieniał panele w mgłę nakładających się przezroczystości.
 ![C11 — struktura punktualności z panelem zbiorczym](assets/examples/lodz_C11.png)
 
 ```bat
-py -m transit_charts.cli chart C11 --table out\lodz_2026-07-21.csv.gz ^
-   --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C11 --combine
+py -m transit_charts.cli chart C11 --table out\lodz_2026-07-21.csv.gz --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C11 --combine
 ```
 
 Jeden panel na linię, skumulowane udziały klas: za wcześnie / o czasie / spóźniony / bardzo
@@ -298,8 +309,7 @@ przekracza `--min-n`, także tam, gdzie pojedyncza linia go nie osiąga.
 ![B5 — mapa cieplna CV odstępów, przystanek × godzina](assets/examples/lodz_B5.png)
 
 ```bat
-py -m transit_charts.cli chart B5 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_B5
+py -m transit_charts.cli chart B5 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_B5
 ```
 
 Wiersze to przystanki w kolejności trasy, kolumny to godziny, kolor to współczynnik zmienności
@@ -316,8 +326,7 @@ mniej niż trzy odstępy, gdzie odchylenie standardowe nie jest pomiarem.
 ![B6 — oczekiwanie rzeczywiste kontra rozkładowe](assets/examples/lodz_B6.png)
 
 ```bat
-py -m transit_charts.cli chart B6 --table out\lodz_2026-07-21.csv.gz ^
-   --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_B6 --html
+py -m transit_charts.cli chart B6 --table out\lodz_2026-07-21.csv.gz --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_B6 --html
 ```
 
 Jeden panel na linię. Ciągła = **AWT** (*actual wait time*, oczekiwanie, którego realnie
@@ -337,8 +346,7 @@ i to jest wynik, a nie szum do wygładzenia.
 ![B7 — rozkład odstępów godzina po godzinie](assets/examples/lodz_B7.png)
 
 ```bat
-py -m transit_charts.cli chart B7 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_B7
+py -m transit_charts.cli chart B7 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_B7
 ```
 
 X to odstęp w minutach, jeden grzbiet na godzinę, układane od dołu, każdy skalowany do własnego
@@ -356,8 +364,7 @@ ufaj tej drugiej liczbie.
 ![B8 — częstość bunchingu, linia 11](assets/examples/lodz_B8.png)
 
 ```bat
-py -m transit_charts.cli chart B8 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_B8
+py -m transit_charts.cli chart B8 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_B8
 ```
 
 Ten sam układ co B5 (wiersze = przystanki, kolumny = godziny), ale kolor to **udział headwayów
@@ -375,8 +382,7 @@ wąska jezdnia, przystanek na żądanie), nie w miejscu samej przyczyny.
 ![H28 — ranking regularności wszystkich linii](assets/examples/lodz_H28.png)
 
 ```bat
-py -m transit_charts.cli chart H28 --table out\lodz_2026-07-21.csv.gz ^
-   --out-prefix out\charts\lodz_H28
+py -m transit_charts.cli chart H28 --table out\lodz_2026-07-21.csv.gz --out-prefix out\charts\lodz_H28
 ```
 
 Bez `--route` (albo z kilkoma) — jeden słupek na linię, posortowany malejąco po CV, obie
@@ -393,8 +399,7 @@ poniżej `--min-n`, podpisane liczbą `n` zamiast zniknąć.
 ![H29 — ranking EWT, dwa panele](assets/examples/lodz_H29.png)
 
 ```bat
-py -m transit_charts.cli chart H29 --table out\lodz_2026-07-21.csv.gz ^
-   --out-prefix out\charts\lodz_H29
+py -m transit_charts.cli chart H29 --table out\lodz_2026-07-21.csv.gz --out-prefix out\charts\lodz_H29
 ```
 
 Dwa panele: lewy to EWT bezwzględny w minutach (rama sprawiedliwości — „gdzie tracimy najwięcej
@@ -411,8 +416,7 @@ koryguje. Czytać jako dwa różne pytania, nie jako niezgodność.
 ![H30 — częstość bunchingu, całe miasto](assets/examples/lodz_H30.png)
 
 ```bat
-py -m transit_charts.cli chart H30 --table out\lodz_2026-07-21.csv.gz ^
-   --out-prefix out\charts\lodz_H30
+py -m transit_charts.cli chart H30 --table out\lodz_2026-07-21.csv.gz --out-prefix out\charts\lodz_H30
 ```
 
 Sieciowe B8: wiersze to linie zamiast przystanków jednej linii, kolumny to godziny, kolor to ten
@@ -423,13 +427,31 @@ przekrój przez całe miasto naraz. To jest wykres, w który `--exclude-route` w
 wprost — jedna patologiczna linia (np. gubiący się GPS produkujący fałszywe zera odstępu)
 rozjeżdża skalę kolorów dla reszty miasta; wyklucz ją i policz resztę bez niej.
 
+### H31 · headway na poziomie przystanku, pooled po wszystkich liniach, cały dzień
+
+![H31 — fluktuacja pooled headwayu w ciągu dnia](assets/examples/lodz_H31.png)
+
+```bat
+py -m transit_charts.cli stop-headway --matched ..\family_a_reconstruction\gtfs-manual-test\out_fa18\matched_lodz_2026-07-23.csv --static  ..\family_a_reconstruction\gtfs-manual-test\static_gtfs\lodz_static_gtfs_2026-07-23.zip --city lodz --bucket-minutes 15 --out-prefix out\stop_headway\lodz_2026-07-23
+```
+
+Inna komenda niż `chart` (patrz §3.3) — nie liczy się z tabeli tidy, tylko z osobnej
+ekstrakcji **zawsze całego feedu**. X to czas lokalny, Y to odstęp w minutach; ciągła linia
+= mediana, pas = p25–p75. Jeden panel, cała sieć naraz — nie per linia (to już H28–H30) i nie
+per heksagon (za dużo małych paneli naraz, żeby to czytać).
+
+**Jak to czytać.** To odstęp, którego doświadcza pasażer *niezależnie od tego, którą linią
+akurat pojedzie* — headway pooled po wszystkich pojazdach na danym `stop_id`, nie per trasa.
+Szeroki pas p25–p75 (tu: 2–17 minut) nie jest szumem — to fakt: jedna godzina miesza gęste
+przystanki centrum z rzadkimi na peryferiach w jednym rozkładzie. Komenda produkuje przy okazji
+`<out-prefix>_stops.csv` — wejście do mapy I37 niżej.
+
 ### D14 · prędkość segmentowa, segment × pasmo czasu
 
 ![D14 — mediana prędkości segmentowej, segment × pasmo czasu](assets/examples/lodz_D14.png)
 
 ```bat
-py -m transit_charts.cli chart D14 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_D14
+py -m transit_charts.cli chart D14 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_D14
 ```
 
 Wiersze to segmenty w kolejności trasy, kolumny to pasma 2-godzinne, kolor to mediana prędkości
@@ -445,8 +467,7 @@ pętli renderuje się jako korek 1,5 km/h i wygląda całkiem sensownie.
 ![D17 — zapas rozkładowy, obserwowany minus rozkładowy czas przejazdu](assets/examples/lodz_D17.png)
 
 ```bat
-py -m transit_charts.cli chart D17 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_D17
+py -m transit_charts.cli chart D17 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_D17
 ```
 
 Ten sam układ co D14; kolor to obserwowany minus rozkładowy czas przejazdu, rozbieżny wokół zera.
@@ -463,9 +484,7 @@ opóźnienia linii dokładnie na przystankach 22–23.
 ![D15 — strata systematyczna kontra losowa, z podpisanymi segmentami odstającymi](assets/examples/lodz_D15.png)
 
 ```bat
-py -m transit_charts.cli chart D15 --route 11 --out-prefix out\charts\lodz_D15 
-   --table out\lodz_2026-07-21.csv.gz --table out\lodz_2026-07-22.csv.gz 
-   --table out\lodz_2026-07-23.csv.gz
+py -m transit_charts.cli chart D15 --route 11 --out-prefix out\charts\lodz_D15 --table out\lodz_2026-07-21.csv.gz --table out\lodz_2026-07-22.csv.gz --table out\lodz_2026-07-23.csv.gz
 ```
 
 Jeden punkt na segment. X = mediana różnicy obserwowany−rozkładowy w kolejnych dniach (część
@@ -490,8 +509,7 @@ wszystkie pozostałe punkty.
 ![E20 — profil artefaktu pętli w siedmiu miastach](assets/examples/E20.png)
 
 ```bat
-py -m transit_charts.cli chart E20 --out-prefix out\charts\E20 ^
-   --table out\cities\rome_2026-07-29.csv.gz --table out\cities\lodz_2026-07-21.csv.gz
+py -m transit_charts.cli chart E20 --out-prefix out\charts\E20 --table out\cities\rome_2026-07-29.csv.gz --table out\cities\lodz_2026-07-21.csv.gz
 ```
 
 Dwa panele jeden nad drugim w **osobnych skalach**: przyrost opóźnienia na parze 1→2 u góry,
@@ -672,6 +690,52 @@ tego wszystkiego:
 - **Pytanie świadomie zostawione otwarte**: czy porównanie dostępności ma używać P50 (typowy
   dzień) czy P85 (pesymistyczny). To decyzja modelowa o tym, co znaczy „realizowalna", i należy
   do pytania badawczego, nie do tego narzędzia.
+
+## 11a. I37 — mapa heksagonalna, jedyna pozycja wymagająca QGIS
+
+![I37 — mapa heksagonalna pooled headwayu](assets/examples/lodz_I37.png)
+
+Ten sam `<prefix>_stops.csv` co H31 (`stop_id, lat, lon, n, median_headway_min`), zagregowany
+do heksagonów 500 m w EPSG:3857 — **ten sam rozmiar co domyślny `GenerateHexGrid` wtyczki
+easy-OTP**, żeby mapa headwayu leżała na tej samej siatce co mapy dostępności. Nie licz tego
+w Pythonie: `GenerateHexGrid` we wtyczce jest cienkim wrapperem na `native:creategrid`, więc
+odtworzenie tej geometrii poza QGIS bez rozjechania się z siatką dostępności byłoby wyważaniem
+otwartych drzwi. Wtyczka `easy_otp/` sama tego nie dostaje — `transit_charts` zostaje
+narzędziem samodzielnym (§0), a algorytm QGIS-owy poniżej żyje w tym repozytorium, nie w PyQGIS
+wtyczki (inny pipeline danych: matched positions z Family A, nie statyczny GTFS przez OTP).
+
+**Jak zbudować:**
+
+1. `stop-headway` (wyżej) → `<prefix>_stops.csv`.
+2. W QGIS (MCP albo Processing Toolbox) wczytaj CSV jako warstwę punktową (`xField=lon,
+   yField=lat, crs=EPSG:4326`, provider `delimitedtext`), przygotuj/dowiąż siatkę heksagonów
+   500 m EPSG:3857 (raz na miasto — `native:creategrid TYPE=4` albo algorytm `Generate
+   hexagonal grid` wtyczki).
+3. Odpal model **`qgis_models/stop_headway_to_hex.model3`** (zarejestrowany jako
+   `model:stop_headway_to_hex` po zaimportowaniu do profilu QGIS) z parametrami `STOPS`
+   (warstwa z kroku 2) i `HEXGRID` (siatka). Model sam materializuje CSV do warstwy z indeksem
+   przestrzennym przed joinem — **bez tego kroku `native:joinbylocationsummary` wisi bez końca
+   na warstwie `delimitedtext`**, bo ta nie ma indeksu; to była pierwsza wersja tej mapy robiona
+   ręcznie, zanim trafiła do modelu.
+4. Nałóż zapisany styl **`styles/stop_headway_hex.qml`** na wynik (`apply_style_qml`) — pięć
+   klas progowych, nie kwantyle (decyzja Michała 2026-08-16):
+
+   | zakres | znaczenie |
+   |---|---|
+   | 0–6 min | odstęp na tyle krótki, że rozkład jest zbędny |
+   | 6–12 min | nadal można przyjść bez planowania |
+   | 12–18 min | warto zerknąć w rozkład przed wyjściem |
+   | 18–30 min | podróż wymaga zaplanowania |
+   | 30+ min | na granicy realnej dostępności transportu |
+
+**Jak to czytać.** Zielone jądro to centrum — gęsta siatka linii, można wyjść z domu bez
+sprawdzania rozkładu. Żółty pas przejściowy i czerwone końcówki wylotówek to peryferia, gdzie
+podróż transportem publicznym wymaga planowania z wyprzedzeniem. Heksagony bez żadnego
+przystanku są odrzucane (`DISCARD_NONMATCHING`), więc biała plama na mapie znaczy „brak
+przystanku w tym miejscu", nie „zerowy headway".
+
+Wymaga `stop_lat`/`stop_lon` z GTFS (`sources.stop_location_index`) — przystanek bez
+współrzędnych albo z `(0, 0)` jest pomijany, nie ląduje na `(0°N, 0°E)`.
 
 ## 12. Testy
 

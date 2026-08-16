@@ -5,7 +5,8 @@ Rendery użyte w [README](../README.md) oraz pełny zestaw z jednego dnia.
 ## `examples/` — po jednym wykresie każdego typu
 
 Ilustracje wstawione w katalogu wykresów w README. Łódź 2026-07-21, okno nagrywania
-10:07–21:59 (bez porannego szczytu), linie 11 / 10B / 69A.
+10:07–21:59 (bez porannego szczytu), linie 11 / 10B / 69A — **poza H31 i I37**, które
+z tego samego powodu co D15 potrzebują pełnej doby i pochodzą z 2026-07-23.
 
 ## `full-day-example/` — pełna doba, jeden folder na linię
 

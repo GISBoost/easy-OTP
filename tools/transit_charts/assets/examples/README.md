@@ -27,3 +27,7 @@
 ![H29](lodz_H29.png)
 
 ![H30](lodz_H30.png)
+
+![H31](lodz_H31.png)
+
+![I37](lodz_I37.png)
