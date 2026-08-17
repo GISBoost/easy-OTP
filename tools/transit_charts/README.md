@@ -9,10 +9,10 @@
 
 Buduje wykresy z katalogu `docs/handoffs/gtfs-rt-visualisation-catalogue_handoff.md` —
 punktualność, regularność, prędkość, oraz (od rozszerzenia „skala miasta") ranking i mapy
-cieplne po całej sieci naraz — z dopasowanych pozycji pojazdów Family A. Siedemnaście gotowych
-wykresów (jedenaście per linia: A2, C9-C11, B5-B7, D14-D17, E20; pięć sieciowych: B8, H28-H31)
-plus jedna mapa (I37, §11a — jedyna pozycja wymagająca QGIS), `F21` świadomie zostawiony na
-później.
+cieplne po całej sieci naraz — z dopasowanych pozycji pojazdów Family A. Osiemnaście gotowych
+wykresów (jedenaście per linia: A2, C9-C11, B5-B7, D14-D17, E20; pięć sieciowych: B8, H28-H31;
+jeden międzymiastowy: J39, §11b) plus jedna mapa (I37, §11a — jedyna pozycja wymagająca QGIS),
+`F21` świadomie zostawiony na później.
 
 Przykłady w tym pliku pochodzą z okna 10:07–21:59, więc nie ma w nich porannego szczytu.
 Komplet z **pełnej doby (06:00–21:59, Łódź 2026-07-23), osobno dla linii 10A, 11, 14, 15, 52,
@@ -446,6 +446,15 @@ Szeroki pas p25–p75 (tu: 2–17 minut) nie jest szumem — to fakt: jedna godz
 przystanki centrum z rzadkimi na peryferiach w jednym rozkładzie. Komenda produkuje przy okazji
 `<out-prefix>_stops.csv` — wejście do mapy I37 niżej.
 
+**Ten wykres i mapa I37 celowo pokazują różne liczby, nawet dla tego samego dnia.** Tu każde
+zaobserwowane zdarzenie (dowolny pojazd na dowolnym przystanku) liczy się raz i wchodzi do
+wspólnej puli miasta — ruchliwy przystanek w centrum wnosi setki obserwacji na godzinę, cichy
+przystanek na peryferiach kilka, **słusznie**, bo tak często to zdarzenie faktycznie się
+zdarza. Mapa I37 liczy medianę **osobno dla każdego przystanku** (każdy przystanek to jeden
+heksagon, jeden głos), więc odpowiada na inne pytanie: „jak wygląda to konkretne miejsce”, nie
+„jak wygląda typowe oczekiwanie gdziekolwiek w mieście”. Obie liczby są poprawne dla tego, co
+mierzą — nie próbuj ich zgadzać (patrz docstring modułu `stop_headway.py`).
+
 ### D14 · prędkość segmentowa, segment × pasmo czasu
 
 ![D14 — mediana prędkości segmentowej, segment × pasmo czasu](assets/examples/lodz_D14.png)
@@ -736,6 +745,33 @@ przystanku w tym miejscu", nie „zerowy headway".
 
 Wymaga `stop_lat`/`stop_lon` z GTFS (`sources.stop_location_index`) — przystanek bez
 współrzędnych albo z `(0, 0)` jest pomijany, nie ląduje na `(0°N, 0°E)`.
+
+## 11b. J39 · H31 porównane między miastami
+
+![J39 wraz z mapą I37 — cztery miasta](assets/examples/J39_I37_four_cities_2026-08-13.png)
+
+```bat
+py -m transit_charts.cli chart J39 --table out\cities\warszawa_2026-08-13.csv.gz --table out\cities\krakow_2026-08-13.csv.gz --table out\cities\lodz_2026-08-13.csv.gz --table out\cities\gdansk_2026-08-13.csv.gz --bucket-minutes 15 --out-prefix out\charts\J39_2026-08-13
+```
+
+To H31 nałożone na siebie: jedna linia na miasto, bez pasa p25–p75 — kilka pasów na jednym
+panelu zasłaniałoby się nawzajem. Kolor spójny z resztą narzędzia (`style.colour_for`, paleta
+Okabe-Ito po posortowanych nazwach miast). Tak jak E20, wejściem jest **cały feed** każdego
+miasta (`chart`, nie `stop-headway`), więc `--table` bierze już wyekstrahowane tabele tidy
+jednego dnia na miasto, a `--min-n` i `--bucket-minutes` działają tak jak w H31.
+
+**Jak to czytać.** Krzywa, która zaczyna się nisko i eksploduje wieczorem (Gdańsk po 20:00)
+traci częstotliwość na koniec dnia bardziej gwałtownie niż widać to na mapie wyżej — jeden
+skumulowany punkt dobowy nie widzi tej asymetrii w czasie.
+
+**To NIE jest ten sam odstęp co skumulowana liczba na mapie I37, i to celowo — patrz też H31
+wyżej.** Tu każde zaobserwowane zdarzenie (dowolny pojazd, dowolny przystanek) liczy się raz i
+wchodzi do wspólnej puli miasta, więc ruchliwy przystanek naturalnie waży więcej niż cichy —
+zgodnie z tym, jak często pasażer faktycznie na niego trafia. Podpis nad mapą to zupełnie inna
+wielkość: mediana licząca każdy PRZYSTANEK raz, niezależnie od jego ruchu, licząca „jak wygląda
+to konkretne miejsce” zamiast „jak wygląda typowe oczekiwanie w mieście”. Nie próbuj zgadzać
+tych dwóch liczb — patrz docstring `stop_headway.py` po dokładne wyjaśnienie i przykład
+liczbowy.
 
 ## 12. Testy
 

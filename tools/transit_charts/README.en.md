@@ -9,9 +9,10 @@
 
 Builds the charts catalogued in `docs/handoffs/gtfs-rt-visualisation-catalogue_handoff.md` —
 punctuality, regularity, speed, and (since the "city scale" extension) network-wide rankings and
-heatmaps — from Family A's matched vehicle positions. Seventeen charts are built (eleven
-per-route: A2, C9-C11, B5-B7, D14-D17, E20; five network-wide: B8, H28-H31) plus one map (I37,
-§11a — the only entry that needs QGIS); `F21` is deliberately left for later.
+heatmaps — from Family A's matched vehicle positions. Eighteen charts are built (eleven
+per-route: A2, C9-C11, B5-B7, D14-D17, E20; five network-wide: B8, H28-H31; one cross-city:
+J39, §11b) plus one map (I37, §11a — the only entry that needs QGIS); `F21` is deliberately
+left for later.
 
 The examples in this file come from a 10:07–21:59 window, so they contain no morning peak. A
 full set from **a whole day (06:00–21:59, Łódź 2026-07-23), one folder per route for 10A, 11,
@@ -434,6 +435,15 @@ band (here: 2-17 minutes) is not noise - it is the fact that one hour mixes the 
 the centre with the sparse ones on the periphery in a single distribution. The command also
 writes `<out-prefix>_stops.csv` on the side - the input to the I37 map below.
 
+**This chart and the I37 map deliberately show different numbers, even for the same day.** Here
+every observed event (any vehicle, any stop) counts once and goes into one city-wide pool - a
+busy stop contributes hundreds of observations an hour, a quiet one a handful, correctly, since
+that is how often the event actually happens. The I37 map medians each STOP separately (one
+hex, one vote, regardless of traffic), so it answers a different question: "what does this
+particular place look like" rather than "what does a typical wait look like anywhere in the
+city". Both are correct for what they measure - don't expect them to agree (see the
+`stop_headway.py` module docstring for a worked numeric example).
+
 ### D14 · segment speed, segment × time band
 
 ![D14 — median segment speed, segment × time band](assets/examples/lodz_D14.png)
@@ -714,6 +724,33 @@ are the periphery, where a trip needs planning ahead. Hexes with no stop at all 
 
 Needs `stop_lat`/`stop_lon` from GTFS (`sources.stop_location_index`) - a stop with no
 coordinate, or with `(0, 0)`, is left out rather than landing at `(0°N, 0°E)`.
+
+## 11b. J39 · H31 compared across cities
+
+![J39 alongside the I37 map — four cities](assets/examples/J39_I37_four_cities_2026-08-13.png)
+
+```bat
+py -m transit_charts.cli chart J39 --table out\cities\warszawa_2026-08-13.csv.gz --table out\cities\krakow_2026-08-13.csv.gz --table out\cities\lodz_2026-08-13.csv.gz --table out\cities\gdansk_2026-08-13.csv.gz --bucket-minutes 15 --out-prefix out\charts\J39_2026-08-13
+```
+
+H31 overlaid: one line per city, no p25-p75 band - several bands on one panel would occlude
+each other. Colour matches the rest of the tool (`style.colour_for`, the Okabe-Ito palette
+keyed by sorted city name). Like E20, the input is each city's **whole feed** (`chart`, not
+`stop-headway`), so `--table` takes already-extracted tidy tables, one per city-day, and
+`--min-n`/`--bucket-minutes` behave exactly as in H31.
+
+**Reading it.** A curve that starts low and climbs sharply in the evening (Gdańsk after 20:00)
+is losing frequency at the end of the day more abruptly than the map above shows - a single
+cumulative daily number does not see that asymmetry in time.
+
+**This is NOT the same headway as the map's cumulative figure, and that's deliberate - see H31
+above too.** Here every observed event (any vehicle, any stop) counts once and goes into one
+city-wide pool, so a busy stop naturally weighs more than a quiet one - matching how often a
+passenger actually encounters it. The map's caption is a different quantity entirely: a median
+that counts each STOP once regardless of its traffic, answering "what does this particular
+place look like" instead of "what does a typical wait look like in the city". Don't expect the
+two numbers to agree - see the `stop_headway.py` module docstring for the full explanation and
+a worked example.
 
 ## 12. Tests
 

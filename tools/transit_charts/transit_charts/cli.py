@@ -200,6 +200,7 @@ CHARTS = {
     "H28": ("network-wide headway regularity ranking", False),
     "H29": ("network-wide excess wait ranking (absolute + relative)", False),
     "H30": ("network-wide bunching frequency, route by hour", False),
+    "J39": ("H31 overlaid across cities: median pooled stop headway through the day", False),
 }
 
 # Charts with a sensible interactive form. The rest are heatmaps and ridgelines, where a
@@ -209,7 +210,7 @@ INTERACTIVE = {"C9", "C10", "B6"}
 # Charts for which several days is the intended input, not an accident: D15 separates a
 # persistent offset from run-to-run variability and cannot work on one day; E20 compares
 # cities and pools whatever each contributes.
-MULTI_DAY_BY_DESIGN = {"D15", "E20"}
+MULTI_DAY_BY_DESIGN = {"D15", "E20", "J39"}
 
 # Charts that take a `routes: list[str] | None` selection and so can honour --exclude-route.
 # E20 is multi-route in the CHARTS table (no single --route requirement) but pools whatever
@@ -326,6 +327,7 @@ def _cmd_chart(args: argparse.Namespace) -> int:
     # Imported here, not at module scope: `extract` must stay runnable in an environment with
     # no matplotlib, which is the whole reason the two layers are separate.
     from transit_charts.render import crosscity, headway, punctuality, speed, trajectory
+    from transit_charts.render import stop_headway as render_stop_headway
 
     tables = [extract_mod.read_table(path) for path in args.table]
     table = tables[0] if len(tables) == 1 else pd.concat(tables, ignore_index=True)
@@ -440,6 +442,11 @@ def _cmd_chart(args: argparse.Namespace) -> int:
     elif args.name == "E20":
         result = crosscity.artifact_profile(
             crosscity.group_by_city(tables), out_prefix=args.out_prefix, sources=args.table,
+        )
+    elif args.name == "J39":
+        result = render_stop_headway.citywide_comparison(
+            crosscity.group_by_city(tables), out_prefix=args.out_prefix, sources=args.table,
+            bucket_minutes=args.bucket_minutes or 60, min_n=args.min_n,
         )
     else:  # D15
         result = speed.systematic_vs_stochastic(

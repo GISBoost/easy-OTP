@@ -31,3 +31,5 @@
 ![H31](lodz_H31.png)
 
 ![I37](lodz_I37.png)
+
+![J39 wraz z I37](J39_I37_four_cities_2026-08-13.png)

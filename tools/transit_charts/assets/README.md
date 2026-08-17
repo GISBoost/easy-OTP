@@ -6,7 +6,10 @@ Rendery użyte w [README](../README.md) oraz pełny zestaw z jednego dnia.
 
 Ilustracje wstawione w katalogu wykresów w README. Łódź 2026-07-21, okno nagrywania
 10:07–21:59 (bez porannego szczytu), linie 11 / 10B / 69A — **poza H31 i I37**, które
-z tego samego powodu co D15 potrzebują pełnej doby i pochodzą z 2026-07-23.
+z tego samego powodu co D15 potrzebują pełnej doby i pochodzą z 2026-07-23, oraz **poza J39**,
+które z definicji jest międzymiastowe (Warszawa/Kraków/Łódź/Gdańsk, 2026-08-13, jedyny dzień
+z pełnym oknem 06:00–22:00 we wszystkich czterech naraz) i jest pokazane razem z mapą I37 tych
+samych czterech miast na jednym obrazku.
 
 ## `full-day-example/` — pełna doba, jeden folder na linię
 

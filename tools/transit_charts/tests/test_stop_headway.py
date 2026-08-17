@@ -87,3 +87,18 @@ def test_citywide_hourly_buckets_by_the_later_arrival():
     stats = stop_headway.citywide_hourly(frame, outages=[], bucket_minutes=60, min_n=1)
     buckets = dict(zip(stats.bucket, stats.n))
     assert buckets == {600: 1, 660: 1}
+
+
+def test_citywide_hourly_pools_raw_crossings_so_a_busy_stop_outweighs_a_quiet_one():
+    """A busy stop correctly dominates the pooled median - that IS how often the event 'wait at
+    a stop, watch something arrive' happens across the city, which is what this chart measures.
+    The per-stop-then-averaged statistic (equal weight per stop) is a different question,
+    answered instead by the I37 map - see the module docstring for why the two disagree."""
+    rows = [("QUIET", "10", 0, "Q"), ("QUIET", "11", 30, "Q")]  # one 30-min headway
+    for minute in range(0, 30, 2):
+        rows.append(("BUSY", "10", minute, "B"))  # fourteen 2-min headways
+    frame = _frame(rows)
+    stats = stop_headway.citywide_hourly(frame, outages=[], bucket_minutes=60, min_n=1)
+    row = stats.set_index("bucket").loc[600]
+    assert row.n == 15  # every pooled crossing counts, not one vote per stop
+    assert pytest.approx(row.p50) == 120.0  # median of fourteen 120s gaps + one 1800s gap
