@@ -784,14 +784,37 @@ CLI (tak jak cała reszta §11a — algorytm QGIS-owy, nie coś, co `transit_cha
 wywołać samodzielnie).
 
 **Jak to działa:** warstwa pokrycia atlasu (`atlas_cities_bbox`, widoczność wyłączona w drzewie
-warstw — nie ma się pokazywać na mapie, tylko sterować stronami) to cztery bounding-boxy wokół
+warstw — nie ma się pokazywać na mapie, tylko sterować stronami) to pięć bounding-boxów wokół
 `<miasto>_hex500_clip` z I37. Element mapy jest sterowany atlasem (auto-skalowanie do zasięgu
-cechy + 10% marginesu), tytuł strony to nazwa miasta z atrybutu. Podziałka liniowa powiązana z
+cechy + 5% marginesu), tytuł strony to nazwa miasta z atrybutu. Podziałka liniowa powiązana z
 mapą. Legenda — ta sama, nietknięta, którą Michał ustawił ręcznie w wydruku 4-panelowym.
+
+**Granica miasta jest ząbkowana, nie gładka:** `<miasto>_hex500_clip` to nie wynik
+`native:clip` (który przecinałby heksy dokładnie wzdłuż granicy administracyjnej), tylko
+`native:extractbylocation` (predykat "przecina") na pełnej siatce heksagonalnej — każdy heksagon
+dotykający granicy zostaje w całości. `<miasto>_hex_dissolved` (sama obwódka, bez wypełnienia) i
+maska OSM (`<miasto>_osm_mask`, donut z dziurą na miasto) są budowane z dissolve *tego samego*
+zestawu całych heksów, więc ich krawędź jest postrzępiona wzdłuż siatki, nie wzdłuż linii
+administracyjnej. Sama `<miasto>_hex500_clip` zostaje widoczna pod spodem jako cienka siatka
+(0,05 mm, szary 60,60,60 przy 55% kryciu, bez wypełnienia) — kontekst przestrzenny bez
+przesłaniania danych.
 
 Każda strona ma notkę metodologiczną w lewym dolnym rogu (nad mapą, białe półprzezroczyste
 tło): siatka 500 m, próg min. 3 obserwacje, okno 06:00–22:00, źródło danych i atrybucja OSM,
-autorstwo — ten sam tekst na każdej z czterech stron.
+autorstwo — ten sam tekst na każdej stronie, poza samą datą (patrz niżej).
+
+**Poznań (piąta strona, dodana 2026-08-18) używa innego dnia niż pozostałe cztery miasta.**
+2026-08-13 — dzień wspólny dla Warszawy/Krakowa/Łodzi/Gdańska — okazał się dla Poznania
+wadliwą próbką: MPK Poznań (tramwaje + rdzeń miejskiej sieci autobusowej, normalnie ~75-79%
+obserwacji) było tego dnia całkowicie nieobecne w nagraniu, widoczne były tylko linie siedmiu
+przewoźników gminnych (Swarzędz, Komorniki, Tarnowo Podgórne, Suchy Las, Kleszczewo, Translub,
+Transkom) — feed ZTM Poznań bundle'uje MPK z tymi przewoźnikami pod wspólnym `agency_id`, ale
+tego konkretnego dnia MPK po prostu nie zostało dopasowane. Efekt: przystanki rozrzucone do
+54 km od centrum, tylko 172 heksy z danymi. Sprawdzenie ośmiu dni z GitHub Releases pokazało, że
+to wyjątek (2026-08-05 i 2026-08-15 mają ten sam defekt, pozostałe dni są zdrowe) — Poznań w
+atlasie liczony jest więc z **2026-08-11** (79,2% obserwacji MPK, pełne okno 06:00–22:00,
+735 heksów). Nie jest to część porównania J39/I37 czterech miast wyżej, więc niespójność dnia
+nie psuje żadnej z tamtych liczb — dotyczy wyłącznie tej piątej strony atlasu.
 
 Eksport: `QgsLayoutExporter` przez atlas (`atlas.beginRender()` / `seekTo(i)` /
 `exportToImage`/`exportToPdf`) — PDF wielostronicowy albo JPG per strona, tak jak przykłady

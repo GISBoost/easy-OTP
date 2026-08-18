@@ -764,15 +764,38 @@ rest of §11a - a QGIS-side algorithm, not something `transit_charts chart` can 
 own).
 
 **How it works:** the atlas coverage layer (`atlas_cities_bbox`, hidden in the layer tree - it
-is not meant to be seen on the map, only to drive the pages) is four bounding boxes around each
+is not meant to be seen on the map, only to drive the pages) is five bounding boxes around each
 city's `<city>_hex500_clip` from I37. The map item is atlas-driven (auto-scale to the feature
-extent plus a 10% margin), the page title is the city name from the feature's attribute. A
+extent plus a 5% margin), the page title is the city name from the feature's attribute. A
 linear scale bar is linked to the map. The legend is the same, untouched one Michal already set
 up by hand in the 4-panel layout.
 
+**The city outline is jagged, not smooth:** `<city>_hex500_clip` is not the result of
+`native:clip` (which would cut hexes exactly along the administrative boundary) but of
+`native:extractbylocation` (predicate "intersects") against the full hex grid - every hex that
+touches the boundary is kept whole. `<city>_hex_dissolved` (the outline itself, unfilled) and
+the OSM mask (`<city>_osm_mask`, a donut with a city-shaped hole) are both dissolved from *that
+same* whole-hex set, so their edge follows the grid, not the administrative line. The
+`<city>_hex500_clip` layer itself stays visible underneath as a thin grid (0.05 mm, grey
+60,60,60 at 55% opacity, unfilled) - spatial context without obscuring the data.
+
 Each page carries a methodology note in the bottom-left corner (over the map, white
 semi-transparent background): the 500 m grid, the 3-observation floor, the 06:00-22:00 window,
-the data source and OSM attribution, authorship - the same text on all four pages.
+the data source and OSM attribution, authorship - the same text on every page except the date
+(see below).
+
+**Poznań (the fifth page, added 2026-08-18) uses a different day than the other four cities.**
+2026-08-13 - the shared day for Warszawa/Kraków/Łódź/Gdańsk - turned out to be a bad sample for
+Poznań: MPK Poznań (trams plus the core city bus network, normally ~75-79% of observations) was
+entirely absent from that day's recording, leaving only the seven suburban/gmina operators
+(Swarzędz, Komorniki, Tarnowo Podgórne, Suchy Las, Kleszczewo, Translub, Transkom) - the ZTM
+Poznań feed bundles MPK together with those operators under one `agency_id`, but MPK simply
+failed to match that particular day. Effect: stops scattered up to 54 km from the centre, only
+172 hexes with data. Checking eight days from GitHub Releases showed this is an exception
+(2026-08-05 and 2026-08-15 have the same defect, every other day is healthy) - Poznań in the
+atlas is therefore built from **2026-08-11** instead (79.2% MPK observations, full 06:00-22:00
+window, 735 hexes). It is not part of the four-city J39/I37 comparison above, so the day
+mismatch does not affect any of those numbers - it only concerns this fifth atlas page.
 
 Export: `QgsLayoutExporter` driven through the atlas (`atlas.beginRender()` / `seekTo(i)` /
 `exportToImage`/`exportToPdf`) - a multi-page PDF or one JPG per page, like the examples above

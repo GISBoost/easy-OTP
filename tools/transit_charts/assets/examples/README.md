@@ -41,3 +41,5 @@
 ![Atlas miast — Łódź](headway_map_example_Łódź.jpg)
 
 ![Atlas miast — Gdańsk](headway_map_example_Gdańsk.jpg)
+
+![Atlas miast — Poznań](headway_map_example_Poznań.jpg)
