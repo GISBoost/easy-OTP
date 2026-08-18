@@ -9,9 +9,10 @@
 
 Builds the charts catalogued in `docs/handoffs/gtfs-rt-visualisation-catalogue_handoff.md` —
 punctuality, regularity, speed, and (since the "city scale" extension) network-wide rankings and
-heatmaps — from Family A's matched vehicle positions. Fifteen charts are built (eleven per-route:
-A2, C9-C11, B5-B7, D14-D17, E20; four network-wide: B8, H28-H30); `F21` is deliberately left for
-later.
+heatmaps — from Family A's matched vehicle positions. Eighteen charts are built (eleven
+per-route: A2, C9-C11, B5-B7, D14-D17, E20; five network-wide: B8, H28-H31; one cross-city:
+J39, §11b) plus one map (I37, §11a — the only entry that needs QGIS); `F21` is deliberately
+left for later.
 
 The examples in this file come from a 10:07–21:59 window, so they contain no morning peak. A
 full set from **a whole day (06:00–21:59, Łódź 2026-07-23), one folder per route for 10A, 11,
@@ -84,26 +85,27 @@ pip install -r requirements.txt
 
 ---
 
-## 3. Two commands, and what every flag does
+## 3. Three commands, and what every flag does
 
-The tool has exactly two commands, and that is its entire surface:
+The tool has three commands, and that is its entire surface:
 
 ```
-py -m transit_charts.cli extract ...   # expensive, once per city-day -> tidy table
-py -m transit_charts.cli chart  ...    # cheap, as often as you like  -> PNG + CSV + JSON
+py -m transit_charts.cli extract      ...   # expensive, once per city-day  -> tidy table
+py -m transit_charts.cli chart        ...   # cheap, as often as you like   -> PNG + CSV + JSON
+py -m transit_charts.cli stop-headway ...   # its own extraction (whole feed) -> CSV + H31
 ```
 
 **`chart` is the one used daily.** `extract` is run once and forgotten; drawing reads the cached
 table and takes seconds, so changing buckets, thresholds and lines costs nothing.
 
+`stop-headway` sits beside `extract`/`chart`, not on top of them: it measures a different
+quantity (headway pooled by `stop_id`, see H31 below and I37 in §11a) that `chart` could not
+draw from the existing tidy table, which is keyed per route rather than per physical stop.
+
 ### 3.1. `extract` — from `matched.csv` + GTFS to a tidy table
 
 ```bat
-py -m transit_charts.cli extract ^
-  --matched ..\family_a_reconstruction\gtfs-manual-test\out_fa18\matched_lodz_2026-07-21.csv ^
-  --static  ..\family_a_reconstruction\gtfs-manual-test\static_gtfs\lodz_static_gtfs_2026-07-21.zip ^
-  --city lodz --route 10* --route 11 --route 55* --route 69* ^
-  --out out\lodz_2026-07-21.csv.gz
+py -m transit_charts.cli extract --matched ..\family_a_reconstruction\gtfs-manual-test\out_fa18\matched_lodz_2026-07-21.csv --static  ..\family_a_reconstruction\gtfs-manual-test\static_gtfs\lodz_static_gtfs_2026-07-21.zip --city lodz --route 10* --route 11 --route 55* --route 69* --out out\lodz_2026-07-21.csv.gz
 ```
 
 | flag | required | what it does, and what happens without it |
@@ -130,10 +132,8 @@ printed, because prefixes are blunter than they look:
 ### 3.2. `chart` — from a tidy table to a figure
 
 ```bat
-py -m transit_charts.cli chart C9  --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_C9
-py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz ^
-   --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C10
+py -m transit_charts.cli chart C9  --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_C9
+py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C10
 ```
 
 | flag | default | what it does |
@@ -199,6 +199,20 @@ When a feed leaves `trip_headsign` empty (several do), the label becomes the las
 longest pattern; when even that is missing, the title keeps the bare direction. **The axes stay
 stop numbers** — stop names are too long to fit on an axis, and they are in the sidecar CSV.
 
+### 3.7. `stop-headway` flags
+
+| flag | default | what it does |
+|---|---|---|
+| `--matched` / `--static` / `--city` | **required** | same as `extract` |
+| `--out-prefix` | **required** | writes `<prefix>_stops.csv` (the I37 map's input) and `<prefix>_H31.png/.csv/.json` |
+| `--min-n-stop` | 3 | a stop with fewer pooled headways gets `median_headway_min=NaN` in the CSV instead of dragging a hex's mean down |
+| `--min-n-hour` | 20 | an H31 bucket below this many pooled headways is drawn as "insufficient data" |
+| `--bucket-minutes` | 60 | H31 bucket width |
+| `--outage-gap-seconds` | 300 | same feed-outage guard as `extract` |
+
+Always extracts the **whole feed** — there is no `--route`, since a filtered table would
+understate the frequency of any stop served by more than the chosen route.
+
 ---
 
 ## 4. Chart reference — what each shows, how to read it, how to make it
@@ -211,8 +225,7 @@ in `tools/transit_charts` with the venv active. Substitute your own table and ro
 ![A2 — every run of route 11](assets/examples/lodz_A2.png)
 
 ```bat
-py -m transit_charts.cli chart A2 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_A2
+py -m transit_charts.cli chart A2 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_A2
 ```
 
 X is stop sequence, Y is minutes since the anchor stop. One faint line per run, plus a bold
@@ -230,8 +243,7 @@ clipped by the recording window starts its clock halfway along and looks spectac
 ![C9 — delay distribution along route 11](assets/examples/lodz_C9.png)
 
 ```bat
-py -m transit_charts.cli chart C9 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_C9 --html
+py -m transit_charts.cli chart C9 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_C9 --html
 ```
 
 X is stop sequence, Y is delay in minutes. Dot = median, bar = p25–p75.
@@ -251,8 +263,7 @@ tail.
 ![C10 — delay percentile fan across three routes](assets/examples/lodz_C10.png)
 
 ```bat
-py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz ^
-   --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C10 --html
+py -m transit_charts.cli chart C10 --table out\lodz_2026-07-21.csv.gz --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C10 --html
 ```
 
 One panel per route. X is local time, Y is delay in minutes; line = median, band = p25–p75.
@@ -268,8 +279,7 @@ panels into a fog of overlapping translucency.
 ![C11 — punctuality mix with the pooled panel](assets/examples/lodz_C11.png)
 
 ```bat
-py -m transit_charts.cli chart C11 --table out\lodz_2026-07-21.csv.gz ^
-   --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C11 --combine
+py -m transit_charts.cli chart C11 --table out\lodz_2026-07-21.csv.gz --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_C11 --combine
 ```
 
 One panel per route, stacked shares of early / on time / late / very late. With `--combine` a
@@ -292,8 +302,7 @@ clears `--min-n`, including where a single route does not.
 ![B5 — headway CV heatmap, stop × hour](assets/examples/lodz_B5.png)
 
 ```bat
-py -m transit_charts.cli chart B5 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_B5
+py -m transit_charts.cli chart B5 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_B5
 ```
 
 Rows are stops in route order, columns are hours, colour is the coefficient of variation of
@@ -310,8 +319,7 @@ deviation is not a measurement.
 ![B6 — actual vs scheduled wait](assets/examples/lodz_B6.png)
 
 ```bat
-py -m transit_charts.cli chart B6 --table out\lodz_2026-07-21.csv.gz ^
-   --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_B6 --html
+py -m transit_charts.cli chart B6 --table out\lodz_2026-07-21.csv.gz --route 11 --route 10B --route 69A --out-prefix out\charts\lodz_B6 --html
 ```
 
 One panel per route. Solid = **AWT** (*actual wait time*, the wait a turn-up passenger actually
@@ -330,8 +338,7 @@ finding, not noise to smooth away.
 ![B7 — headway distribution hour by hour](assets/examples/lodz_B7.png)
 
 ```bat
-py -m transit_charts.cli chart B7 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_B7
+py -m transit_charts.cli chart B7 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_B7
 ```
 
 X is headway in minutes, one ridge per hour stacked bottom-to-top, each scaled to its own peak.
@@ -348,8 +355,7 @@ both `n` and the number of *independent vehicles* behind it; trust the second nu
 ![B8 — bunching frequency, route 11](assets/examples/lodz_B8.png)
 
 ```bat
-py -m transit_charts.cli chart B8 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_B8
+py -m transit_charts.cli chart B8 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_B8
 ```
 
 Same layout as B5 (rows = stops, columns = hours), but colour is the **share of headways below
@@ -366,8 +372,7 @@ request stop), not at the cause itself.
 ![H28 — network-wide regularity ranking](assets/examples/lodz_H28.png)
 
 ```bat
-py -m transit_charts.cli chart H28 --table out\lodz_2026-07-21.csv.gz ^
-   --out-prefix out\charts\lodz_H28
+py -m transit_charts.cli chart H28 --table out\lodz_2026-07-21.csv.gz --out-prefix out\charts\lodz_H28
 ```
 
 No `--route` (or several) — one bar per route, ranked descending by CV, both directions pooled
@@ -383,8 +388,7 @@ labelled with `n` rather than vanishing.
 ![H29 — EWT ranking, two panels](assets/examples/lodz_H29.png)
 
 ```bat
-py -m transit_charts.cli chart H29 --table out\lodz_2026-07-21.csv.gz ^
-   --out-prefix out\charts\lodz_H29
+py -m transit_charts.cli chart H29 --table out\lodz_2026-07-21.csv.gz --out-prefix out\charts\lodz_H29
 ```
 
 Two panels: left is absolute EWT in minutes (the equity framing — "where do we lose the most
@@ -401,8 +405,7 @@ corrects for that. Read them as two different questions, not a disagreement.
 ![H30 — network-wide bunching frequency](assets/examples/lodz_H30.png)
 
 ```bat
-py -m transit_charts.cli chart H30 --table out\lodz_2026-07-21.csv.gz ^
-   --out-prefix out\charts\lodz_H30
+py -m transit_charts.cli chart H30 --table out\lodz_2026-07-21.csv.gz --out-prefix out\charts\lodz_H30
 ```
 
 The city-wide B8: rows are routes instead of one route's stops, columns are hours, colour is the
@@ -413,13 +416,40 @@ at once. This is the chart `--exclude-route` was built for most directly — one
 (GPS dropping out and producing false zero-length gaps, say) can dominate the colour scale for
 everyone else; exclude it and read the rest of the city without it.
 
+### H31 · stop-level headway pooled across every line, through the day
+
+![H31 — pooled headway fluctuation through the day](assets/examples/lodz_H31.png)
+
+```bat
+py -m transit_charts.cli stop-headway --matched ..\family_a_reconstruction\gtfs-manual-test\out_fa18\matched_lodz_2026-07-23.csv --static  ..\family_a_reconstruction\gtfs-manual-test\static_gtfs\lodz_static_gtfs_2026-07-23.zip --city lodz --bucket-minutes 15 --out-prefix out\stop_headway\lodz_2026-07-23
+```
+
+A different command than `chart` (see §3.7) — it does not read the tidy table, it runs its own
+extraction of the **whole feed, always**. X is local time, Y is the headway in minutes; the solid
+line is the median, the band is p25-p75. One panel, the whole network at once — not per route
+(H28-H30 already cover that) and not per hex (too many small panels to read together).
+
+**Reading it.** This is the wait a passenger actually experiences *regardless of which line shows
+up next* — headway pooled over every vehicle at a given `stop_id`, not per route. A wide p25-p75
+band (here: 2-17 minutes) is not noise - it is the fact that one hour mixes the dense stops of
+the centre with the sparse ones on the periphery in a single distribution. The command also
+writes `<out-prefix>_stops.csv` on the side - the input to the I37 map below.
+
+**This chart and the I37 map deliberately show different numbers, even for the same day.** Here
+every observed event (any vehicle, any stop) counts once and goes into one city-wide pool - a
+busy stop contributes hundreds of observations an hour, a quiet one a handful, correctly, since
+that is how often the event actually happens. The I37 map medians each STOP separately (one
+hex, one vote, regardless of traffic), so it answers a different question: "what does this
+particular place look like" rather than "what does a typical wait look like anywhere in the
+city". Both are correct for what they measure - don't expect them to agree (see the
+`stop_headway.py` module docstring for a worked numeric example).
+
 ### D14 · segment speed, segment × time band
 
 ![D14 — median segment speed, segment × time band](assets/examples/lodz_D14.png)
 
 ```bat
-py -m transit_charts.cli chart D14 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_D14
+py -m transit_charts.cli chart D14 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_D14
 ```
 
 Rows are segments in route order, columns are 2-hour bands, colour is median speed (km/h).
@@ -434,8 +464,7 @@ passed FA-13/FA-18/FA-20 are included — without that filter a terminus layover
 ![D17 — schedule slack, observed minus scheduled running time](assets/examples/lodz_D17.png)
 
 ```bat
-py -m transit_charts.cli chart D17 --table out\lodz_2026-07-21.csv.gz --route 11 ^
-   --out-prefix out\charts\lodz_D17
+py -m transit_charts.cli chart D17 --table out\lodz_2026-07-21.csv.gz --route 11 --out-prefix out\charts\lodz_D17
 ```
 
 Same layout as D14; colour is observed minus scheduled running time, diverging around zero.
@@ -451,9 +480,7 @@ segment 23, and C9 independently shows the route's delay jumping at exactly stop
 ![D15 — systematic vs stochastic loss, outlying segments labelled](assets/examples/lodz_D15.png)
 
 ```bat
-py -m transit_charts.cli chart D15 --route 11 --out-prefix out\charts\lodz_D15 ^
-   --table out\lodz_2026-07-21.csv.gz --table out\lodz_2026-07-22.csv.gz ^
-   --table out\lodz_2026-07-23.csv.gz
+py -m transit_charts.cli chart D15 --route 11 --out-prefix out\charts\lodz_D15 --table out\lodz_2026-07-21.csv.gz --table out\lodz_2026-07-22.csv.gz --table out\lodz_2026-07-23.csv.gz
 ```
 
 One point per segment. X = median observed-minus-scheduled across days (the persistent part),
@@ -477,8 +504,7 @@ chosen ones in `annotated` and names every other point too.
 ![E20 — terminus-layover artifact profile across seven cities](assets/examples/E20.png)
 
 ```bat
-py -m transit_charts.cli chart E20 --out-prefix out\charts\E20 ^
-   --table out\cities\rome_2026-07-29.csv.gz --table out\cities\lodz_2026-07-21.csv.gz
+py -m transit_charts.cli chart E20 --out-prefix out\charts\E20 --table out\cities\rome_2026-07-29.csv.gz --table out\cities\lodz_2026-07-21.csv.gz
 ```
 
 Two stacked panels on **separate scales**: the stop 1→2 delay increment above, later increments
@@ -652,6 +678,105 @@ so that side can be built without re-deriving it:
 - **Open question deliberately left open**: whether the accessibility comparison should use P50
   (typical day) or P85 (pessimistic). That is a modelling decision about what "realizable" means
   and belongs with the research question, not with this tool.
+
+## 11a. I37 — the hex map, the only entry that needs QGIS
+
+![I37 — pooled-headway hex map](assets/examples/lodz_I37.png)
+
+The same `<prefix>_stops.csv` H31 writes (`stop_id, lat, lon, n, median_headway_min`),
+aggregated onto a 500 m hex grid in EPSG:3857 - **the same cell size as the easy-OTP plugin's
+default `GenerateHexGrid`**, so the headway map sits on the same grid as the accessibility maps.
+Do not compute this in Python: `GenerateHexGrid` in the plugin is a thin wrapper around
+`native:creategrid`, so rebuilding that geometry outside QGIS without drifting from the
+accessibility grid would be reinventing a wheel that already turns. The plugin itself does not
+gain this - `transit_charts` stays a standalone tool (see the note at the top), and the QGIS
+algorithm below lives in this repository, not in the plugin's PyQGIS code (a different data
+pipeline: Family A matched positions, not static GTFS routed through OTP).
+
+**How to build it:**
+
+1. `stop-headway` (above) → `<prefix>_stops.csv`.
+2. In QGIS (MCP or the Processing Toolbox), load the CSV as a point layer (`xField=lon,
+   yField=lat, crs=EPSG:4326`, `delimitedtext` provider), and have a 500 m EPSG:3857 hex grid
+   ready (once per city - `native:creategrid TYPE=4`, or the plugin's `Generate hexagonal grid`
+   algorithm).
+3. Run the model **`qgis_models/stop_headway_to_hex.model3`** (registered as
+   `model:stop_headway_to_hex` once imported into a QGIS profile) with `STOPS` (the layer from
+   step 2) and `HEXGRID` (the grid). The model materialises the CSV into an indexed layer before
+   the join by itself - **without that step `native:joinbylocationsummary` hangs indefinitely**
+   against a `delimitedtext` layer, which carries no spatial index; that was this map's first,
+   hand-run version, before it moved into the model.
+4. Apply the saved style **`styles/stop_headway_hex.qml`** to the result (`apply_style_qml`) -
+   five fixed thresholds, not quantiles (Michal's call, 2026-08-16):
+
+   | range | meaning |
+   |---|---|
+   | 0-6 min | short enough that the timetable is beside the point |
+   | 6-12 min | still walk-up service, no planning needed |
+   | 12-18 min | worth checking the timetable before leaving |
+   | 18-30 min | the trip needs planning |
+   | 30+ min | at the edge of real transit accessibility |
+
+**Reading it.** A green core is the centre - a dense enough grid of lines that you can leave
+without checking a timetable. The yellow transition band and the red tips of the radial routes
+are the periphery, where a trip needs planning ahead. Hexes with no stop at all are dropped
+(`DISCARD_NONMATCHING`), so a blank patch on the map means "no stop here", not "zero headway".
+
+Needs `stop_lat`/`stop_lon` from GTFS (`sources.stop_location_index`) - a stop with no
+coordinate, or with `(0, 0)`, is left out rather than landing at `(0°N, 0°E)`.
+
+## 11b. J39 · H31 compared across cities
+
+![J39 alongside the I37 map — four cities](assets/examples/J39_I37_four_cities_2026-08-13.png)
+
+```bat
+py -m transit_charts.cli chart J39 --table out\cities\warszawa_2026-08-13.csv.gz --table out\cities\krakow_2026-08-13.csv.gz --table out\cities\lodz_2026-08-13.csv.gz --table out\cities\gdansk_2026-08-13.csv.gz --bucket-minutes 15 --out-prefix out\charts\J39_2026-08-13
+```
+
+H31 overlaid: one line per city, no p25-p75 band - several bands on one panel would occlude
+each other. Colour matches the rest of the tool (`style.colour_for`, the Okabe-Ito palette
+keyed by sorted city name). Like E20, the input is each city's **whole feed** (`chart`, not
+`stop-headway`), so `--table` takes already-extracted tidy tables, one per city-day, and
+`--min-n`/`--bucket-minutes` behave exactly as in H31.
+
+**Reading it.** A curve that starts low and climbs sharply in the evening (Gdańsk after 20:00)
+is losing frequency at the end of the day more abruptly than the map above shows - a single
+cumulative daily number does not see that asymmetry in time.
+
+**This is NOT the same headway as the map's cumulative figure, and that's deliberate - see H31
+above too.** Here every observed event (any vehicle, any stop) counts once and goes into one
+city-wide pool, so a busy stop naturally weighs more than a quiet one - matching how often a
+passenger actually encounters it. The map's caption is a different quantity entirely: a median
+that counts each STOP once regardless of its traffic, answering "what does this particular
+place look like" instead of "what does a typical wait look like in the city". Don't expect the
+two numbers to agree - see the `stop_headway.py` module docstring for the full explanation and
+a worked example.
+
+## 11c. QGIS atlas — the I37 map as one page per city
+
+![Atlas — Warszawa](assets/examples/headway_map_example_Warszawa.jpg)
+
+A separate QGIS print layout, **"Atlas miast"**, apart from the 4-panel layout used for the
+J39_I37 composite above - one square page (250x250 mm) per city instead of four panels on one
+sheet. Lives in the same project
+(`out/stop_headway/cities_2026-08-13/four_cities_layout.qgz`), outside CLI reach (same as the
+rest of §11a - a QGIS-side algorithm, not something `transit_charts chart` can invoke on its
+own).
+
+**How it works:** the atlas coverage layer (`atlas_cities_bbox`, hidden in the layer tree - it
+is not meant to be seen on the map, only to drive the pages) is four bounding boxes around each
+city's `<city>_hex500_clip` from I37. The map item is atlas-driven (auto-scale to the feature
+extent plus a 10% margin), the page title is the city name from the feature's attribute. A
+linear scale bar is linked to the map. The legend is the same, untouched one Michal already set
+up by hand in the 4-panel layout.
+
+Each page carries a methodology note in the bottom-left corner (over the map, white
+semi-transparent background): the 500 m grid, the 3-observation floor, the 06:00-22:00 window,
+the data source and OSM attribution, authorship - the same text on all four pages.
+
+Export: `QgsLayoutExporter` driven through the atlas (`atlas.beginRender()` / `seekTo(i)` /
+`exportToImage`/`exportToPdf`) - a multi-page PDF or one JPG per page, like the examples above
+(`headway_map_example_<city>.jpg`).
 
 ## 12. Tests
 

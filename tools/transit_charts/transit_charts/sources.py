@@ -243,3 +243,25 @@ def stop_name_index(static_zip: Path) -> dict[str, str]:
         sid: (name if isinstance(name, str) and name else sid)
         for sid, name in zip(stops.stop_id, stops.stop_name)
     }
+
+
+def stop_location_index(static_zip: Path) -> dict[str, tuple[float, float]]:
+    """stop_id -> (lat, lon), the prerequisite the map-family charts (I32-I36) are waiting on.
+
+    Stops missing a coordinate (or with an unparsable one) are left out rather than defaulting
+    to (0, 0) - a bogus point off the coast of Africa would silently move into whichever hex
+    happens to sit there.
+    """
+    stops = read_gtfs_table(static_zip, "stops.txt")
+    if "stop_lat" not in stops.columns or "stop_lon" not in stops.columns:
+        return {}
+    out: dict[str, tuple[float, float]] = {}
+    for sid, lat, lon in zip(stops.stop_id, stops.stop_lat, stops.stop_lon):
+        try:
+            lat_f, lon_f = float(lat), float(lon)
+        except (TypeError, ValueError):
+            continue
+        if lat_f == 0.0 and lon_f == 0.0:
+            continue
+        out[sid] = (lat_f, lon_f)
+    return out

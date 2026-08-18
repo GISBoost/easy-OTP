@@ -27,3 +27,17 @@
 ![H29](lodz_H29.png)
 
 ![H30](lodz_H30.png)
+
+![H31](lodz_H31.png)
+
+![I37](lodz_I37.png)
+
+![J39 wraz z I37](J39_I37_four_cities_2026-08-13.png)
+
+![Atlas miast — Warszawa](headway_map_example_Warszawa.jpg)
+
+![Atlas miast — Kraków](headway_map_example_Kraków.jpg)
+
+![Atlas miast — Łódź](headway_map_example_Łódź.jpg)
+
+![Atlas miast — Gdańsk](headway_map_example_Gdańsk.jpg)
