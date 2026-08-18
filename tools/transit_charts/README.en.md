@@ -752,6 +752,32 @@ place look like" instead of "what does a typical wait look like in the city". Do
 two numbers to agree - see the `stop_headway.py` module docstring for the full explanation and
 a worked example.
 
+## 11c. QGIS atlas — the I37 map as one page per city
+
+![Atlas — Warszawa](assets/examples/headway_map_example_Warszawa.jpg)
+
+A separate QGIS print layout, **"Atlas miast"**, apart from the 4-panel layout used for the
+J39_I37 composite above - one square page (250x250 mm) per city instead of four panels on one
+sheet. Lives in the same project
+(`out/stop_headway/cities_2026-08-13/four_cities_layout.qgz`), outside CLI reach (same as the
+rest of §11a - a QGIS-side algorithm, not something `transit_charts chart` can invoke on its
+own).
+
+**How it works:** the atlas coverage layer (`atlas_cities_bbox`, hidden in the layer tree - it
+is not meant to be seen on the map, only to drive the pages) is four bounding boxes around each
+city's `<city>_hex500_clip` from I37. The map item is atlas-driven (auto-scale to the feature
+extent plus a 10% margin), the page title is the city name from the feature's attribute. A
+linear scale bar is linked to the map. The legend is the same, untouched one Michal already set
+up by hand in the 4-panel layout.
+
+Each page carries a methodology note in the bottom-left corner (over the map, white
+semi-transparent background): the 500 m grid, the 3-observation floor, the 06:00-22:00 window,
+the data source and OSM attribution, authorship - the same text on all four pages.
+
+Export: `QgsLayoutExporter` driven through the atlas (`atlas.beginRender()` / `seekTo(i)` /
+`exportToImage`/`exportToPdf`) - a multi-page PDF or one JPG per page, like the examples above
+(`headway_map_example_<city>.jpg`).
+
 ## 12. Tests
 
 ```bat

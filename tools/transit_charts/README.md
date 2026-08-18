@@ -773,6 +773,30 @@ to konkretne miejsce” zamiast „jak wygląda typowe oczekiwanie w mieście”
 tych dwóch liczb — patrz docstring `stop_headway.py` po dokładne wyjaśnienie i przykład
 liczbowy.
 
+## 11c. Atlas QGIS — mapa I37 jako osobna strona na miasto
+
+![Atlas miast — Warszawa](assets/examples/headway_map_example_Warszawa.jpg)
+
+Wydruk QGIS **"Atlas miast"**, osobny od wydruku 4-panelowego użytego w J39_I37 wyżej — jedna
+strona kwadratowa (250×250 mm) na miasto zamiast czterech paneli na jednej planszy. Żyje w tym
+samym projekcie (`out/stop_headway/cities_2026-08-13/four_cities_layout.qgz`), poza zasięgiem
+CLI (tak jak cała reszta §11a — algorytm QGIS-owy, nie coś, co `transit_charts chart` umie
+wywołać samodzielnie).
+
+**Jak to działa:** warstwa pokrycia atlasu (`atlas_cities_bbox`, widoczność wyłączona w drzewie
+warstw — nie ma się pokazywać na mapie, tylko sterować stronami) to cztery bounding-boxy wokół
+`<miasto>_hex500_clip` z I37. Element mapy jest sterowany atlasem (auto-skalowanie do zasięgu
+cechy + 10% marginesu), tytuł strony to nazwa miasta z atrybutu. Podziałka liniowa powiązana z
+mapą. Legenda — ta sama, nietknięta, którą Michał ustawił ręcznie w wydruku 4-panelowym.
+
+Każda strona ma notkę metodologiczną w lewym dolnym rogu (nad mapą, białe półprzezroczyste
+tło): siatka 500 m, próg min. 3 obserwacje, okno 06:00–22:00, źródło danych i atrybucja OSM,
+autorstwo — ten sam tekst na każdej z czterech stron.
+
+Eksport: `QgsLayoutExporter` przez atlas (`atlas.beginRender()` / `seekTo(i)` /
+`exportToImage`/`exportToPdf`) — PDF wielostronicowy albo JPG per strona, tak jak przykłady
+wyżej (`headway_map_example_<miasto>.jpg`).
+
 ## 12. Testy
 
 ```bat
