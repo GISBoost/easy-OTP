@@ -74,6 +74,22 @@ def validate_active_tables(spec: ChartSpec, tables: list[pd.DataFrame]) -> str |
     return None
 
 
+def refresh_route_choices(
+    get_active_tables: Callable[[], list[pd.DataFrame]],
+    current_routes: list[str] | None, current_exclude: list[str] | None,
+) -> tuple:
+    """Recompute route choices from whichever tables are active right now, keeping any
+    current selection that's still valid and dropping any that isn't (a route only present
+    in a table the user just deselected). Wired to the data-source controls (upload, active
+    table checkboxes), not the chart picker - route mode/visibility stays whatever the
+    current chart already needs.
+    """
+    choices = _route_choices(get_active_tables())
+    kept_routes = [r for r in (current_routes or []) if r in choices]
+    kept_exclude = [r for r in (current_exclude or []) if r in choices]
+    return gr.update(choices=choices, value=kept_routes), gr.update(choices=choices, value=kept_exclude)
+
+
 def reset_for_chart(
     registry: dict[str, ChartSpec], get_active_tables: Callable[[], list[pd.DataFrame]],
     chart_key: str,
@@ -185,6 +201,19 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         "Pick a chart; only the parameters it actually uses are shown."
     )
 
+    gr.Markdown("## Data")
+    with gr.Row():
+        upload = gr.File(
+            label="Add your own tidy table (from `transit_charts extract`)",
+            file_types=[".csv", ".gz", ".parquet"],
+        )
+        active_tables_cbg = gr.CheckboxGroup(
+            choices=data_sources.loaded_table_choices(),
+            value=data_sources.get_active_ids(),
+            label="Active tables (used together by every chart below)",
+        )
+    upload_message_md = gr.Markdown(value="")
+
     with gr.Row():
         chart_dd = gr.Dropdown(chart_choices, value=default_key, label="Chart")
     with gr.Row():
@@ -264,6 +293,43 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
             lambda *a: render_chart(registry, get_active_tables, *a),
             inputs=param_inputs, outputs=render_outputs,
         )
+
+    def _on_upload(file_path):
+        if not file_path:
+            return gr.update(), gr.update(), ""
+        try:
+            table_id = data_sources.register_user_table(Path(file_path))
+        except sources.InputError as exc:
+            return gr.update(), gr.update(), f"⚠️ {exc}"
+        # Additive by default (PRD/CL-4 goal): the newly-uploaded table joins whatever was
+        # already active, the bundled example included, rather than replacing it.
+        active = sorted(set(data_sources.get_active_ids()) | {table_id})
+        data_sources.set_active_ids(active)
+        choices = data_sources.loaded_table_choices()
+        return gr.update(choices=choices, value=active), gr.update(value=None), ""
+
+    upload.upload(
+        _on_upload, inputs=[upload], outputs=[active_tables_cbg, upload, upload_message_md],
+    ).then(
+        lambda r, e: refresh_route_choices(get_active_tables, r, e),
+        inputs=[route_dd, exclude_route_dd], outputs=[route_dd, exclude_route_dd],
+    ).then(
+        lambda *a: render_chart(registry, get_active_tables, *a),
+        inputs=param_inputs, outputs=render_outputs,
+    )
+
+    def _on_active_tables_change(ids):
+        data_sources.set_active_ids(ids)
+
+    active_tables_cbg.change(
+        _on_active_tables_change, inputs=[active_tables_cbg], outputs=None,
+    ).then(
+        lambda r, e: refresh_route_choices(get_active_tables, r, e),
+        inputs=[route_dd, exclude_route_dd], outputs=[route_dd, exclude_route_dd],
+    ).then(
+        lambda *a: render_chart(registry, get_active_tables, *a),
+        inputs=param_inputs, outputs=render_outputs,
+    )
 
     demo.load(
         lambda *a: render_chart(registry, get_active_tables, *a),

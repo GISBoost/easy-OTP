@@ -12,13 +12,14 @@ import gradio as gr
 
 from chart_lab import data_sources, widgets
 
-# CL-3: still the CL-2 bundled example only. CL-4/CL-5 replace this lambda with something
-# backed by real upload/online UI state; widgets.build_chart_ui only depends on the callable
-# interface, so that swap is mechanical.
-_get_active_tables = lambda: [data_sources.load_example_table()]  # noqa: E731
+# The bundled example is loaded and active by default on every launch - uploading a file
+# (CL-4) is additive, never a silent replacement, unless the user deselects it themselves in
+# the active-tables checkbox group.
+_example_id = data_sources.register_example_table()
+data_sources.set_active_ids([_example_id])
 
 with gr.Blocks(title="chart_lab — transit_charts, interactively") as demo:
-    widgets.build_chart_ui(demo, get_active_tables=_get_active_tables)
+    widgets.build_chart_ui(demo, get_active_tables=data_sources.get_active_tables)
 
 if __name__ == "__main__":
     demo.launch(inbrowser=True)

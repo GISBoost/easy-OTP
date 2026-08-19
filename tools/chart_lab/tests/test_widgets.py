@@ -182,3 +182,32 @@ def test_render_d15_with_only_one_table_active_shows_validation_message_not_a_cr
     assert image_update["visible"] is False
     assert "D15 needs at least 3 tables" in message
     assert downloads_update["visible"] is False
+
+
+def test_render_e20_and_j39_become_usable_once_two_cities_are_active():
+    # This is CL-4's actual point: the bundled example alone is one city-day, so E20/J39
+    # could only ever show their validation message until a second city's table exists.
+    table = data_sources.load_example_table()
+    other_city = table.copy()
+    other_city["city"] = "warsaw"
+    get_two_cities = lambda: [table, other_city]  # noqa: E731
+
+    for key in ("E20", "J39"):
+        image_update, message, downloads_update = render_chart(
+            _REGISTRY, get_two_cities, key, [], "(auto)", 60, 20, 0.6, False, 6, 0.25, [], False,
+        )
+        assert image_update["visible"] is True, f"{key}: {message}"
+        assert message == ""
+        assert downloads_update["visible"] is True
+
+
+def test_refresh_route_choices_drops_selections_no_longer_present():
+    from chart_lab.widgets import refresh_route_choices
+
+    narrow_table = pd.DataFrame([dict(route_short_name="11", route_group="11")])
+    get_narrow = lambda: [narrow_table]  # noqa: E731
+
+    route_update, exclude_update = refresh_route_choices(get_narrow, ["11", "14"], ["52"])
+    assert route_update["choices"] == ["11"]
+    assert route_update["value"] == ["11"]  # "14" dropped: not in the new table
+    assert exclude_update["value"] == []  # "52" dropped entirely
