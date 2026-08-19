@@ -296,11 +296,19 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         lambda *a: render_chart(registry, get_active_tables, *a),
         inputs=param_inputs, outputs=render_outputs,
     )
+    # .input(), not .change(): .change() fires on ANY value change, including the
+    # programmatic gr.update() calls reset_for_chart makes to these same components when the
+    # chart selection changes - .input() fires only on direct user interaction. Wiring these
+    # to .change() caused a real, confirmed-live bug: switching charts fired reset_for_chart's
+    # own render (via chart_dd's .then()) AND a redundant render from every widget it just
+    # reset, all racing each other - whichever finished last won the display regardless of
+    # whether it used the post-reset values, so the chart could show stale route/parameter
+    # text that didn't match the visible widget state.
     for widget in (
         route_dd, direction_dd, bucket_slider, min_n_slider, min_trip_coverage_slider,
         combine_cb, annotate_slider, threshold_slider, exclude_route_dd, html_cb,
     ):
-        widget.change(
+        widget.input(
             lambda *a: render_chart(registry, get_active_tables, *a),
             inputs=param_inputs, outputs=render_outputs,
         )
@@ -332,7 +340,11 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
     def _on_active_tables_change(ids):
         data_sources.set_active_ids(ids)
 
-    active_tables_cbg.change(
+    # .input(), same reasoning as the parameter widgets above: upload/catalogue-load already
+    # set this component's value programmatically and drive their own render chain, so a plain
+    # .change() here would double-fire and race that chain instead of only reacting when a
+    # user actually (de)selects a checkbox themselves.
+    active_tables_cbg.input(
         _on_active_tables_change, inputs=[active_tables_cbg], outputs=None,
     ).then(
         lambda r, e: refresh_route_choices(get_active_tables, r, e),
