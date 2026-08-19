@@ -17,6 +17,7 @@ from chart_lab import data_sources, paths  # noqa: F401 - paths import is a sys.
 
 import gradio as gr
 
+from chart_lab import manifest_client
 from transit_charts import sources
 from transit_charts.registry import ChartSpec, ResolvedChartInputs, build_registry
 
@@ -214,6 +215,16 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         )
     upload_message_md = gr.Markdown(value="")
 
+    # Fetch is an explicit button, never automatic on app load: a user who only ever uses the
+    # bundled example or their own files should never pay a startup network call (or see a
+    # startup failure/delay) for a feature they're not touching.
+    catalogue_by_label: dict[str, manifest_client.CityDay] = {}
+    with gr.Accordion("Online catalogue (published city-days, via gtfs-dashboard)", open=False):
+        fetch_btn = gr.Button("Fetch available city-days")
+        catalogue_dd = gr.Dropdown(choices=[], label="City — date", interactive=True)
+        load_btn = gr.Button("Download and add to active tables")
+    catalogue_message_md = gr.Markdown(value="")
+
     with gr.Row():
         chart_dd = gr.Dropdown(chart_choices, value=default_key, label="Chart")
     with gr.Row():
@@ -323,6 +334,47 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
 
     active_tables_cbg.change(
         _on_active_tables_change, inputs=[active_tables_cbg], outputs=None,
+    ).then(
+        lambda r, e: refresh_route_choices(get_active_tables, r, e),
+        inputs=[route_dd, exclude_route_dd], outputs=[route_dd, exclude_route_dd],
+    ).then(
+        lambda *a: render_chart(registry, get_active_tables, *a),
+        inputs=param_inputs, outputs=render_outputs,
+    )
+
+    def _on_fetch_catalogue():
+        try:
+            manifest = manifest_client.fetch_manifest()
+        except manifest_client.ManifestError as exc:
+            return gr.update(choices=[], value=None), f"⚠️ {exc}"
+        city_days = manifest_client.list_available_city_days(manifest)
+        if not city_days:
+            return gr.update(choices=[], value=None), "No published tidy tables found."
+        catalogue_by_label.clear()
+        catalogue_by_label.update({cd.label: cd for cd in city_days})
+        labels = sorted(catalogue_by_label)
+        return gr.update(choices=labels, value=None), f"{len(labels)} city-days available."
+
+    fetch_btn.click(_on_fetch_catalogue, outputs=[catalogue_dd, catalogue_message_md])
+
+    def _on_load_selected(label):
+        if not label:
+            return gr.update(), "Pick a city-day first."
+        city_day = catalogue_by_label.get(label)
+        if city_day is None:
+            return gr.update(), "That selection is stale - fetch the catalogue again."
+        try:
+            path = manifest_client.download_tidy_table(city_day.tidy_table_url)
+            table_id = data_sources.register_user_table(path)
+        except (manifest_client.ManifestError, sources.InputError) as exc:
+            return gr.update(), f"⚠️ {exc}"
+        active = sorted(set(data_sources.get_active_ids()) | {table_id})
+        data_sources.set_active_ids(active)
+        choices = data_sources.loaded_table_choices()
+        return gr.update(choices=choices, value=active), f"Added {label}."
+
+    load_btn.click(
+        _on_load_selected, inputs=[catalogue_dd], outputs=[active_tables_cbg, catalogue_message_md],
     ).then(
         lambda r, e: refresh_route_choices(get_active_tables, r, e),
         inputs=[route_dd, exclude_route_dd], outputs=[route_dd, exclude_route_dd],
