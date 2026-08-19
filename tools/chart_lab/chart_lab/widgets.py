@@ -123,6 +123,7 @@ def render_chart(
     registry: dict[str, ChartSpec], get_active_tables: Callable[[], list[pd.DataFrame]],
     chart_key, routes, direction, bucket_minutes, min_n, min_trip_coverage,
     combine, annotate, threshold, exclude_route, html,
+    get_active_table_paths: Callable[[], list[Path]] | None = None,
 ) -> tuple:
     """Build the args for the selected chart and call it through the registry - the same
     `spec.render(**spec.build_kwargs(inputs))` call `cli.py`'s `_cmd_chart` makes, generalized
@@ -161,10 +162,14 @@ def render_chart(
         annotate=int(annotate),
         threshold=float(threshold),
         # style.chart_params fingerprints this path (reads it to hash it) for provenance in
-        # the output JSON, so it must be a real, existing file - not just a label. CL-3 has
-        # exactly one possible source (the CL-2 bundled example); CL-4/CL-5 will need to plumb
-        # the real per-table source path through once uploads/downloads exist.
-        table=[data_sources.EXAMPLE_TABLE_PATH],
+        # the output JSON, so it must be a real, existing file - not just a label. Bug fixed
+        # here: this used to be hardcoded to the CL-2 bundled example regardless of what was
+        # actually active, so an uploaded/catalogue-downloaded table's output JSON always
+        # claimed the Łódź example as its source. get_active_table_paths (wired to
+        # data_sources.get_active_paths by build_chart_ui) reports the real active files;
+        # falls back to the example path for callers (tests) that don't supply one.
+        table=(get_active_table_paths() if get_active_table_paths
+               else [data_sources.EXAMPLE_TABLE_PATH]),
         out_prefix=out_dir / spec.key.lower(),
     )
     interactive = bool(html) and spec.interactive_capable
@@ -293,7 +298,9 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         lambda k: reset_for_chart(registry, get_active_tables, k),
         inputs=[chart_dd], outputs=reset_outputs,
     ).then(
-        lambda *a: render_chart(registry, get_active_tables, *a),
+        lambda *a: render_chart(
+            registry, get_active_tables, *a, get_active_table_paths=data_sources.get_active_paths,
+        ),
         inputs=param_inputs, outputs=render_outputs,
     )
     # .input(), not .change(): .change() fires on ANY value change, including the
@@ -309,7 +316,9 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         combine_cb, annotate_slider, threshold_slider, exclude_route_dd, html_cb,
     ):
         widget.input(
-            lambda *a: render_chart(registry, get_active_tables, *a),
+            lambda *a: render_chart(
+            registry, get_active_tables, *a, get_active_table_paths=data_sources.get_active_paths,
+        ),
             inputs=param_inputs, outputs=render_outputs,
         )
 
@@ -333,7 +342,9 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         lambda r, e: refresh_route_choices(get_active_tables, r, e),
         inputs=[route_dd, exclude_route_dd], outputs=[route_dd, exclude_route_dd],
     ).then(
-        lambda *a: render_chart(registry, get_active_tables, *a),
+        lambda *a: render_chart(
+            registry, get_active_tables, *a, get_active_table_paths=data_sources.get_active_paths,
+        ),
         inputs=param_inputs, outputs=render_outputs,
     )
 
@@ -350,7 +361,9 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         lambda r, e: refresh_route_choices(get_active_tables, r, e),
         inputs=[route_dd, exclude_route_dd], outputs=[route_dd, exclude_route_dd],
     ).then(
-        lambda *a: render_chart(registry, get_active_tables, *a),
+        lambda *a: render_chart(
+            registry, get_active_tables, *a, get_active_table_paths=data_sources.get_active_paths,
+        ),
         inputs=param_inputs, outputs=render_outputs,
     )
 
@@ -391,12 +404,16 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         lambda r, e: refresh_route_choices(get_active_tables, r, e),
         inputs=[route_dd, exclude_route_dd], outputs=[route_dd, exclude_route_dd],
     ).then(
-        lambda *a: render_chart(registry, get_active_tables, *a),
+        lambda *a: render_chart(
+            registry, get_active_tables, *a, get_active_table_paths=data_sources.get_active_paths,
+        ),
         inputs=param_inputs, outputs=render_outputs,
     )
 
     demo.load(
-        lambda *a: render_chart(registry, get_active_tables, *a),
+        lambda *a: render_chart(
+            registry, get_active_tables, *a, get_active_table_paths=data_sources.get_active_paths,
+        ),
         inputs=param_inputs, outputs=render_outputs,
     )
 

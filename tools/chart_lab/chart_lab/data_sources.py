@@ -59,6 +59,7 @@ def load_user_table(path: Path) -> pd.DataFrame:
 class _LoadedTable:
     label: str
     table: pd.DataFrame
+    path: Path
 
 
 def _label_for(table: pd.DataFrame, fallback: str) -> str:
@@ -86,7 +87,9 @@ def register_example_table() -> str:
     """Ensure the bundled example is loaded; returns its id. Idempotent."""
     if _EXAMPLE_ID not in _LOADED:
         table = load_example_table()
-        _LOADED[_EXAMPLE_ID] = _LoadedTable(label=_label_for(table, "example"), table=table)
+        _LOADED[_EXAMPLE_ID] = _LoadedTable(
+            label=_label_for(table, "example"), table=table, path=EXAMPLE_TABLE_PATH,
+        )
     return _EXAMPLE_ID
 
 
@@ -94,7 +97,7 @@ def register_user_table(path: Path) -> str:
     """Load and register a user-supplied file; returns its id. Raises sources.InputError."""
     table = load_user_table(path)
     table_id = f"user:{path.name}:{len(_LOADED)}"
-    _LOADED[table_id] = _LoadedTable(label=_label_for(table, path.name), table=table)
+    _LOADED[table_id] = _LoadedTable(label=_label_for(table, path.name), table=table, path=path)
     return table_id
 
 
@@ -114,3 +117,8 @@ def set_active_ids(ids: list[str]) -> None:
 def get_active_tables() -> list[pd.DataFrame]:
     """The `Callable[[], list[pandas.DataFrame]]` chart_lab.widgets.build_chart_ui expects."""
     return [_LOADED[i].table for i in _ACTIVE_IDS if i in _LOADED]
+
+
+def get_active_paths() -> list[Path]:
+    """Source file for each active table, in the same order as get_active_tables()."""
+    return [_LOADED[i].path for i in _ACTIVE_IDS if i in _LOADED]
