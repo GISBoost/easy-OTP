@@ -37,6 +37,9 @@ tools/family_a_reconstruction/gtfs-manual-test/
 # installed on the Termux phone; cached tidy tables and rendered figures are data) ---
 tools/transit_charts/.venv/
 tools/transit_charts/out/
+
+# --- chart_lab tooling (own venv) ---
+tools/chart_lab/.venv/
 tools/transit_charts/.pytest_cache/
 
 # --- i18n developer tooling (build scripts, LLM translation helpers) ---
