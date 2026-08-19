@@ -1,0 +1,89 @@
+name: chart_lab — build and release
+
+on:
+  push:
+    tags:
+      # Deliberately a distinct prefix from whatever tag scheme the plugin itself eventually
+      # uses: both share this one repo's Releases list, and this repo doesn't warrant a whole
+      # second one for one small tool the way easy-GTFS-RT's daily-data releases warranted
+      # splitting off from the plugin (see that repo's README) - a distinct tag prefix here is
+      # the equivalent split, cheaper than a second repo.
+      - 'chart_lab-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Release tag to build and publish (e.g. chart_lab-v0.1.0). Required for a manual run:
+          workflow_dispatch has no pushed tag to read github.ref_name from, unlike the push
+          trigger above.
+        required: true
+
+concurrency:
+  # Keyed on the tag, not the workflow name: two different tags building at once is fine and
+  # expected (a hotfix release while a previous one is still building), but the same tag
+  # racing itself (e.g. a manual re-run started while the tag-push run is still going) is not -
+  # the idempotency guard below only protects against a SEQUENTIAL re-run finding the release
+  # already there, not two runs finishing the guard check before either has published.
+  group: chart_lab-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # required for `gh release create`/`gh release upload` below; no other
+                   # scope is needed - this workflow never touches Actions artifacts or
+                   # anything outside this one repo's own Releases.
+
+jobs:
+  build_and_release:
+    # Windows-only in v0.1 (PRD §1/§2) - no macOS/Linux matrix entries. That's a scope
+    # decision for a future milestone, not an oversight here.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for an existing release (idempotency guard)
+        id: existing_release
+        shell: bash
+        run: |
+          set -uo pipefail
+          if gh release view "$TAG" >/dev/null 2>err.log; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif grep -qi "release not found" err.log; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::gh release view failed unexpectedly (not a plain \"not found\") - refusing to assume the release doesn't exist. Raw error follows:"
+            cat err.log
+            exit 1
+          fi
+
+      - name: Set up Python
+        if: steps.existing_release.outputs.exists != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # All the actual build logic (venv, requirements, pyinstaller, the .spec file) lives in
+      # build_installer.bat, not here - it's the same script a developer runs locally, so
+      # there is exactly one place that can drift from what a human tests before tagging.
+      - name: Build (PyInstaller)
+        if: steps.existing_release.outputs.exists != 'true'
+        shell: cmd
+        run: call tools\chart_lab\build_installer.bat
+
+      - name: Zip the build output
+        if: steps.existing_release.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path tools\chart_lab\dist\chart_lab\* -DestinationPath chart_lab-windows.zip
+
+      - name: Publish release
+        if: steps.existing_release.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" chart_lab-windows.zip \
+            --title "chart_lab $TAG" \
+            --notes "Windows build of chart_lab, the interactive GUI for transit_charts (tools/chart_lab). Unzip and run chart_lab.exe - no Python required. GPL-3.0-or-later; source: https://github.com/${{ github.repository }}/tree/main/tools/chart_lab"

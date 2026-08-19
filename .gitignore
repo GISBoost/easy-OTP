@@ -38,8 +38,10 @@ tools/family_a_reconstruction/gtfs-manual-test/
 tools/transit_charts/.venv/
 tools/transit_charts/out/
 
-# --- chart_lab tooling (own venv) ---
+# --- chart_lab tooling (own venv; build/dist are PyInstaller output, CL-6) ---
 tools/chart_lab/.venv/
+tools/chart_lab/build/
+tools/chart_lab/dist/
 tools/transit_charts/.pytest_cache/
 
 # --- i18n developer tooling (build scripts, LLM translation helpers) ---

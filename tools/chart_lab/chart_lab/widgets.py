@@ -387,3 +387,12 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         lambda *a: render_chart(registry, get_active_tables, *a),
         inputs=param_inputs, outputs=render_outputs,
     )
+
+    # GPL distribution obligation (PRD §2), not optional polish: the shipped .exe embeds this
+    # code, so the license and where to get the source must be visible from inside the app
+    # itself, not just in a README a user who only ever ran the .exe will never open.
+    gr.Markdown(
+        "---\nchart_lab is licensed GPL-3.0-or-later. Source: "
+        "[github.com/GISBoost/easy-OTP/tree/main/tools/chart_lab]"
+        "(https://github.com/GISBoost/easy-OTP/tree/main/tools/chart_lab)"
+    )
