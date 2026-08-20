@@ -150,6 +150,26 @@ def test_a2_hides_min_n_entirely():
 # --- render_chart: end-to-end against the CL-2 bundled example table ----------------------
 
 
+def test_fresh_launch_renders_a_chart_not_a_validation_warning():
+    # Regression test for a real bug (found by milestone-reviewer, not live browser testing):
+    # route_dd is constructed with no explicit `value=`, so a naive demo.load() calling
+    # render_chart directly reproduced C9's own "needs exactly one route selected; 0
+    # selected" warning on every fresh launch - the exact opposite of the CL-2 guarantee that
+    # zero user interaction shows a real rendered chart. app.py/widgets.py now chain
+    # demo.load() through reset_for_chart(default_key) first, same as chart_dd.change() does;
+    # this test exercises that same reset-then-render sequence directly.
+    reset = reset_for_chart(_REGISTRY, _get_example_tables, "C9")
+    route_update = reset[0]
+    assert route_update["value"] == ["11"] or len(route_update["value"]) == 1
+
+    image_update, message, downloads_update = render_chart(
+        _REGISTRY, _get_example_tables, "C9", route_update["value"], "(auto)", 60, 20, 0.6,
+        False, 6, 0.25, [], False,
+    )
+    assert image_update["visible"] is True, f"fresh launch did not render: {message}"
+    assert message == ""
+
+
 def test_render_c9_route11_produces_a_real_png():
     image_update, message, downloads_update = render_chart(
         _REGISTRY, _get_example_tables, "C9", ["11"], None, 60, 20, 0.6,

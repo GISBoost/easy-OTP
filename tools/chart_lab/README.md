@@ -6,7 +6,7 @@
 
 A local, browser-based GUI for `transit_charts chart`, for people who don't want a
 terminal or to remember CLI flags: pick a chart, adjust its parameters, see the result. All
-15 `transit_charts` charts are available, with the exact parameter set each one needs shown
+16 `transit_charts` charts are available, with the exact parameter set each one needs shown
 automatically (driven by `transit_charts/registry.py` — a new chart added there needs no
 change here to appear).
 
@@ -21,8 +21,13 @@ way — it is a pure consumer of already-published tidy tables.
   `manifest.json` on GitHub Pages — never the GitHub REST API — then downloaded and cached
   locally on first use).
 
-## Running from source (Windows)
+## Uruchomienie
 
+**Gotowy plik Windows** (najprostsza opcja, bez instalowania Pythona): pobierz z zakładki
+Releases tego repo (tag `chart_lab-v*`), rozpakuj, uruchom `chart_lab.exe`. W przeglądarce
+otworzy się strona aplikacji.
+
+**Ze źródeł** (do developmentu):
 ```bat
 cd tools\chart_lab
 py -m venv .venv
@@ -31,12 +36,41 @@ pip install -r requirements.txt
 py -m chart_lab.app
 ```
 
-## Prebuilt Windows executable
+## Instrukcja obsługi (krok po kroku)
 
-Windows builds are published as GitHub Releases (tag prefix `chart_lab-v*`) — see the
-repo's Releases page. Download, unzip, run `chart_lab.exe`; no Python installation needed.
+Po uruchomieniu w przeglądarce otwiera się jedna strona, od góry w dół:
 
-### Building it yourself
+1. **Sekcja "Data"** — skąd biorą się dane do wykresów:
+   - Po lewej: pole do wgrania własnej tabeli tidy (plik `.csv`/`.csv.gz`/`.parquet`
+     wygenerowany przez `transit_charts extract`) — przeciągnij plik albo kliknij, żeby
+     wybrać z dysku.
+   - Po prawej: **"Active tables"** — checkboxy wszystkich wczytanych tabel. Domyślnie
+     zaznaczona jest dołączona przykładowa tabela (Łódź, 2026-07-23). Możesz mieć
+     zaznaczonych kilka naraz — wykresy liczą się wtedy ze wszystkich razem (to wymagane
+     dla niektórych wykresów, patrz punkt 5).
+2. **"Online catalogue"** (zwinięty panel, kliknij żeby rozwinąć) — dane już nagrane dla
+   innych miast, publikowane przez `gtfs-dashboard`:
+   - Kliknij **"Fetch available city-days"**, żeby pobrać listę dostępnych dni/miast.
+   - Wybierz jedno z rozwijanej listy.
+   - Kliknij **"Download and add to active tables"** — plik się pobierze (i zapisze w
+     lokalnym cache, więc drugi raz nie czeka), wejdzie do listy "Active tables" i od razu
+     zostanie zaznaczony.
+3. **"Chart"** — rozwijana lista wszystkich 16 wykresów `transit_charts`, z opisowymi
+   nazwami (np. "dot-and-whisker delay per stop" to C9). Wybór wykresu automatycznie
+   pokazuje tylko te parametry, których ten konkretny wykres używa — reszta jest ukryta.
+4. **Parametry** (widoczne zależnie od wykresu) — trasa (**Route(s)**, dla większości
+   wykresów trzeba wybrać dokładnie jedną), kierunek, szerokość kubełka czasowego, próg
+   `min n`, próg pokrycia kursu, próg bunching itd. Każda zmiana od razu przerysowuje
+   wykres — nie ma osobnego przycisku "generuj".
+5. Niektóre wykresy (D15, E20, J39) wymagają kilku tabel naraz (D15 — co najmniej 3 dni;
+   E20/J39 — co najmniej 2 różne miasta). Jeśli aktywnych tabel jest za mało, zamiast
+   wykresu pojawia się czytelny komunikat (⚠️) mówiący, czego brakuje — dodaj kolejne
+   tabele przez upload albo katalog online i wybór zniknie sam.
+6. Wygenerowany wykres pojawia się poniżej, a pod nim — **"Downloads"**: PNG wykresu, CSV
+   z policzonymi liczbami i JSON z parametrami/źródłem (plus HTML, jeśli zaznaczono "Also
+   write interactive HTML" dla wykresów, które to obsługują — C9/C10/B6).
+
+## Building the Windows executable yourself
 
 ```bat
 cd tools\chart_lab

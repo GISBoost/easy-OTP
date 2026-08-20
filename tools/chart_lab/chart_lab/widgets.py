@@ -104,6 +104,9 @@ def reset_for_chart(
     tables = get_active_tables()
     route_choices = _route_choices(tables)
     direction_choices = _direction_choices(tables)
+    # Whichever route sorts first - not a "best" route, just something so a single-route
+    # chart never starts on the empty selection that raises its own "needs exactly one
+    # route" validation warning (see demo.load's comment for the concrete bug this caused).
     default_routes = route_choices[:1] if spec.route_mode == "single" else []
     return (
         gr.update(choices=route_choices, value=default_routes, visible=spec.route_mode != "none"),
@@ -410,7 +413,17 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         inputs=param_inputs, outputs=render_outputs,
     )
 
+    # Same reset-then-render chain as chart_dd.change(), not a direct render_chart call: the
+    # parameter widgets are constructed with no explicit default `value=` (route_dd in
+    # particular defaults to []), so calling render_chart directly on load reproduced the
+    # exact "0 routes selected" validation warning C9 raises for that empty default - a
+    # regression from CL-2's "zero user interaction shows a real rendered chart" guarantee
+    # that CL-3 was supposed to preserve. Found by milestone-reviewer via static reading, not
+    # caught by the live browser testing that only exercised user-driven chart switches.
     demo.load(
+        lambda: reset_for_chart(registry, get_active_tables, default_key),
+        outputs=reset_outputs,
+    ).then(
         lambda *a: render_chart(
             registry, get_active_tables, *a, get_active_table_paths=data_sources.get_active_paths,
         ),
