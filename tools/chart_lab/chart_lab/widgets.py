@@ -6,7 +6,9 @@ to this file - that is the whole point of CL-0+CL-3 together (see PRD acceptance
 """
 from __future__ import annotations
 
+import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -23,6 +25,14 @@ from transit_charts.registry import ChartSpec, ResolvedChartInputs, build_regist
 
 # Shown in the direction dropdown for "let the render function pick" (None on the wire).
 _AUTO_DIRECTION = "(auto)"
+
+# One folder for the whole process lifetime, not a fresh tempfile.mkdtemp() per render: the
+# CL-2 "don't litter the repo/install folder" reasoning still holds, but scattering every
+# render into its own throwaway directory (the original approach) made "where are my charts"
+# unanswerable - 133 folders accumulated from one afternoon of slider-dragging in testing.
+# Filenames are timestamped (see render_chart) so renders never collide within this one folder.
+OUTPUT_DIR = Path(tempfile.gettempdir()) / "chart_lab_output"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _route_choices(tables: list[pd.DataFrame]) -> list[str]:
@@ -148,7 +158,9 @@ def render_chart(
         )
 
     table = tables[0] if len(tables) == 1 else pd.concat(tables, ignore_index=True)
-    out_dir = Path(tempfile.mkdtemp(prefix="chart_lab_"))
+    # Microsecond timestamp, not a counter: render_chart has no state of its own to count
+    # from, and this only needs to not collide with the previous render in the same folder.
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
     args = SimpleNamespace(
         route=list(routes),
@@ -173,7 +185,7 @@ def render_chart(
         # falls back to the example path for callers (tests) that don't supply one.
         table=(get_active_table_paths() if get_active_table_paths
                else [data_sources.EXAMPLE_TABLE_PATH]),
-        out_prefix=out_dir / spec.key.lower(),
+        out_prefix=OUTPUT_DIR / f"{spec.key.lower()}_{stamp}",
     )
     interactive = bool(html) and spec.interactive_capable
     inputs = ResolvedChartInputs(args=args, table=table, tables=tables, interactive=interactive)
@@ -285,6 +297,8 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
     message_md = gr.Markdown(value="")
     image = gr.Image(label="Chart", visible=False)
     downloads = gr.File(label="Downloads (PNG/CSV/JSON[/HTML])", file_count="multiple", visible=False)
+    open_folder_btn = gr.Button(f"Open charts folder ({OUTPUT_DIR})")
+    open_folder_message_md = gr.Markdown(value="")
 
     param_inputs = [
         chart_dd, route_dd, direction_dd, bucket_slider, min_n_slider,
@@ -412,6 +426,18 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         ),
         inputs=param_inputs, outputs=render_outputs,
     )
+
+    def _open_output_folder():
+        # os.startfile: Windows-only, matches this app's v0.1 scope (PRD §1) - opens Explorer
+        # at OUTPUT_DIR on the machine running the app. Only makes sense for a local desktop
+        # app talking to its own filesystem, never for a hosted multi-user service.
+        try:
+            os.startfile(OUTPUT_DIR)
+            return ""
+        except OSError as exc:
+            return f"⚠️ Could not open {OUTPUT_DIR}: {exc}"
+
+    open_folder_btn.click(_open_output_folder, outputs=[open_folder_message_md])
 
     # Same reset-then-render chain as chart_dd.change(), not a direct render_chart call: the
     # parameter widgets are constructed with no explicit default `value=` (route_dd in
