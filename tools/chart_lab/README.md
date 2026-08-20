@@ -50,18 +50,24 @@ Po uruchomieniu w przeglądarce otwiera się jedna strona, od góry w dół:
      dla niektórych wykresów, patrz punkt 5).
 2. **"Online catalogue"** (zwinięty panel, kliknij żeby rozwinąć) — dane już nagrane dla
    innych miast, publikowane przez `gtfs-dashboard`:
-   - Kliknij **"Fetch available city-days"**, żeby pobrać listę dostępnych dni/miast.
-   - Wybierz jedno z rozwijanej listy.
-   - Kliknij **"Download and add to active tables"** — plik się pobierze (i zapisze w
+   - Kliknij **"1. Fetch available cities"**, żeby pobrać listę dostępnych miast.
+   - Zawęź wybór trzema rozwijanymi listami z rzędu: **City** → **Month** → **Day** (każda
+     kolejna pokazuje tylko to, co pasuje do wcześniejszego wyboru — żadna z nich nie jest
+     jedną wielką listą wszystkich miast/dni naraz).
+   - Kliknij **"2. Download and add to active tables"** — plik się pobierze (i zapisze w
      lokalnym cache, więc drugi raz nie czeka), wejdzie do listy "Active tables" i od razu
      zostanie zaznaczony.
-3. **"Chart"** — rozwijana lista wszystkich 16 wykresów `transit_charts`, z opisowymi
-   nazwami (np. "dot-and-whisker delay per stop" to C9). Wybór wykresu automatycznie
-   pokazuje tylko te parametry, których ten konkretny wykres używa — reszta jest ukryta.
-4. **Parametry** (widoczne zależnie od wykresu) — trasa (**Route(s)**, dla większości
-   wykresów trzeba wybrać dokładnie jedną), kierunek, szerokość kubełka czasowego, próg
-   `min n`, próg pokrycia kursu, próg bunching itd. Każda zmiana od razu przerysowuje
-   wykres — nie ma osobnego przycisku "generuj".
+3. **"Chart"** — rozwijana lista wszystkich 16 wykresów `transit_charts`, opisana kodem i
+   nazwą (np. "C9 — dot-and-whisker delay per stop"). Pod listą pojawia się jedno zdanie
+   wyjaśniające, co dany wykres właściwie pokazuje. Wybór wykresu automatycznie pokazuje
+   tylko te parametry, których ten konkretny wykres używa — reszta jest ukryta.
+4. **Parametry** (widoczne zależnie od wykresu) — trasa i wykluczone trasy (**Route(s)** /
+   **Exclude route(s)**) wybiera się klikając w siatkę przycisków, nie z rozwijanej listy;
+   dla większości wykresów trzeba wybrać dokładnie jedną trasę. Kierunek to również klikane
+   przyciski. Reszta (szerokość kubełka czasowego, próg `min n`, próg pokrycia kursu, próg
+   bunching itd.) to suwaki. Każda zmiana od razu przerysowuje wykres — nie ma osobnego
+   przycisku "generuj". Najedź na etykietę dowolnego pola, żeby zobaczyć krótkie
+   wyjaśnienie, co ono robi.
 5. Niektóre wykresy (D15, E20, J39) wymagają kilku tabel naraz (D15 — co najmniej 3 dni;
    E20/J39 — co najmniej 2 różne miasta). Jeśli aktywnych tabel jest za mało, zamiast
    wykresu pojawia się czytelny komunikat (⚠️) mówiący, czego brakuje — dodaj kolejne
