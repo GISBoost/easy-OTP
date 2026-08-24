@@ -105,3 +105,23 @@ easy_otp-package.zip
 # --- tools/analysis generated outputs (data, not code — see CLAUDE.md .gitignore policy) ---
 tools/analysis/*.png
 tools/analysis/output/
+
+# --- tools/accessibility_lodz: r5r build cache + machine-local Java pin (data, not code) ---
+tools/accessibility_lodz/network_data/
+tools/accessibility_lodz/rjavaenv/
+tools/accessibility_lodz/.Rprofile
+tools/accessibility_lodz/*.csv
+tools/accessibility_lodz/run_accessibility.log
+
+# --- tools/accessibility_cities: multi-city r5r pipeline (data, not code) ---
+tools/accessibility_cities/pbf_regions/
+tools/accessibility_cities/*/network.dat
+tools/accessibility_cities/*/*.mapdb
+tools/accessibility_cities/*/*.mapdb.p
+tools/accessibility_cities/*/network_settings.json
+tools/accessibility_cities/*/rows_voivodeship.json
+tools/accessibility_cities/*/r5r-log.log
+tools/accessibility_cities/*/gtfs_errors.csv
+tools/accessibility_cities/*/*.log
+tools/accessibility_cities/out/*.png
+tools/accessibility_cities/*/out/*.png
