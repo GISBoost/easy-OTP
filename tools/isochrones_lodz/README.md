@@ -1,0 +1,116 @@
+# tools/isochrones_lodz — interactive isochrone map data pipeline
+
+**Standalone research tooling**, not part of the plugin. Feeds the web map at
+[mapy-analizy/izochrony-lodz](https://github.com/GISBoost/mapy-analizy/tree/main/izochrony-lodz)
+([live](https://gisboost.github.io/mapy-analizy/izochrony-lodz/)) — hover anywhere on
+the map to preview a transit isochrone from that point, click to pin it, scrub a
+time-of-day slider to watch the shape change, toggle 15/30/45-min cutoff bands and
+scheduled-vs-realized (GTFS-RT) GTFS.
+
+Uses `r5r::isochrone()` (real concave polygons per origin/cutoff/departure time),
+not `travel_time_matrix()` — chosen after a dry run showed `isochrone()`'s cost
+scales with origin count (like OTP) rather than being batched per departure time
+like the matrix function, which set the real budget for how dense/how many time
+steps the web map could ship. See `RESEARCH_LOG.md`-style narrative: none written
+yet, this file plus the scripts' own comments are the record for now.
+
+## Inputs (gitignored, copied from `tools/accessibility_lodz/`)
+
+- `network_static/`, `network_rt/` — each a copy of `lodz.osm.pbf` + exactly one
+  GTFS zip (static schedule vs. `..._p50.zip` realized). r5r builds one graph per
+  folder; static and RT GTFS reuse the same trip_id/stop_id (RT is a corrected
+  copy of the same service day) so they cannot share a folder without colliding —
+  same reason `tools/analysis/generate_isochrones_multi_city.py` isolates them.
+- `lodz_origins_500.csv` — copy of `accessibility_lodz/lodz_hex_origins.csv`
+  (500m hex centroids, 1479 points, id/lon/lat WGS84). Chosen over the denser
+  250m grid (`lodz_hex250.gpkg`/`lodz_hex250_origins.csv`, 6175 points, built but
+  unused) after the dry run showed 250m origins would blow the time/size budget —
+  see decision log below.
+
+## Pipeline
+
+1. `dry_run_isochrone.R <variant> <n_sample> [sample_size]` — measure real
+   cost (s/origin, MB/origin) on a small spread sample before committing to a
+   full sweep. Keep this script; re-run it if origins/cutoffs/time-window change.
+2. `compute_isochrones.R <variant: static|rt>` — full sweep: all 1479 origins ×
+   17 hourly departures (06:00–22:00) × cutoffs (15/30/45 min) →
+   `<variant>_isochrones_all.gpkg` (gitignored, ~75k features).
+3. **Simplify via `ogr2ogr` directly** (not qgis-mcp — the bridge choked on a
+   75k-feature/445MB layer, silently kept running server-side after its own
+   tool call reported failure; see decision log):
+   ```
+   "C:\Program Files\QGIS 3.44.11\bin\ogr2ogr.exe" -f GeoJSON \
+     <variant>_isochrones_ogr.geojson <variant>_isochrones_all.gpkg isochrones \
+     -simplify 0.000269 -lco COORDINATE_PRECISION=5
+   ```
+   (`0.000269` deg ≈ 30m at this latitude; `COORDINATE_PRECISION=5` ≈ 1.1m,
+   both applied in one pass — no separate Python rounding step needed.)
+4. `py export_isochrone_data.py <variant>` — splits the simplified GeoJSON into
+   one file per origin (`data/<variant>/<origin_id>.geojson`, all 17 hours × 3
+   cutoffs bundled so the browser fetches once per hovered/clicked point, not
+   once per slider tick), rounds coordinates to 5 decimals, writes
+   `data/manifest.json`.
+5. **`node geobuf_pack/convert.js <variant>`** — re-encodes every per-origin
+   `.geojson` into geobuf (`.pbf`, binary protobuf encoding of GeoJSON) and
+   deletes the `.geojson`. Measured on this dataset: geobuf is **~18% of raw
+   GeoJSON size**, and even gzipped (which GitHub Pages applies automatically
+   in transit) it's still **~47% of gzipped-GeoJSON size** — see decision log.
+   `geobuf_pack/` is a tiny standalone `npm install geobuf pbf` (not part of
+   the plugin, `node_modules/` gitignored). The browser side needs two CDN
+   script tags before `app.js` (`pbf@3.2.1` + `geobuf@3.0.2` — pin these
+   versions, `geobuf@3.0.2`'s browser bundle expects `pbf`'s old unified-class
+   API, not the `PbfReader`/`PbfWriter` split introduced in newer `pbf`
+   releases, which is what the Node conversion script itself needs to work
+   around via `new Pbf.PbfWriter()`); `app.js` fetches `.pbf` as an
+   `arrayBuffer()` and decodes with `geobuf.decode(new Pbf(bytes))`.
+6. Copy `data/` into `mapy-analizy/izochrony-lodz/data/` (manual, matches the
+   other two analyses' "refresh = rerun here, re-export there" convention).
+
+## Decision log (dry run, 2026-08-25)
+
+- 250m origins × 65 (15-min) steps × 2 variants was the original target —
+  measured extrapolation: **~85-95h compute, ~14.5GB raw output**. Not viable.
+- `isochrone()` cost scales ~linearly with origin count even in one batched
+  call (unlike `travel_time_matrix()`); best observed throughput ~0.05 s/origin
+  at large batch sizes (600+ origins/call) on a 6-core/12-thread machine.
+- Geometry simplification barely moves the needle on size (dominant cost is
+  the *number* of origin×time×cutoff×variant records, not per-record weight);
+  gzip/simplify together got ~2-3 KB per (origin × hour × variant) unit
+  (bundling all 3 cutoffs), vs. ~18 KB raw.
+- Settled budget: 500m origins (1479) × 17 hourly steps × 2 variants =
+  50,286 units ≈ 40-45 min compute — chosen explicitly by the user over
+  denser-origins/coarser-time alternatives after seeing the dry-run numbers.
+  **Actual measured output: 644MB as simplified GeoJSON** (322MB/variant,
+  1479 files × ~51 features each) — larger than the dry-run's ~100-150MB
+  extrapolation, because real departure times (rush hour especially) produce
+  more complex/fragmented polygons than the small dry-run sample suggested.
+  Geometry simplification tolerance barely moves this (tested 5m→60m: only
+  ~26-48% size reduction) since the dominant cost is record *count*, not
+  per-record weight.
+- **Geobuf cut this to 124MB** (61.3MB/variant) with zero visual/precision
+  loss — measured directly on this dataset (not just trusting the format's
+  marketing numbers): geobuf is 18.3% of raw GeoJSON size, and even after
+  gzip (which is what actually crosses the network, applied automatically by
+  GitHub Pages) it's still 46.6% of gzipped-GeoJSON size — i.e. roughly
+  2.1x smaller than shipping gzipped GeoJSON would already have been, on top
+  of a 5.2x smaller on-disk/git footprint. This was the single highest-leverage
+  optimization found — see step 5 in the pipeline above. Considered and
+  rejected: (a) adjacent-hour geometry dedup — measured only ~26% of
+  adjacent-hour pairs are byte-identical on this data, not worth the added
+  decode complexity in `app.js` for that return; (b) vector tiles/PMTiles —
+  designed for one large spatially-tiled dataset rendered all at once (e.g. a
+  basemap), doesn't fit our access pattern (fetch one origin's full time
+  series on hover/click, nothing spatially adjacent needed at once); (c)
+  FlatGeobuf — binary + spatial index, but the spatial index buys nothing
+  here since each per-origin file is already the unit of fetch (no
+  within-file spatial subsetting happens), so it would only match geobuf's
+  size at best while requiring a heavier browser reader.
+- The qgis-mcp bridge's `execute_code` on the real 445MB/75k-feature RT
+  GeoPackage confirmed the exact failure mode `tools/analysis/
+  generate_isochrones_multi_city.py`'s docstring already warned about: the
+  tool call reported "failed" after its own timeout, but QGIS kept running
+  the simplify+write server-side regardless (the output file kept growing
+  for minutes after the "failure"). Switched to calling `ogr2ogr.exe`
+  directly (found under a QGIS install's `bin/`) for this step instead —
+  same GEOS simplification, runs as a plain subprocess with no bridge
+  timeout to race against.

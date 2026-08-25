@@ -48,6 +48,17 @@ tools/transit_charts/.pytest_cache/
 tools/i18n/
 easy_otp.pro
 
+# --- isochrones_lodz tooling (network_static/network_rt r5r build cache + copied
+# inputs, intermediate ogr2ogr exports, staged data/ before manual copy into
+# mapy-analizy/izochrony-lodz/data/ -- *.gpkg/*.csv/*.zip/*.osm.pbf already
+# covered above, this adds the .geojson intermediates that aren't) ---
+tools/isochrones_lodz/network_static/
+tools/isochrones_lodz/network_rt/
+tools/isochrones_lodz/*_isochrones_ogr.geojson
+tools/isochrones_lodz/*_isochrones_simplified.geojson
+tools/isochrones_lodz/data/
+tools/isochrones_lodz/geobuf_pack/node_modules/
+
 # --- Crash artifacts ---
 bash.exe.stackdump
 
