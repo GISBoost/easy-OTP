@@ -63,8 +63,14 @@ batch_size <- as.integer(Sys.getenv("R5R_BATCH_SIZE", "800"))
 data_path <- sprintf("%s_network_%s", city, variant)
 r5r_core <- setup_r5(data_path = data_path, verbose = FALSE)
 
+# Warszawa uses a coarser 1000m grid (668 origins vs the SES study's 2546 at
+# 500m) -- explicit call to cut compute time and origin-batch complexity
+# after two failed CI runs (an OOM at 500m, then an isoband contour bug at
+# hour 21:00 that a retry/skip worked around but still cost ~4h10m). Every
+# other city stays at the SES study's 500m grid.
+origins_file <- if (city == "warszawa") "warszawa_hex_origins_1000m.csv" else sprintf("%s_hex_origins.csv", city)
 origins <- data.table::fread(
-  file.path("..", "accessibility_cities", city, sprintf("%s_hex_origins.csv", city)),
+  file.path("..", "accessibility_cities", city, origins_file),
   colClasses = list(character = "id")
 )
 cat(sprintf("origins: %d (java heap %s, batch size %d)\n", nrow(origins), xmx, batch_size))

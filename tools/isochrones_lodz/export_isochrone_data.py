@@ -55,8 +55,13 @@ DATA_DIR = HERE / "data"
 
 
 def load_origins(city: str) -> dict[str, tuple[float, float]]:
+    # Warszawa uses a coarser 1000m grid (668 origins) -- see
+    # compute_isochrones_city.R for why. Must match exactly, or the manifest's
+    # origin list and the actual per-origin .pbf files disagree.
     if city == "lodz":
         origins_csv = HERE / "lodz_origins_500.csv"
+    elif city == "warszawa":
+        origins_csv = HERE.parent / "accessibility_cities" / city / "warszawa_hex_origins_1000m.csv"
     else:
         origins_csv = HERE.parent / "accessibility_cities" / city / f"{city}_hex_origins.csv"
     origins = {}

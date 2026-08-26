@@ -7,11 +7,25 @@ the map to preview a transit isochrone from that point, click to pin it, scrub a
 time-of-day slider to watch the shape change, toggle 15/30/45-min cutoff bands and
 (Lodz only) scheduled-vs-realized (GTFS-RT) GTFS.
 
-**Status (2026-08-26): Lodz is computed and live. The other 5 cities from the
-`tools/accessibility_cities` SES study (Warszawa, Kraków, Gdańsk, Poznań,
-Szczecin) have the pipeline code ready (`compute_isochrones_city.R` +
-city-parameterized `export_isochrone_data.py`/`geobuf_pack/convert.js`) but
-have NOT been run yet** — waiting on a go-ahead given the cost below.
+**Status (2026-08-26): Lodz, Szczecin, Kraków, Poznań and Gdańsk are computed
+(via `.github/workflows/isochrones-cities.yml`, GitHub Actions). Warszawa is
+the odd one out** — see below.
+
+**Warszawa uses a 1000m origin grid (668 origins), not the SES study's 500m
+(2546 origins)** that every other city keeps. Two 500m CI runs on Warszawa
+each cost ~4h+ before failing (an OOM at 12G heap/800-batch, then an isoband
+contour bug at hour 21:00 that a retry-at-half-batch-size workaround got past
+but still took the full ~4h10m) — explicit call to cut both the compute time
+and the surface complexity that's triggering these edge cases, rather than
+keep fighting them at 500m. Grid built the same way as every other city's
+(`native:creategrid` TYPE=4 + `native:extractbylocation` whole-hex, see
+`tools/accessibility_cities/HOWTO_MANUAL.md` step 4, just HSPACING/VSPACING=
+1000): `tools/accessibility_cities/warszawa/warszawa_hex_origins_1000m.csv`
+(668 origins) and `warszawa_hex_boundary_1000m.geojson` (use this one, not
+the 500m boundary, when copying Warszawa's boundary into the site). Both
+`compute_isochrones_city.R` and `export_isochrone_data.py` branch on
+`city == "warszawa"` to read this file instead of the standard
+`<city>_hex_origins.csv` — keep them in sync if this ever changes.
 
 Uses `r5r::isochrone()` (real concave polygons per origin/cutoff/departure time),
 not `travel_time_matrix()` — chosen after a dry run showed `isochrone()`'s cost
