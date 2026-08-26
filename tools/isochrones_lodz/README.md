@@ -5,7 +5,13 @@
 ([live](https://gisboost.github.io/mapy-analizy/izochrony-lodz/)) — hover anywhere on
 the map to preview a transit isochrone from that point, click to pin it, scrub a
 time-of-day slider to watch the shape change, toggle 15/30/45-min cutoff bands and
-scheduled-vs-realized (GTFS-RT) GTFS.
+(Lodz only) scheduled-vs-realized (GTFS-RT) GTFS.
+
+**Status (2026-08-26): Lodz is computed and live. The other 5 cities from the
+`tools/accessibility_cities` SES study (Warszawa, Kraków, Gdańsk, Poznań,
+Szczecin) have the pipeline code ready (`compute_isochrones_city.R` +
+city-parameterized `export_isochrone_data.py`/`geobuf_pack/convert.js`) but
+have NOT been run yet** — waiting on a go-ahead given the cost below.
 
 Uses `r5r::isochrone()` (real concave polygons per origin/cutoff/departure time),
 not `travel_time_matrix()` — chosen after a dry run showed `isochrone()`'s cost
@@ -27,7 +33,7 @@ yet, this file plus the scripts' own comments are the record for now.
   unused) after the dry run showed 250m origins would blow the time/size budget —
   see decision log below.
 
-## Pipeline
+## Pipeline (Lodz — already run, both variants)
 
 1. `dry_run_isochrone.R <variant> <n_sample> [sample_size]` — measure real
    cost (s/origin, MB/origin) on a small spread sample before committing to a
@@ -45,26 +51,63 @@ yet, this file plus the scripts' own comments are the record for now.
    ```
    (`0.000269` deg ≈ 30m at this latitude; `COORDINATE_PRECISION=5` ≈ 1.1m,
    both applied in one pass — no separate Python rounding step needed.)
-4. `py export_isochrone_data.py <variant>` — splits the simplified GeoJSON into
-   one file per origin (`data/<variant>/<origin_id>.geojson`, all 17 hours × 3
-   cutoffs bundled so the browser fetches once per hovered/clicked point, not
-   once per slider tick), rounds coordinates to 5 decimals, writes
-   `data/manifest.json`.
-5. **`node geobuf_pack/convert.js <variant>`** — re-encodes every per-origin
-   `.geojson` into geobuf (`.pbf`, binary protobuf encoding of GeoJSON) and
-   deletes the `.geojson`. Measured on this dataset: geobuf is **~18% of raw
-   GeoJSON size**, and even gzipped (which GitHub Pages applies automatically
-   in transit) it's still **~47% of gzipped-GeoJSON size** — see decision log.
-   `geobuf_pack/` is a tiny standalone `npm install geobuf pbf` (not part of
-   the plugin, `node_modules/` gitignored). The browser side needs two CDN
-   script tags before `app.js` (`pbf@3.2.1` + `geobuf@3.0.2` — pin these
-   versions, `geobuf@3.0.2`'s browser bundle expects `pbf`'s old unified-class
-   API, not the `PbfReader`/`PbfWriter` split introduced in newer `pbf`
-   releases, which is what the Node conversion script itself needs to work
-   around via `new Pbf.PbfWriter()`); `app.js` fetches `.pbf` as an
-   `arrayBuffer()` and decodes with `geobuf.decode(new Pbf(bytes))`.
-6. Copy `data/` into `mapy-analizy/izochrony-lodz/data/` (manual, matches the
-   other two analyses' "refresh = rerun here, re-export there" convention).
+4. `py export_isochrone_data.py <city> <variant>` — splits the simplified
+   GeoJSON into one file per origin (`data/<city>/<variant>/<origin_id>.geojson`,
+   all 17 hours × 3 cutoffs bundled so the browser fetches once per
+   hovered/clicked point, not once per slider tick), rounds coordinates to 5
+   decimals, writes `data/<city>/manifest.json`. For Lodz, run this for BOTH
+   variants before converting either to geobuf (step 5 deletes the .geojson
+   this script's manifest-presence scan looks for).
+5. **`node geobuf_pack/convert.js <city> <variant>`** — re-encodes every
+   per-origin `.geojson` into geobuf (`.pbf`, binary protobuf encoding of
+   GeoJSON) and deletes the `.geojson`. Measured on this dataset: geobuf is
+   **~18% of raw GeoJSON size**, and even gzipped (which GitHub Pages applies
+   automatically in transit) it's still **~47% of gzipped-GeoJSON size** — see
+   decision log. `geobuf_pack/` is a tiny standalone `npm install geobuf pbf`
+   (not part of the plugin, `node_modules/` gitignored). The browser side
+   needs two CDN script tags before `app.js` (`pbf@3.2.1` + `geobuf@3.0.2` —
+   pin these versions, `geobuf@3.0.2`'s browser bundle expects `pbf`'s old
+   unified-class API, not the `PbfReader`/`PbfWriter` split introduced in
+   newer `pbf` releases, which is what the Node conversion script itself
+   needs to work around via `new Pbf.PbfWriter()`); `app.js` fetches `.pbf`
+   as an `arrayBuffer()` and decodes with `geobuf.decode(new Pbf(bytes))`.
+6. Copy `data/<city>/` into `mapy-analizy/izochrony-lodz/data/<city>/`
+   (manual, matches the other two analyses' "refresh = rerun here, re-export
+   there" convention), and add `{ "id": "<city>", "label": "<Display Name>" }`
+   to the top-level `mapy-analizy/izochrony-lodz/data/manifest.json` — that's
+   the only site-side code change needed to light up a new city, `app.js`
+   handles any number of cities generically.
+
+## Pipeline (Warszawa/Kraków/Gdańsk/Poznań/Szczecin — prepared, NOT run yet)
+
+Same steps 3–6 as above, but step 2 is `compute_isochrones_city.R <city>`
+instead of `compute_isochrones.R` — a separate script because these 5 cities:
+- only ever have **one** variant (`rt`, realized/GTFS-RT P50 — see
+  `tools/accessibility_cities/download_gtfs.py`, which never fetched a static
+  schedule for them), so there's no `network_static`/`network_rt` split to
+  build — r5r builds straight off `tools/accessibility_cities/<city>/`, which
+  already has exactly one GTFS zip + the `.osm.pbf`, no copying needed.
+- reuse each city's existing 500m `<city>_hex_origins.csv` and
+  `<city>_hex_boundary.geojson` from the SES study (`tools/accessibility_cities`)
+  — nothing new to fetch or grid.
+- use departure date **24-08-2026** (a Monday), not the GTFS recording day
+  (2026-08-22, a Saturday) — `run_city_pipeline.sh` already hit and fixed this
+  exact bug for the SES accessibility runs; `compute_isochrones_city.R` bakes
+  the fix in rather than re-discovering it.
+
+Cost estimate (not yet spent — this is what the go-ahead signal commits to):
+origin counts warszawa 2546, krakow 1633, gdansk 1389, poznan 1350,
+szczecin 1567 (≈8485 total, vs. Lodz's 1479) — at Lodz's observed throughput
+(~0.045 s/origin/hour-step) that's **~1.8h sequential compute** for all 5
+(one variant each, so less total than Lodz's two-variant run despite more
+origins). Data: Lodz measured ~41.5 KB/origin/variant as geobuf, so ~8485
+origins × 1 variant ≈ **~350MB** added to `mapy-analizy` (124MB today → ~470MB
+total). If that's too much when the time comes, the lever is subsampling the
+existing hex grids (e.g. every other point) rather than recomputing anything —
+not applied preemptively since it trades hover granularity for size and that's
+the user's call, not an engineering default.
+
+## Decision log (dry run, 2026-08-25)
 
 ## Decision log (dry run, 2026-08-25)
 

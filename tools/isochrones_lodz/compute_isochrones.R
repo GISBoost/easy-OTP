@@ -6,10 +6,21 @@
 # 500m origins, hourly steps).
 #
 # Usage: Rscript compute_isochrones.R <variant: static|rt>
+#
+# NOTE (2026-08-26): options(java.parameters=...) must precede library(r5r) --
+# r5r initializes its JVM at package load, not at setup_r5()/isochrone() call
+# time, so setting it afterwards (as this script originally did) is silently
+# ignored. Lodz's own 1479-origin runs already completed fine on whatever
+# default heap that left in place, but the ordering was only proven unsafe
+# later on Warszawa's bigger network (see compute_isochrones_city.R) -- fixed
+# here too so a future re-run of this script doesn't inherit the same risk.
 
 args <- commandArgs(trailingOnly = TRUE)
 variant <- args[1]
 if (!variant %in% c("static", "rt")) stop("variant must be 'static' or 'rt'")
+
+xmx <- Sys.getenv("R5R_JAVA_XMX", "8G")
+options(java.parameters = paste0("-Xmx", xmx))  # MUST precede library(r5r)
 
 lib <- Sys.getenv("R_LIBS_USER")
 .libPaths(c(lib, .libPaths()))
@@ -17,13 +28,11 @@ lib <- Sys.getenv("R_LIBS_USER")
 library(r5r)
 library(sf)
 
-options(java.parameters = "-Xmx4G")
-
 data_path <- paste0("network_", variant)
 r5r_core <- setup_r5(data_path = data_path, verbose = FALSE)
 
 origins <- data.table::fread("lodz_origins_500.csv", colClasses = list(character = "id"))
-cat(sprintf("origins: %d\n", nrow(origins)))
+cat(sprintf("origins: %d (java heap %s)\n", nrow(origins), xmx))
 
 hours <- 6:22  # 06:00 .. 22:00, 17 steps
 results <- vector("list", length(hours))

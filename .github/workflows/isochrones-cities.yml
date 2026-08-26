@@ -1,0 +1,183 @@
+name: isochrones — compute city isochrones (r5r)
+
+# One-off / on-demand tool, NOT a recurring pipeline: workflow_dispatch only, no
+# push/schedule trigger. Moves tools/isochrones_lodz's per-city isochrone sweep
+# (compute_isochrones_city.R -> ogr2ogr simplify -> export_isochrone_data.py ->
+# geobuf convert) off the local machine, which OOM'd on Warszawa (r5r's
+# FastRaptorWorker needs RAM roughly proportional to origins x network
+# complexity -- see compute_isochrones_city.R's header comment for the fix:
+# batching + an explicit heap set before library(r5r) loads). One job per
+# city (not per city+variant): each job runs both static and rt sequentially
+# on the same runner, because export_isochrone_data.py's manifest.json needs
+# both variants' output on the same filesystem to report "variants": both.
+# Cities stay independent of each other, so the 5 jobs run in parallel.
+#
+# Inputs are optional filters so this can be dispatched for a quick one-city
+# smoke test before committing to the full 5-city run.
+on:
+  workflow_dispatch:
+    inputs:
+      cities:
+        description: 'Comma-separated cities to compute (blank = all 5: warszawa,krakow,gdansk,poznan,szczecin)'
+        required: false
+        default: ''
+      variants:
+        description: 'Comma-separated variants (blank = both: static,rt)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - id: gen
+        shell: bash
+        run: |
+          set -euo pipefail
+          cities="${{ github.event.inputs.cities }}"
+          variants="${{ github.event.inputs.variants }}"
+          [ -z "$cities" ] && cities="warszawa,krakow,gdansk,poznan,szczecin"
+          [ -z "$variants" ] && variants="static,rt"
+          IFS=',' read -ra CITY_LIST <<< "$cities"
+          entries=()
+          for c in "${CITY_LIST[@]}"; do
+            entries+=("{\"city\":\"$c\",\"variants\":\"$variants\"}")
+          done
+          matrix="{\"include\":[$(IFS=,; echo "${entries[*]}")]}"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "planned matrix: $matrix"
+
+  compute:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: tools/isochrones_lodz
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      R5R_JAVA_XMX: "12G"   # 16GB runner: leave ~4GB for OS/R/GDAL/GTFS parsing overhead
+      CITY: ${{ matrix.city }}
+      VARIANTS: ${{ matrix.variants }}
+      GTFS_DATE: "2026-08-24"  # Monday; see compute_isochrones_city.R header for why
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::r5r
+            any::sf
+            any::data.table
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install osmosis + gdal-bin
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y osmosis gdal-bin
+
+      - name: Download + clip OSM extract for this city
+        # Reproduces tools/accessibility_cities/prepare_osm_pbf.py's own clip
+        # exactly (same Geofabrik region, same bbox+margin computed once
+        # locally from ses_income_lodz/<city>.gpkg, same osmosis
+        # completeWays=yes flag -- required, a plain bbox clip crashes R5's
+        # park-and-ride builder on a dangling node ref, hit live on Krakow).
+        # Re-derived from public sources here rather than shipping the
+        # already-clipped local .osm.pbf, so nothing local needs publishing.
+        run: |
+          set -euo pipefail
+          case "$CITY" in
+            warszawa) region=mazowieckie;       bbox="20.8317 52.0778 21.2912 52.3882" ;;
+            krakow)   region=malopolskie;       bbox="19.7722 49.9477 20.2373 50.1461" ;;
+            gdansk)   region=pomorskie;         bbox="18.4095 54.2550 18.9704 54.4672" ;;
+            poznan)   region=wielkopolskie;     bbox="16.7116 52.2719 17.0917 52.5293" ;;
+            szczecin) region=zachodniopomorskie; bbox="14.4238 53.3017 14.8254 53.5577" ;;
+            *) echo "unknown city: $CITY"; exit 1 ;;
+          esac
+          read -r left bottom right top <<< "$bbox"
+          curl -fL -o region.osm.pbf "https://download.geofabrik.de/europe/poland/${region}-latest.osm.pbf"
+          osmosis --read-pbf file=region.osm.pbf \
+            --bounding-box left="$left" bottom="$bottom" right="$right" top="$top" completeWays=yes \
+            --write-pbf file="${CITY}.osm.pbf"
+          rm -f region.osm.pbf
+          ls -la "${CITY}.osm.pbf"
+
+      - name: Compute isochrones (static + rt, sequential)
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra VARIANT_LIST <<< "$VARIANTS"
+          for variant in "${VARIANT_LIST[@]}"; do
+            echo "=== $CITY/$variant: assembling network folder ==="
+            net_dir="${CITY}_network_${variant}"
+            mkdir -p "$net_dir"
+            cp "${CITY}.osm.pbf" "$net_dir/"
+
+            if [ "$variant" = "static" ]; then
+              asset="${CITY}_static_gtfs_${GTFS_DATE}.zip"
+            else
+              asset="${CITY}_realized_${GTFS_DATE}_p50.zip"
+            fi
+            tag="${CITY}-realized-${GTFS_DATE}-phone"
+            gh release download "$tag" --repo GISBoost/easy-GTFS-RT \
+              --pattern "$asset" --dir "$net_dir" --clobber
+
+            echo "=== $CITY/$variant: Rscript compute_isochrones_city.R ==="
+            Rscript compute_isochrones_city.R "$CITY" "$variant"
+          done
+
+      - name: Simplify (ogr2ogr) + export per-origin GeoJSON + geobuf convert
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra VARIANT_LIST <<< "$VARIANTS"
+          for variant in "${VARIANT_LIST[@]}"; do
+            echo "=== $CITY/$variant: ogr2ogr simplify ==="
+            ogr2ogr -f GeoJSON "${CITY}_${variant}_isochrones_ogr.geojson" \
+              "${CITY}_${variant}_isochrones_all.gpkg" isochrones \
+              -simplify 0.000269 -lco COORDINATE_PRECISION=5
+
+            echo "=== $CITY/$variant: export_isochrone_data.py ==="
+            python3 export_isochrone_data.py "$CITY" "$variant"
+          done
+
+      - name: geobuf convert
+        working-directory: tools/isochrones_lodz/geobuf_pack
+        run: |
+          set -euo pipefail
+          npm ci
+          IFS=',' read -ra VARIANT_LIST <<< "$VARIANTS"
+          for variant in "${VARIANT_LIST[@]}"; do
+            node convert.js "$CITY" "$variant"
+          done
+
+      - name: Report output size
+        run: |
+          du -sh "data/${CITY}" || true
+          find "data/${CITY}" -maxdepth 2 -type d -exec sh -c 'echo "{}: $(ls "{}" | wc -l) files"' \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: izochrony-${{ matrix.city }}
+          path: tools/isochrones_lodz/data/${{ matrix.city }}/
+          retention-days: 14

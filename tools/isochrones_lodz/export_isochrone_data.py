@@ -1,5 +1,7 @@
 """export_isochrone_data.py -- pack computed isochrones into per-origin GeoJSON
-files + manifest.json for the izochrony-lodz web map.
+files + per-city manifest.json for the izochrony-lodz web map (now multi-city:
+Lodz plus the accessibility_cities SES-study cities -- warszawa/krakow/gdansk/
+poznan/szczecin, see compute_isochrones_city.R).
 
 Mirrors mapy-analizy/odstepy-przystankow/export_odstepy_przystankow.py's split:
 QGIS (native:simplifygeometries, run separately via qgis-mcp) does the heavy
@@ -9,15 +11,25 @@ shrinks GeoJSON text size beyond what simplification alone saves), splits by
 origin so the browser fetches one small file per hovered/clicked point, and
 builds manifest.json.
 
-Usage: py export_isochrone_data.py <variant: static|rt>
+Usage: py export_isochrone_data.py <city> <variant: static|rt>
+  All 6 cities have both variants -- for the 5 non-Lodz cities, static+realized
+  were fetched fresh from the 2026-08-24 easy-GTFS-RT release (see
+  setup_city_networks.sh / compute_isochrones_city.R), not reused from
+  tools/accessibility_cities (whose own SES-study run only ever needed the
+  realized GTFS, on a different day).
 
-Input:  <variant>_isochrones_ogr.geojson (from the ogr2ogr simplify step --
-        see README: ogr2ogr -simplify + -lco COORDINATE_PRECISION, run
-        directly rather than through qgis-mcp, which choked on a dataset
-        this size -- see README decision log)
-        lodz_origins_500.csv (id, lon, lat)
-Output: data/<variant>/<origin_id>.geojson (one per origin)
-        data/manifest.json (written/updated after both variants are exported)
+Input:  lodz: <variant>_isochrones_ogr.geojson, lodz_origins_500.csv
+        other cities: <city>_<variant>_isochrones_ogr.geojson (from the
+        ogr2ogr simplify step -- see README: ogr2ogr -simplify + -lco
+        COORDINATE_PRECISION, run directly rather than through qgis-mcp,
+        which choked on a dataset this size -- see README decision log),
+        origins read straight from
+        ../accessibility_cities/<city>/<city>_hex_origins.csv (same SES-study
+        grid, nothing new to generate)
+Output: data/<city>/<variant>/<origin_id>.geojson (one per origin)
+        data/<city>/manifest.json (written/updated after all of that city's
+        variants are exported -- for lodz, run both variants' export before
+        converting either to geobuf, see README pipeline step ordering)
 """
 from __future__ import annotations
 
@@ -27,23 +39,36 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-HOURS = list(range(6, 23))  # 06:00..22:00, matches compute_isochrones.R
+HOURS = list(range(6, 23))  # 06:00..22:00, matches compute_isochrones*.R
 CUTOFFS = [15, 30, 45]
+CITY_VARIANTS = {
+    "lodz": ("static", "rt"),
+    "warszawa": ("static", "rt"),
+    "krakow": ("static", "rt"),
+    "gdansk": ("static", "rt"),
+    "poznan": ("static", "rt"),
+    "szczecin": ("static", "rt"),
+}
 
 HERE = Path(__file__).parent
 DATA_DIR = HERE / "data"
 
 
-def load_origins() -> dict[str, tuple[float, float]]:
+def load_origins(city: str) -> dict[str, tuple[float, float]]:
+    if city == "lodz":
+        origins_csv = HERE / "lodz_origins_500.csv"
+    else:
+        origins_csv = HERE.parent / "accessibility_cities" / city / f"{city}_hex_origins.csv"
     origins = {}
-    with open(HERE / "lodz_origins_500.csv", encoding="utf-8") as fh:
+    with open(origins_csv, encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
             origins[row["id"]] = (float(row["lon"]), float(row["lat"]))
     return origins
 
 
-def export_variant(variant: str) -> set[str]:
-    src = HERE / f"{variant}_isochrones_ogr.geojson"
+def export_variant(city: str, variant: str) -> set[str]:
+    src_name = f"{variant}_isochrones_ogr.geojson" if city == "lodz" else f"{city}_{variant}_isochrones_ogr.geojson"
+    src = HERE / src_name
     with open(src, encoding="utf-8") as fh:
         data = json.load(fh)
 
@@ -60,51 +85,56 @@ def export_variant(variant: str) -> set[str]:
             "geometry": feat["geometry"],
         })
 
-    out_dir = DATA_DIR / variant
+    out_dir = DATA_DIR / city / variant
     out_dir.mkdir(parents=True, exist_ok=True)
     for origin_id, features in by_origin.items():
         out_path = out_dir / f"{origin_id}.geojson"
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump({"type": "FeatureCollection", "features": features}, fh, separators=(",", ":"))
 
-    print(f"{variant}: wrote {len(by_origin)} origin files to {out_dir}")
+    print(f"{city}/{variant}: wrote {len(by_origin)} origin files to {out_dir}")
     return set(by_origin.keys())
 
 
-def write_manifest(variants_present: dict[str, set[str]]) -> None:
-    origins = load_origins()
+def write_manifest(city: str, variants_present: list[str]) -> None:
+    origins = load_origins(city)
     lons = [lon for lon, _ in origins.values()]
     lats = [lat for _, lat in origins.values()]
 
     manifest = {
         "hours": HOURS,
         "cutoffs_min": CUTOFFS,
-        "variants": sorted(variants_present.keys()),
+        "variants": sorted(variants_present),
         "bounds": [[min(lats), min(lons)], [max(lats), max(lons)]],
         "origins": [
             {"id": oid, "lon": lon, "lat": lat}
             for oid, (lon, lat) in sorted(origins.items(), key=lambda kv: int(kv[0]))
         ],
     }
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(DATA_DIR / "manifest.json", "w", encoding="utf-8") as fh:
+    city_dir = DATA_DIR / city
+    city_dir.mkdir(parents=True, exist_ok=True)
+    with open(city_dir / "manifest.json", "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2)
-    print(f"wrote manifest.json ({len(manifest['origins'])} origins, "
+    print(f"wrote {city}/manifest.json ({len(manifest['origins'])} origins, "
           f"{len(HOURS)} hours, variants={manifest['variants']})")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in ("static", "rt"):
-        sys.exit("Usage: py export_isochrone_data.py <variant: static|rt>")
-    variant = sys.argv[1]
-    ids = export_variant(variant)
+    if len(sys.argv) != 3 or sys.argv[1] not in CITY_VARIANTS or sys.argv[2] not in CITY_VARIANTS[sys.argv[1]]:
+        sys.exit(
+            "Usage: py export_isochrone_data.py <city> <variant>\n"
+            f"  cities/variants: { {k: list(v) for k, v in CITY_VARIANTS.items()} }"
+        )
+    city, variant = sys.argv[1], sys.argv[2]
+    export_variant(city, variant)
 
-    # manifest only needs origin list (variant-independent) + which variants
-    # have been exported so far -- re-derive from what's on disk each run so
-    # running one variant then the other (or re-running one) keeps it correct
-    present = {}
-    for v in ("static", "rt"):
-        vdir = DATA_DIR / v
-        if vdir.exists() and any(vdir.glob("*.geojson")):
-            present[v] = {p.stem for p in vdir.glob("*.geojson")}
-    write_manifest(present)
+    # manifest only needs origin list (variant-independent) + which of this
+    # city's variants have been exported so far -- re-derive from what's on
+    # disk each run so running one variant then the other (or re-running one)
+    # keeps it correct. Must run before geobuf-converting any of them (convert
+    # deletes the .geojson this scan looks for) -- see README.
+    present = [
+        v for v in CITY_VARIANTS[city]
+        if (DATA_DIR / city / v).exists() and any((DATA_DIR / city / v).glob("*.geojson"))
+    ]
+    write_manifest(city, present)
