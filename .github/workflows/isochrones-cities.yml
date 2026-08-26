@@ -58,7 +58,13 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # 180 min was too tight: Warszawa (biggest city, 2546 origins) got killed by this
+    # exact timeout at 3h00m00s in the first full run (2026-08-26) with both variants
+    # still computing. GH-hosted runners are 4-core vs. the ~6-core/12-thread machine
+    # the original per-origin throughput (0.045-0.06 s/origin/hour) was measured on --
+    # r5r's isochrone() parallelizes over cores, so fewer cores costs real wall time,
+    # not a stall. 340 min leaves margin under GitHub's own 360 min hard job cap.
+    timeout-minutes: 340
     defaults:
       run:
         working-directory: tools/isochrones_lodz
