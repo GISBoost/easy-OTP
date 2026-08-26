@@ -10,7 +10,7 @@ time-of-day slider to watch the shape change, toggle 15/30/45-min cutoff bands a
 **Status (2026-08-26): all 6 cities computed and live** (Lodz, Szczecin,
 Kraków, Poznań, Gdańsk, Warszawa — via `.github/workflows/isochrones-cities.yml`,
 GitHub Actions, artifacts downloaded and copied into `mapy-analizy/izochrony-lodz/data/`).
-Warszawa is the odd one out on grid density** — see below.
+**Warszawa is the odd one out on grid density** — see below.
 
 **Warszawa uses a 1000m origin grid (668 origins), not the SES study's 500m
 (2546 origins)** that every other city keeps. Two 500m CI runs on Warszawa
