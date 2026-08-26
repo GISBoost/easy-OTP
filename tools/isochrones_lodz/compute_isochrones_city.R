@@ -69,19 +69,21 @@ origins <- data.table::fread(
 )
 cat(sprintf("origins: %d (java heap %s, batch size %d)\n", nrow(origins), xmx, batch_size))
 
-batch_starts <- seq(1, nrow(origins), by = batch_size)
-
-hours <- 6:22  # 06:00 .. 22:00, 17 steps -- same budget as Lodz
-results <- vector("list", length(hours))
-
-for (i in seq_along(hours)) {
-  h <- hours[i]
-  departure_dt <- as.POSIXct(sprintf("24-08-2026 %02d:00:00", h), format = "%d-%m-%Y %H:%M:%S")
-  t0 <- Sys.time()
+# Runs one hour's full sweep at a given batch size. Warszawa/rt 21:00 hit a
+# real isoband bug here ("Found polygons without undefined interior/exterior
+# relationship", inside isoband::iso_to_sfg -- a known edge case when the
+# travel-time surface's contours are too fragmented/ambiguous to wind
+# unambiguously into polygons) after ~4h10m of otherwise-clean compute, not a
+# resource limit. It reproduces deterministically for that exact input, so a
+# bare retry at the same batch size would just fail again -- retrying at a
+# different batch size changes the surface's internal batching boundaries
+# enough to route around it in practice.
+run_hour <- function(bsize, departure_dt) {
+  batch_starts <- seq(1, nrow(origins), by = bsize)
   batch_results <- vector("list", length(batch_starts))
   for (bi in seq_along(batch_starts)) {
     start <- batch_starts[bi]
-    end <- min(start + batch_size - 1, nrow(origins))
+    end <- min(start + bsize - 1, nrow(origins))
     batch_results[[bi]] <- isochrone(
       r5r_core,
       origins = origins[start:end, ],
@@ -92,15 +94,50 @@ for (i in seq_along(hours)) {
       progress = FALSE
     )
   }
-  iso <- do.call(rbind, batch_results)
+  do.call(rbind, batch_results)
+}
+
+hours <- 6:22  # 06:00 .. 22:00, 17 steps -- same budget as Lodz
+results <- vector("list", length(hours))
+skipped_hours <- integer(0)
+
+for (i in seq_along(hours)) {
+  h <- hours[i]
+  departure_dt <- as.POSIXct(sprintf("24-08-2026 %02d:00:00", h), format = "%d-%m-%Y %H:%M:%S")
+  t0 <- Sys.time()
+  iso <- tryCatch(
+    run_hour(batch_size, departure_dt),
+    error = function(e) {
+      half <- max(100L, batch_size %/% 2L)
+      cat(sprintf("  [%2d/%2d] %02d:00 FAILED at batch_size=%d (%s) -- retrying at batch_size=%d\n",
+                  i, length(hours), h, batch_size, conditionMessage(e), half))
+      tryCatch(
+        run_hour(half, departure_dt),
+        error = function(e2) {
+          cat(sprintf("  [%2d/%2d] %02d:00 FAILED AGAIN at batch_size=%d (%s) -- skipping this hour\n",
+                      i, length(hours), h, half, conditionMessage(e2)))
+          NULL
+        }
+      )
+    }
+  )
+  if (is.null(iso)) {
+    skipped_hours <- c(skipped_hours, h)
+    next
+  }
   iso$hour <- h
   results[[i]] <- iso
   elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
   cat(sprintf("[%2d/%2d] %02d:00 -> %d features in %.1f s\n", i, length(hours), h, nrow(iso), elapsed))
 }
 
+results <- results[!vapply(results, is.null, logical(1))]
 all_iso <- do.call(rbind, results)
 cat(sprintf("\ntotal features: %d\n", nrow(all_iso)))
+if (length(skipped_hours) > 0) {
+  cat(sprintf("WARNING: %d hour(s) skipped after failing twice: %s\n",
+              length(skipped_hours), paste(skipped_hours, collapse = ", ")))
+}
 
 out_path <- sprintf("%s_%s_isochrones_all.gpkg", city, variant)
 sf::st_write(all_iso, out_path, layer = "isochrones", delete_dsn = TRUE, quiet = TRUE)
