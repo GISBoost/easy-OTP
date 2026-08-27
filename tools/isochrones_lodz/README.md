@@ -1,15 +1,17 @@
 # tools/isochrones_lodz — interactive isochrone map data pipeline
 
 **Standalone research tooling**, not part of the plugin. Feeds the web map at
-[mapy-analizy/izochrony-lodz](https://github.com/GISBoost/mapy-analizy/tree/main/izochrony-lodz)
-([live](https://gisboost.github.io/mapy-analizy/izochrony-lodz/)) — hover anywhere on
+[mapy-analizy/izochrony-transport](https://github.com/GISBoost/mapy-analizy/tree/main/izochrony-transport)
+([live](https://gisboost.github.io/mapy-analizy/izochrony-transport/), also mirrored on
+[Cloudflare Pages](https://mapy-analizy.pages.dev/izochrony-transport/)) — hover anywhere on
 the map to preview a transit isochrone from that point, click to pin it, scrub a
 time-of-day slider to watch the shape change, toggle 15/30/45-min cutoff bands and
-(Lodz only) scheduled-vs-realized (GTFS-RT) GTFS.
+scheduled-vs-realized (GTFS-RT) GTFS (all 6 cities now have both variants — see
+status below).
 
 **Status (2026-08-26): all 6 cities computed and live** (Lodz, Szczecin,
 Kraków, Poznań, Gdańsk, Warszawa — via `.github/workflows/isochrones-cities.yml`,
-GitHub Actions, artifacts downloaded and copied into `mapy-analizy/izochrony-lodz/data/`).
+GitHub Actions, artifacts downloaded and copied into `mapy-analizy/izochrony-transport/data/`).
 **Warszawa is the odd one out on grid density** — see below.
 
 **Warszawa uses a 1000m origin grid (668 origins), not the SES study's 500m
@@ -80,28 +82,33 @@ yet, this file plus the scripts' own comments are the record for now.
    automatically in transit) it's still **~47% of gzipped-GeoJSON size** — see
    decision log. `geobuf_pack/` is a tiny standalone `npm install geobuf pbf`
    (not part of the plugin, `node_modules/` gitignored). The browser side
-   needs two CDN script tags before `app.js` (`pbf@3.2.1` + `geobuf@3.0.2` —
-   pin these versions, `geobuf@3.0.2`'s browser bundle expects `pbf`'s old
+   needs `pbf@3.2.1` + `geobuf@3.0.2` before `app.js` — self-hosted from
+   `izochrony-transport/vendor/` since 2026-08-27 (was CDN via unpkg; pin
+   these versions either way, `geobuf@3.0.2`'s browser bundle expects `pbf`'s old
    unified-class API, not the `PbfReader`/`PbfWriter` split introduced in
    newer `pbf` releases, which is what the Node conversion script itself
    needs to work around via `new Pbf.PbfWriter()`); `app.js` fetches `.pbf`
    as an `arrayBuffer()` and decodes with `geobuf.decode(new Pbf(bytes))`.
-6. Copy `data/<city>/` into `mapy-analizy/izochrony-lodz/data/<city>/`
+6. Copy `data/<city>/` into `mapy-analizy/izochrony-transport/data/<city>/`
    (manual, matches the other two analyses' "refresh = rerun here, re-export
    there" convention), and add `{ "id": "<city>", "label": "<Display Name>" }`
-   to the top-level `mapy-analizy/izochrony-lodz/data/manifest.json` — that's
+   to the top-level `mapy-analizy/izochrony-transport/data/manifest.json` — that's
    the only site-side code change needed to light up a new city, `app.js`
    handles any number of cities generically.
 
-## Pipeline (Warszawa/Kraków/Gdańsk/Poznań/Szczecin — prepared, NOT run yet)
+## Pipeline (Warszawa/Kraków/Gdańsk/Poznań/Szczecin — run, both variants)
 
 Same steps 3–6 as above, but step 2 is `compute_isochrones_city.R <city>`
 instead of `compute_isochrones.R` — a separate script because these 5 cities:
-- only ever have **one** variant (`rt`, realized/GTFS-RT P50 — see
-  `tools/accessibility_cities/download_gtfs.py`, which never fetched a static
-  schedule for them), so there's no `network_static`/`network_rt` split to
-  build — r5r builds straight off `tools/accessibility_cities/<city>/`, which
-  already has exactly one GTFS zip + the `.osm.pbf`, no copying needed.
+- **Correction (2026-08-27):** this section previously said these 5 cities
+  only ever get the `rt` variant. That's stale — `data/<city>/manifest.json`
+  for all 6 cities now lists `variants: ["rt", "static"]`, and the deployed
+  `rt/<id>.pbf` vs `static/<id>.pbf` files are verified byte-distinct (not a
+  duplicate/copy), so the site's scheduled-vs-realized toggle is live and
+  fetches real data for all 6, not just Lodz. Exactly which run added the
+  `static` variant for these 5 isn't recorded here — verify against
+  `compute_isochrones_city.R`'s current variant handling before assuming
+  anything below about network folder layout still matches.
 - reuse each city's existing 500m `<city>_hex_origins.csv` and
   `<city>_hex_boundary.geojson` from the SES study (`tools/accessibility_cities`)
   — nothing new to fetch or grid.

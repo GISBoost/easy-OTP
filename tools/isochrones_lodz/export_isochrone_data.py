@@ -110,9 +110,11 @@ def write_manifest(city: str, variants_present: list[str]) -> None:
         "hours": HOURS,
         "cutoffs_min": CUTOFFS,
         "variants": sorted(variants_present),
-        "bounds": [[min(lats), min(lons)], [max(lats), max(lons)]],
+        "bounds": [[round(min(lats), 6), round(min(lons), 6)], [round(max(lats), 6), round(max(lons), 6)]],
         "origins": [
-            {"id": oid, "lon": lon, "lat": lat}
+            # 6 decimal places (~10cm) is plenty for a 500m grid, vs. the
+            # float64 default (~15 sig figs) -- pure size cut, no visible effect.
+            {"id": oid, "lon": round(lon, 6), "lat": round(lat, 6)}
             for oid, (lon, lat) in sorted(origins.items(), key=lambda kv: int(kv[0]))
         ],
     }
