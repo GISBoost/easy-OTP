@@ -72,6 +72,17 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       R5R_JAVA_XMX: "12G"   # 16GB runner: leave ~4GB for OS/R/GDAL/GTFS parsing overhead
+      # Default batch_size=800 OOM'd on gzm/rt even at the retry-halved 400 --
+      # confirmed live in run 33252314033 (every one of the first 3 hours
+      # failed at both 800 and 400, would have skipped all 17). Locally at
+      # the same nominal 12G heap, 400 worked fine and only 800 OOM'd --
+      # CI's "16GB" runner has less effectively-usable memory than a local
+      # machine at the same -Xmx, so don't trust a batch size just because it
+      # worked locally without margin. 150 is comfortably under the 200/400
+      # that did work locally. Harmless for smaller cities (kielce fit in one
+      # 800-batch anyway; more, smaller batches costs a little overhead, not
+      # correctness) so this is safe to set globally, not just for gzm.
+      R5R_BATCH_SIZE: "150"
       CITY: ${{ matrix.city }}
       VARIANTS: ${{ matrix.variants }}
       # Bumped 2026-08-29 for the gzm/kielce first run (only dates with a
