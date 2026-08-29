@@ -125,14 +125,27 @@ jobs:
         # -- required, a plain bbox clip crashes R5's park-and-ride builder
         # on a dangling node ref, hit live on Krakow). Re-derived from public
         # sources here rather than shipping the already-clipped local
-        # .osm.pbf, so nothing local needs publishing -- except for gzm,
-        # where the clip polygon itself (41-municipality union, not a simple
-        # bbox) IS committed as tools/accessibility_cities/gzm/gzm_boundary.geojson,
-        # since re-deriving that from Nominatim in CI would add a flaky
-        # external dependency for no benefit (it's a static admin boundary,
-        # not something that needs re-fetching per run).
+        # .osm.pbf, so nothing local needs publishing for the bbox cities.
+        #
+        # gzm is the one exception: its clip polygon (41-municipality union,
+        # not remotely bbox-shaped) IS committed as
+        # tools/accessibility_cities/gzm/gzm_boundary.geojson, but actually
+        # RUNNING that clip in CI (osmosis --bounding-polygon over the full
+        # ~185MB slaskie region, ~11.7k-vertex polygon) measured 48m30s on a
+        # GH-hosted runner (run 33252314033, 2026-08-29) vs. ~12min locally --
+        # a third of the whole 340min job budget for a step that produces a
+        # deterministic, rarely-changing file. So for gzm we instead download
+        # the already-clipped, already-verified extract from a dedicated
+        # release (not a plugin version release -- see its own notes for how
+        # to regenerate if the source boundary or upstream OSM data changes).
         run: |
           set -euo pipefail
+          if [ "$CITY" = "gzm" ]; then
+            gh release download gzm-osm-extract-2026-08-29 --repo GISBoost/easy-OTP \
+              --pattern "gzm.osm.pbf" --output "${CITY}.osm.pbf" --clobber
+            ls -la "${CITY}.osm.pbf"
+            exit 0
+          fi
           polygon=""
           case "$CITY" in
             warszawa) region=mazowieckie;        bbox="20.8317 52.0778 21.2912 52.3882" ;;
@@ -141,21 +154,13 @@ jobs:
             poznan)   region=wielkopolskie;      bbox="16.7116 52.2719 17.0917 52.5293" ;;
             szczecin) region=zachodniopomorskie; bbox="14.4238 53.3017 14.8254 53.5577" ;;
             kielce)   region=swietokrzyskie;     bbox="20.4905231 50.7732894 20.7406279 50.9350826" ;;
-            gzm)      region=slaskie;            polygon="../accessibility_cities/gzm/gzm_boundary.geojson" ;;
             *) echo "unknown city: $CITY"; exit 1 ;;
           esac
           curl -fL -o region.osm.pbf "https://download.geofabrik.de/europe/poland/${region}-latest.osm.pbf"
-          if [ -n "$polygon" ]; then
-            python3 ../accessibility_cities/geojson_to_poly.py "$polygon" "${CITY}.poly" "$CITY"
-            osmosis --read-pbf file=region.osm.pbf \
-              --bounding-polygon file="${CITY}.poly" completeWays=yes \
-              --write-pbf file="${CITY}.osm.pbf"
-          else
-            read -r left bottom right top <<< "$bbox"
-            osmosis --read-pbf file=region.osm.pbf \
-              --bounding-box left="$left" bottom="$bottom" right="$right" top="$top" completeWays=yes \
-              --write-pbf file="${CITY}.osm.pbf"
-          fi
+          read -r left bottom right top <<< "$bbox"
+          osmosis --read-pbf file=region.osm.pbf \
+            --bounding-box left="$left" bottom="$bottom" right="$right" top="$top" completeWays=yes \
+            --write-pbf file="${CITY}.osm.pbf"
           rm -f region.osm.pbf
           ls -la "${CITY}.osm.pbf"
 
