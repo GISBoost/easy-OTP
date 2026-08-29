@@ -43,7 +43,7 @@
 args <- commandArgs(trailingOnly = TRUE)
 city <- args[1]
 variant <- args[2]
-valid_cities <- c("warszawa", "krakow", "gdansk", "poznan", "szczecin")
+valid_cities <- c("warszawa", "krakow", "gdansk", "poznan", "szczecin", "gzm", "kielce")
 if (!city %in% valid_cities) {
   stop(sprintf("city must be one of: %s", paste(valid_cities, collapse = ", ")))
 }
@@ -67,8 +67,14 @@ r5r_core <- setup_r5(data_path = data_path, verbose = FALSE)
 # 500m) -- explicit call to cut compute time and origin-batch complexity
 # after two failed CI runs (an OOM at 500m, then an isoband contour bug at
 # hour 21:00 that a retry/skip worked around but still cost ~4h10m). Every
-# other city stays at the SES study's 500m grid.
-origins_file <- if (city == "warszawa") "warszawa_hex_origins_1000m.csv" else sprintf("%s_hex_origins.csv", city)
+# other city stays at the SES study's 500m grid, except GZM: a metro area
+# ~5x Warszawa's size, so it starts at 1000m too (3152 origins, measured
+# 2026-08-29 -- see tools/accessibility_cities/gzm/gzm_hex_origins_1000m.csv).
+origins_file <- switch(city,
+  warszawa = "warszawa_hex_origins_1000m.csv",
+  gzm = "gzm_hex_origins_1000m.csv",
+  sprintf("%s_hex_origins.csv", city)
+)
 origins <- data.table::fread(
   file.path("..", "accessibility_cities", city, origins_file),
   colClasses = list(character = "id")
@@ -97,6 +103,15 @@ run_hour <- function(bsize, departure_dt) {
       cutoffs = c(15, 30, 45),
       departure_datetime = departure_dt,
       polygon_output = TRUE,
+      # Capping at the largest cutoff is provably lossless: no single walk
+      # leg (access/egress/transfer) longer than 45 min can ever be part of
+      # a trip that finishes within 45 min anyway, for ANY of the 3 cutoffs.
+      # Measured on GZM (2026-08-29): 10.2x faster (1.14 -> 0.11 s/origin),
+      # 0.0000% area difference across every origin/cutoff vs. unlimited.
+      # Without this, r5r searches an unbounded walk radius for every stop
+      # access/egress/transfer -- the actual driver of GZM's outsized cost
+      # (network complexity, not origin count -- see header comment above).
+      max_walk_time = 45,
       progress = FALSE
     )
   }

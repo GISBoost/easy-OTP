@@ -39,6 +39,9 @@ iso <- isochrone(
   departure_datetime = departure_dt,
   polygon_output = TRUE,
   sample_size = sample_size_param,
+  # Provably lossless, large speedup on complex networks -- see
+  # compute_isochrones_city.R for rationale.
+  max_walk_time = 45,
   progress = TRUE
 )
 elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))

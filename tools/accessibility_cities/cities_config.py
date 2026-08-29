@@ -73,4 +73,22 @@ CITIES = {
             "Pomorski Uniwersytet Medyczny": r"uniwersytet\w*\s*medyczn",
         },
     },
+    "gzm": {
+        # Metropolitan association of 41 municipalities, not a single city --
+        # no ses_income_lodz/gzm.gpkg exists (unlike the other cities here),
+        # so prepare_osm_pbf.py falls back to gzm_boundary.geojson (Nominatim
+        # relation 8269826, verified 2026-08-29) instead of an SES gpkg bbox.
+        # universities/osm_admin_level intentionally omitted -- irrelevant to
+        # the isochrone pipeline, this entry only exists for geofabrik_region.
+        "display_name": "Górnośląsko-Zagłębiowska Metropolia",
+        "geofabrik_region": "slaskie",
+        # bbox clip would pull in a lot of extra Śląskie territory outside
+        # the 41-municipality union (Rybnik, Żory etc. sit right next to it)
+        # -- see prepare_osm_pbf.py's clip_method handling.
+        "clip_method": "polygon",
+    },
+    "kielce": {
+        "display_name": "Kielce",
+        "geofabrik_region": "swietokrzyskie",
+    },
 }

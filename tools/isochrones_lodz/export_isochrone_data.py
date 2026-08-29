@@ -48,6 +48,10 @@ CITY_VARIANTS = {
     "gdansk": ("static", "rt"),
     "poznan": ("static", "rt"),
     "szczecin": ("static", "rt"),
+    # rt only for now -- static GTFS sources found (ztm.kielce.pl, GZM CKAN)
+    # but deferred to a later run, see tools/isochrones_lodz/README.md.
+    "gzm": ("rt",),
+    "kielce": ("rt",),
 }
 
 HERE = Path(__file__).parent
@@ -55,13 +59,13 @@ DATA_DIR = HERE / "data"
 
 
 def load_origins(city: str) -> dict[str, tuple[float, float]]:
-    # Warszawa uses a coarser 1000m grid (668 origins) -- see
+    # Warszawa and GZM use a coarser 1000m grid -- see
     # compute_isochrones_city.R for why. Must match exactly, or the manifest's
     # origin list and the actual per-origin .pbf files disagree.
     if city == "lodz":
         origins_csv = HERE / "lodz_origins_500.csv"
-    elif city == "warszawa":
-        origins_csv = HERE.parent / "accessibility_cities" / city / "warszawa_hex_origins_1000m.csv"
+    elif city in ("warszawa", "gzm"):
+        origins_csv = HERE.parent / "accessibility_cities" / city / f"{city}_hex_origins_1000m.csv"
     else:
         origins_csv = HERE.parent / "accessibility_cities" / city / f"{city}_hex_origins.csv"
     origins = {}

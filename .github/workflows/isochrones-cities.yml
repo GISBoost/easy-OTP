@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       cities:
-        description: 'Comma-separated cities to compute (blank = all 5: warszawa,krakow,gdansk,poznan,szczecin)'
+        description: 'Comma-separated cities to compute (blank = the original 5: warszawa,krakow,gdansk,poznan,szczecin -- gzm/kielce must be requested explicitly, gzm especially is far more expensive)'
         required: false
         default: ''
       variants:
@@ -74,7 +74,11 @@ jobs:
       R5R_JAVA_XMX: "12G"   # 16GB runner: leave ~4GB for OS/R/GDAL/GTFS parsing overhead
       CITY: ${{ matrix.city }}
       VARIANTS: ${{ matrix.variants }}
-      GTFS_DATE: "2026-08-24"  # Monday; see compute_isochrones_city.R header for why
+      # Bumped 2026-08-29 for the gzm/kielce first run (only dates with a
+      # matching easy-GTFS-RT release for those two cities work here) --
+      # doesn't affect compute_isochrones_city.R's own separate hardcoded
+      # departure weekday, only which GTFS-RT release asset gets downloaded.
+      GTFS_DATE: "2026-08-28"
     steps:
       - uses: actions/checkout@v4
 
@@ -106,27 +110,41 @@ jobs:
 
       - name: Download + clip OSM extract for this city
         # Reproduces tools/accessibility_cities/prepare_osm_pbf.py's own clip
-        # exactly (same Geofabrik region, same bbox+margin computed once
-        # locally from ses_income_lodz/<city>.gpkg, same osmosis
-        # completeWays=yes flag -- required, a plain bbox clip crashes R5's
-        # park-and-ride builder on a dangling node ref, hit live on Krakow).
-        # Re-derived from public sources here rather than shipping the
-        # already-clipped local .osm.pbf, so nothing local needs publishing.
+        # exactly (same Geofabrik region, same osmosis completeWays=yes flag
+        # -- required, a plain bbox clip crashes R5's park-and-ride builder
+        # on a dangling node ref, hit live on Krakow). Re-derived from public
+        # sources here rather than shipping the already-clipped local
+        # .osm.pbf, so nothing local needs publishing -- except for gzm,
+        # where the clip polygon itself (41-municipality union, not a simple
+        # bbox) IS committed as tools/accessibility_cities/gzm/gzm_boundary.geojson,
+        # since re-deriving that from Nominatim in CI would add a flaky
+        # external dependency for no benefit (it's a static admin boundary,
+        # not something that needs re-fetching per run).
         run: |
           set -euo pipefail
+          polygon=""
           case "$CITY" in
-            warszawa) region=mazowieckie;       bbox="20.8317 52.0778 21.2912 52.3882" ;;
-            krakow)   region=malopolskie;       bbox="19.7722 49.9477 20.2373 50.1461" ;;
-            gdansk)   region=pomorskie;         bbox="18.4095 54.2550 18.9704 54.4672" ;;
-            poznan)   region=wielkopolskie;     bbox="16.7116 52.2719 17.0917 52.5293" ;;
+            warszawa) region=mazowieckie;        bbox="20.8317 52.0778 21.2912 52.3882" ;;
+            krakow)   region=malopolskie;        bbox="19.7722 49.9477 20.2373 50.1461" ;;
+            gdansk)   region=pomorskie;          bbox="18.4095 54.2550 18.9704 54.4672" ;;
+            poznan)   region=wielkopolskie;      bbox="16.7116 52.2719 17.0917 52.5293" ;;
             szczecin) region=zachodniopomorskie; bbox="14.4238 53.3017 14.8254 53.5577" ;;
+            kielce)   region=swietokrzyskie;     bbox="20.4905231 50.7732894 20.7406279 50.9350826" ;;
+            gzm)      region=slaskie;            polygon="../accessibility_cities/gzm/gzm_boundary.geojson" ;;
             *) echo "unknown city: $CITY"; exit 1 ;;
           esac
-          read -r left bottom right top <<< "$bbox"
           curl -fL -o region.osm.pbf "https://download.geofabrik.de/europe/poland/${region}-latest.osm.pbf"
-          osmosis --read-pbf file=region.osm.pbf \
-            --bounding-box left="$left" bottom="$bottom" right="$right" top="$top" completeWays=yes \
-            --write-pbf file="${CITY}.osm.pbf"
+          if [ -n "$polygon" ]; then
+            python3 ../accessibility_cities/geojson_to_poly.py "$polygon" "${CITY}.poly" "$CITY"
+            osmosis --read-pbf file=region.osm.pbf \
+              --bounding-polygon file="${CITY}.poly" completeWays=yes \
+              --write-pbf file="${CITY}.osm.pbf"
+          else
+            read -r left bottom right top <<< "$bbox"
+            osmosis --read-pbf file=region.osm.pbf \
+              --bounding-box left="$left" bottom="$bottom" right="$right" top="$top" completeWays=yes \
+              --write-pbf file="${CITY}.osm.pbf"
+          fi
           rm -f region.osm.pbf
           ls -la "${CITY}.osm.pbf"
 

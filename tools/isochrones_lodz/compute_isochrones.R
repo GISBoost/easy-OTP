@@ -48,6 +48,10 @@ for (i in seq_along(hours)) {
     cutoffs = c(15, 30, 45),
     departure_datetime = departure_dt,
     polygon_output = TRUE,
+    # Provably lossless (no walk leg > the largest cutoff can ever be part
+    # of a trip within it) and a large speedup on complex networks -- see
+    # compute_isochrones_city.R for the full rationale + GZM measurement.
+    max_walk_time = 45,
     progress = FALSE
   )
   iso$hour <- h
