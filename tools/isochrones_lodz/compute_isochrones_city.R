@@ -4,14 +4,25 @@
 # names, not worth unifying for one extra branch).
 #
 # Both static and realized (GTFS-RT P50) variants are computed here, same as
-# Lodz -- fetched fresh from the 2026-08-24 (Monday) easy-GTFS-RT release for
-# each city, which bundles BOTH a realized_p50.zip AND a static_gtfs.zip for
-# that exact day (see setup_city_networks.sh). This is a cleaner setup than
-# tools/accessibility_cities' own SES-study runs, which used a Saturday
-# recording (2026-08-22) with the departure date patched forward to Monday --
-# workable for a single median-cutoff accessibility number, but here we want
-# both variants genuinely describing the same service day, so we use the
-# release that actually recorded that Monday.
+# Lodz -- fetched fresh from a dated easy-GTFS-RT release for each city,
+# which bundles BOTH a realized_p50.zip AND a static_gtfs.zip for that exact
+# day (see setup_city_networks.sh / the workflow's GTFS_DATE env). This is a
+# cleaner setup than tools/accessibility_cities' own SES-study runs, which
+# used a Saturday recording (2026-08-22) with the departure date patched
+# forward to Monday -- workable for a single median-cutoff accessibility
+# number, but here we want both variants genuinely describing the same
+# service day, so we use the release that actually recorded that day.
+#
+# The departure date used below MUST match a day the fetched GTFS release
+# actually has active service for (see GTFS_DATE below) -- for the original
+# 5 cities the release happened to be a Monday, but GZM's turned out to be a
+# single-day Friday-only extract (calendar.txt: one service_id, active only
+# 2026-08-28, empty calendar_dates.txt). A hardcoded "24-08-2026" ignored
+# that: isochrone(mode = c("WALK","TRANSIT")) doesn't error when 0 GTFS
+# trips are active on the queried date, it silently returns walk-only
+# results for every origin/hour -- exactly what shipped for GZM until fixed
+# 2026-08-31. Bug caught with tools/isochrones_lodz/verify_departure_date.R;
+# run it against any new city's GTFS zip before trusting a CI compute.
 #
 # Same origins x hours x cutoffs budget as Lodz (500m hex grid, hourly
 # 06:00-22:00, 15/30/45 min cutoffs) -- reuses each city's existing
@@ -68,11 +79,13 @@ r5r_core <- setup_r5(data_path = data_path, verbose = FALSE)
 # after two failed CI runs (an OOM at 500m, then an isoband contour bug at
 # hour 21:00 that a retry/skip worked around but still cost ~4h10m). Every
 # other city stays at the SES study's 500m grid, except GZM: a metro area
-# ~5x Warszawa's size, so it starts at 1000m too (3152 origins, measured
-# 2026-08-29 -- see tools/accessibility_cities/gzm/gzm_hex_origins_1000m.csv).
+# ~5x Warszawa's size. Started at 1000m (3152 origins, measured 2026-08-29),
+# bumped to 2000m (833 origins, measured 2026-08-31) to cut compute cost
+# further and reduce the per-origin file count on the Cloudflare Pages
+# deploy -- see tools/accessibility_cities/gzm/gzm_hex_origins_2000m.csv.
 origins_file <- switch(city,
   warszawa = "warszawa_hex_origins_1000m.csv",
-  gzm = "gzm_hex_origins_1000m.csv",
+  gzm = "gzm_hex_origins_2000m.csv",
   sprintf("%s_hex_origins.csv", city)
 )
 origins <- data.table::fread(
@@ -122,9 +135,15 @@ hours <- 6:22  # 06:00 .. 22:00, 17 steps -- same budget as Lodz
 results <- vector("list", length(hours))
 skipped_hours <- integer(0)
 
+# GTFS_DATE (ISO, set by the workflow -- see header comment above for why
+# this must match the fetched release's active service day) picks the
+# departure date; "2026-08-24" is the historical hardcoded default, kept as
+# a fallback for local runs where the env isn't set.
+gtfs_date <- as.Date(Sys.getenv("GTFS_DATE", "2026-08-24"))
+
 for (i in seq_along(hours)) {
   h <- hours[i]
-  departure_dt <- as.POSIXct(sprintf("24-08-2026 %02d:00:00", h), format = "%d-%m-%Y %H:%M:%S")
+  departure_dt <- as.POSIXct(sprintf("%s %02d:00:00", format(gtfs_date, "%d-%m-%Y"), h), format = "%d-%m-%Y %H:%M:%S")
   t0 <- Sys.time()
   iso <- tryCatch(
     run_hour(batch_size, departure_dt),

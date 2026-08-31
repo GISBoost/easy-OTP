@@ -12,11 +12,12 @@ origin so the browser fetches one small file per hovered/clicked point, and
 builds manifest.json.
 
 Usage: py export_isochrone_data.py <city> <variant: static|rt>
-  All 6 cities have both variants -- for the 5 non-Lodz cities, static+realized
-  were fetched fresh from the 2026-08-24 easy-GTFS-RT release (see
-  setup_city_networks.sh / compute_isochrones_city.R), not reused from
+  All 6 SES-study cities have both variants -- static+realized were fetched
+  fresh from a dated easy-GTFS-RT release (see setup_city_networks.sh /
+  compute_isochrones_city.R's GTFS_DATE env), not reused from
   tools/accessibility_cities (whose own SES-study run only ever needed the
-  realized GTFS, on a different day).
+  realized GTFS, on a different day). GZM/Kielce are rt-only, see
+  CITY_VARIANTS below.
 
 Input:  lodz: <variant>_isochrones_ogr.geojson, lodz_origins_500.csv
         other cities: <city>_<variant>_isochrones_ogr.geojson (from the
@@ -59,13 +60,15 @@ DATA_DIR = HERE / "data"
 
 
 def load_origins(city: str) -> dict[str, tuple[float, float]]:
-    # Warszawa and GZM use a coarser 1000m grid -- see
+    # Warszawa uses a coarser 1000m grid and GZM a coarser 2000m grid -- see
     # compute_isochrones_city.R for why. Must match exactly, or the manifest's
     # origin list and the actual per-origin .pbf files disagree.
     if city == "lodz":
         origins_csv = HERE / "lodz_origins_500.csv"
-    elif city in ("warszawa", "gzm"):
+    elif city == "warszawa":
         origins_csv = HERE.parent / "accessibility_cities" / city / f"{city}_hex_origins_1000m.csv"
+    elif city == "gzm":
+        origins_csv = HERE.parent / "accessibility_cities" / city / f"{city}_hex_origins_2000m.csv"
     else:
         origins_csv = HERE.parent / "accessibility_cities" / city / f"{city}_hex_origins.csv"
     origins = {}
