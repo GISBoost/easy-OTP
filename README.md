@@ -23,6 +23,7 @@ companion repositories that automate recording and publishing the results.
 | [`tools/analysis/`](tools/analysis/README.md) | Ad-hoc population and GTFS-RT analysis scripts |
 | [`tools/rt_diagnose/`](tools/rt_diagnose/README.md) | Diagnoses why a live GTFS-RT feed isn't matching a static GTFS (the RT-1 "0 trip updates" blocker) |
 | [`tools/network/`](tools/network/README.md) | Guide for preparing a custom OSM network |
+| [`Easy-R5`](https://github.com/GISBoost/easy-R5) | Sibling QGIS plugin on the Conveyal R5 engine — travel-time matrices and cumulative accessibility over a departure-time window; also hosts the r5r accessibility/isochrone studies that used to live in this repo's `tools/` |
 | [`easy-GTFS-RT`](https://github.com/GISBoost/easy-GTFS-RT) | CI/CD workflows that record GTFS-RT on a schedule and run `family_a_reconstruction` automatically |
 | [`gtfs-dashboard`](https://github.com/GISBoost/gtfs-dashboard) | Static site publishing the resulting realized GTFS feeds and charts |
 
