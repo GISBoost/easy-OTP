@@ -2,10 +2,9 @@
 set -euo pipefail
 
 # On-demand custom recording wrapper for the easy-GTFS-RT Termux phone-recording
-# experiment (TX-5). Direct-Termux equivalent of FA-9's workflow_dispatch and
-# OR-5's oracle_record_custom.sh - run manually by Michal when he wants a
-# recording of arbitrary duration/interval/suffix without waiting for
-# record_supervised.sh's (TX-2) fixed 6:00-22:00 window.
+# experiment (TX-5). Direct-Termux equivalent of FA-9's workflow_dispatch - run
+# manually by Michal when he wants a recording of arbitrary duration/interval/suffix
+# without waiting for record_supervised.sh's (TX-2) fixed 6:00-22:00 window.
 
 if [ "$#" -ne 4 ]; then
   echo "Usage: record_custom.sh <city_id> <duration_minutes> <interval_seconds> <suffix>" >&2

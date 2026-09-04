@@ -1,13 +1,16 @@
 # Termux phone-recording server (easy-GTFS-RT, TX-1..TX-8)
 
 Turns Michal's Android phone into an always-on GTFS-RT VehiclePositions recorder, feeding the
-same `family_a` pipeline used by the GitHub-Actions-only track (FA-*) and the Oracle Cloud VM
-track (OR-*). This is the Termux ("TX-") track: phone-side recording + GitHub-side
-build/publish/monitoring. Since TX-8, one phone can record **multiple cities in parallel**, each
-its own supervised process. Full design rationale lives in
-`docs/prd/PR_easy-OTP_termux-migration.md` and the milestone-by-milestone prompts in
+same `family_a` pipeline used by the GitHub-Actions-only track (FA-*). This is the Termux ("TX-")
+track: phone-side recording + GitHub-side build/publish/monitoring. Since TX-8, one phone can
+record **multiple cities in parallel**, each its own supervised process. Full design rationale
+lives in `docs/prd/PR_easy-OTP_termux-migration.md` and the milestone-by-milestone prompts in
 `docs/prompts/termux-migration_prompts_for-claude-code.md` (both local-only, see note at the
 bottom).
+
+**The Oracle Cloud VM track (OR-*) is abandoned, not a fallback/alternative to this one**
+(2026-09-04). `scripts/oracle/` was deleted; do not recreate it or suggest Oracle Cloud as an
+option when this track has problems - fix the phone-side setup instead.
 
 ## Multi-city config (TX-8)
 
@@ -435,9 +438,17 @@ down`/`up` only needed for files a `family-a-record-<city>` service actually run
   as `sweep_and_upload.sh` logging "Dispatched build..." forever while no build ever runs (and the
   healthcheck eventually alerting, since the raw release itself did upload but nothing consumed
   it). Keep both in sync if either ever changes.
-- **`family_a/cli.py` always imports `numpy`/`pandas`**, even for the plain `record` subcommand -
-  the phone needs the full `requirements.txt`, not just recorder-only dependencies. This is a
-  deliberate decision (not touching shared `cli.py` for one track) - see PRD section 3.
+- **`family_a/cli.py`'s `record` subcommand no longer imports `numpy`/`pandas`** (fixed
+  2026-09-04). It used to, unconditionally, on the theory that the phone needs the full
+  `requirements.txt` anyway - but with 30 cities recording concurrently, that cost ~55-58 MB RSS
+  per `record` process (~1.6 GB total) and was found to be the dominant cause of the phone's
+  chronic low-memory state, which in turn made Android kill the whole Termux app under load with
+  no way to recover short of manually reopening it. `pandas`/`numpy` are now imported lazily
+  inside `_cmd_match`/`_cmd_build` (cli.py) and inside `matcher.match_snapshots`/
+  `segment_stats.collect_stop_crossings` - `match`/`build` are unaffected, `record` no longer pays
+  the cost at all. See `tests/test_cli_lazy_imports.py` for the regression guard. The phone still
+  needs the full `requirements.txt` installed (match/build run there too via the RT-side pipeline
+  in some tracks) - only the *import*, not the dependency, became conditional.
 - **`GH_TOKEN` (the fine-grained PAT in `~/.easy-gtfs-rt-termux.env`) expires** - fine-grained
   PATs have a mandatory expiry (commonly set to 90 days at creation). Only `sweep_and_upload.sh`
   uses it - since TX-7, that includes both the upload calls **and** the `repository_dispatch`
