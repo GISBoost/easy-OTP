@@ -21,8 +21,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import pandas as pd
-
 from family_a.build_gtfs import (
     DEFAULT_DWELL_MODE,
     DEFAULT_MAX_UNKNOWN_TRIP_SHARE,
@@ -67,6 +65,8 @@ from family_a.segment_stats import (
 from family_a.shape_dist import evaluate_shape_trust, evaluate_trip_trust
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from family_a.build_gtfs import StaticIndex
 
 
@@ -573,6 +573,13 @@ def _report_build_diagnostics(
 
 
 def _cmd_match(args: argparse.Namespace) -> int:
+    # Deferred, not module-top: 'record' (the phone-side subcommand, ~30 concurrent processes on
+    # the Termux recorder) never reaches this function and must not pay pandas's ~50 MB/process
+    # import cost for it. See main()/build_parser(): the parser is built (and its DEFAULT_*
+    # constants read) for every subcommand regardless, but a subcommand's own body - this one -
+    # only runs once argparse has actually dispatched to it.
+    import pandas as pd
+
     positions_dirs = [Path(p) for p in args.positions_dir]
 
     # Reject the same directory given twice up front - per_dir_snapshots below
@@ -841,6 +848,10 @@ def _cmd_match(args: argparse.Namespace) -> int:
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
+    # Deferred, not module-top: see _cmd_match's own comment above - 'record' never reaches this
+    # function either and must not pay pandas's import cost.
+    import pandas as pd
+
     matched_path = Path(args.matched)
     try:
         if matched_path.suffix.lower() == ".parquet":

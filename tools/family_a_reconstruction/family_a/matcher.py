@@ -55,8 +55,6 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
-
 logger = logging.getLogger(__name__)
 
 _R_M = 6_371_000.0
@@ -825,6 +823,14 @@ def match_snapshots(
     FA-1's snapshot_YYYYmmdd-HHMMSS.pb naming), independent of the order
     snapshot_paths is passed in.
     """
+    # Deferred, not module-top: this is the only function in this module that needs pandas, and
+    # this module is imported (for its non-pandas helpers/constants) by cli.py's 'record'
+    # subcommand too - the phone-side recorder, which runs ~30 concurrent processes and never
+    # calls match_snapshots. A module-top `import pandas as pd` used to cost every one of those
+    # processes ~50 MB of RSS for nothing; see cli.py's own _cmd_match/_cmd_build for the same
+    # pattern.
+    import pandas as pd
+
     ordered_paths = sorted(snapshot_paths, key=lambda p: p.name)
 
     rejects = {

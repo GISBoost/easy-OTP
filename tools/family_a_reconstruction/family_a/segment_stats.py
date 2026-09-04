@@ -19,8 +19,6 @@ import zoneinfo
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-import pandas as pd
-
 from family_a.build_gtfs import SegmentKey, segment_key_for
 from family_a.calendar_scope import day_type_for_date, time_bucket_for_seconds
 from family_a.interpolate import (
@@ -570,6 +568,12 @@ def collect_stop_crossings(
     (series, distance) - but the counts differ: bracket_gap_rejected counts CALLS, so this
     function reports roughly half as many for the same data. Same event, different denominator.
     """
+    # Deferred, not module-top: see cli.py's _cmd_match/_cmd_build for why - this module is
+    # imported (for its non-pandas helpers) by the phone-side recorder path too, which never
+    # calls this function, and a module-top `import pandas as pd` used to cost every one of its
+    # ~30 concurrent processes ~50 MB of RSS for nothing.
+    import pandas as pd
+
     counts = {
         "trips_processed": 0,
         "trips_skipped_unresolvable": 0,
