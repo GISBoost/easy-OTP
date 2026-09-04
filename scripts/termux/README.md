@@ -56,8 +56,6 @@ zone, so `TIMEZONE` is optional for them - only cosmetic if set). For the EU com
 | `lisbon` | `Europe/Lisbon` |
 | `boston` | `America/New_York` |
 | `brisbane` | `Australia/Brisbane` |
-| `helsinki` | `Europe/Helsinki` |
-| `amsterdam` | `Europe/Warsaw` (optional - same offset as Warsaw) |
 | `zagreb` | `Europe/Zagreb` (optional - same offset as Warsaw) |
 | `nicosia` | `Asia/Nicosia` |
 | `riga` | `Europe/Riga` |
@@ -89,20 +87,31 @@ not a re-run of the discovery spike. All verified `auth=none` (no API key needed
 | `lisbon` | `https://gateway.carris.pt/gateway/gtfs/api/v2.11/GTFS/realtime/vehiclepositions` |
 | `boston` | `https://cdn.mbta.com/realtime/VehiclePositions.pb` |
 | `brisbane` | `https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions` |
-| `amsterdam` | `http://gtfs.ovapi.nl/nl/vehiclePositions.pb` |
 | `zagreb` | `https://www.zet.hr/gtfs-rt-protobuf` |
 | `nicosia` | `http://20.19.98.194:8328/Api/api/gtfs-realtime` |
 | `riga` | `https://saraksti.rigassatiksme.lv/vehicle_positions.pb` |
 | `ljubljana` | `https://rt.gtfs.derp.si/sources/lpp/all` (community mirror, not LPP's own API - see note below) |
 
-**`helsinki` is deliberately NOT in `config/cities.json` and must stay that way.** HSL's
-`VehiclePositions.pb` has **zero populated `trip_id`** on every entity (only `route_id`,
-e.g. `31M2`) - confirmed 2026-08-15 by decoding the live feed. `family_a`'s matcher is keyed
-strictly on `trip_id` with no route_id fallback (`family_a/matcher.py`), so this feed can never
-be matched to static GTFS as things stand. Its phone-side recording (`cities/helsinki.env` +
-`family-a-record-helsinki` service) is left running anyway - harmless, and kept in case HSL's
-feed ever gains `trip_id` or a route_id-based matching path gets built - but **do not add a
-`helsinki` key to `cities.json`**; a build would either fail outright or silently match nothing.
+**`helsinki` and `amsterdam` were recorded, then fully decommissioned (removed from phone
+recording and, for `amsterdam`, from `config/cities.json`) on 2026-09-04** after both produced a
+failed `<city> — build (phone)` GitHub Actions run every single day since at least 2026-08-28:
+- `helsinki` was deliberately never a key in `config/cities.json` - HSL's `VehiclePositions.pb`
+  has **zero populated `trip_id`** on every entity (only `route_id`, e.g. `31M2`) - confirmed
+  2026-08-15 by decoding the live feed, and `family_a`'s matcher is keyed strictly on `trip_id`
+  with no route_id fallback (`family_a/matcher.py`), so this feed could never be matched. Its
+  phone-side recording used to be left running anyway ("harmless, kept in case HSL's feed ever
+  gains trip_id") - but `sweep_and_upload.sh` dispatched a build for it every day regardless of
+  `cities.json`, and that dispatch always failed at `resolve_targets` ("is not a key in
+  config/cities.json") - a daily failure notification for a limitation that was never going to
+  change. If HSL's feed ever gains `trip_id`, re-add it as a new city from scratch rather than
+  reviving this one.
+- `amsterdam`'s `static_gtfs_url` (`http://gtfs.ovapi.nl/gtfs-nl.zip`) is OVapi's **whole-Netherlands**
+  static feed, not scoped to Amsterdam - confirmed in a failed run's log
+  (`gh run view 33435108428 --log-failed`): thousands of `shape_dist.py` "unit convention" warnings
+  (one per shape in the entire country's network) before GitHub cancelled the runner
+  ("received a shutdown signal") a few minutes in. A national feed was never a workable `--static`
+  for a single-city build at this tool's per-shape processing cost; fixing it would need a
+  city/region-scoped OVapi extract, which was never set up, so the city was dropped instead.
 
 Notes from the spike:
 - **Prague (Golemio)** has historically required a free `X-Access-Token` for some endpoints; this
