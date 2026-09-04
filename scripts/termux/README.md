@@ -58,7 +58,6 @@ zone, so `TIMEZONE` is optional for them - only cosmetic if set). For the EU com
 | `brisbane` | `Australia/Brisbane` |
 | `zagreb` | `Europe/Zagreb` (optional - same offset as Warsaw) |
 | `nicosia` | `Asia/Nicosia` |
-| `riga` | `Europe/Riga` |
 | `ljubljana` | `Europe/Ljubljana` (optional - same offset as Warsaw) |
 
 Without this, every city's recording window was silently evaluated in Europe/Warsaw wall-clock
@@ -89,12 +88,12 @@ not a re-run of the discovery spike. All verified `auth=none` (no API key needed
 | `brisbane` | `https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions` |
 | `zagreb` | `https://www.zet.hr/gtfs-rt-protobuf` |
 | `nicosia` | `http://20.19.98.194:8328/Api/api/gtfs-realtime` |
-| `riga` | `https://saraksti.rigassatiksme.lv/vehicle_positions.pb` |
 | `ljubljana` | `https://rt.gtfs.derp.si/sources/lpp/all` (community mirror, not LPP's own API - see note below) |
 
-**`helsinki` and `amsterdam` were recorded, then fully decommissioned (removed from phone
-recording and, for `amsterdam`, from `config/cities.json`) on 2026-09-04** after both produced a
-failed `<city> — build (phone)` GitHub Actions run every single day since at least 2026-08-28:
+**`helsinki`, `amsterdam` and `riga` were recorded, then fully decommissioned (removed from phone
+recording and, where they were ever a key, from `config/cities.json`) on 2026-09-04** after all
+three produced a failed `<city> — build (phone)` GitHub Actions run every single day since at
+least 2026-08-28:
 - `helsinki` was deliberately never a key in `config/cities.json` - HSL's `VehiclePositions.pb`
   has **zero populated `trip_id`** on every entity (only `route_id`, e.g. `31M2`) - confirmed
   2026-08-15 by decoding the live feed, and `family_a`'s matcher is keyed strictly on `trip_id`
@@ -112,6 +111,20 @@ failed `<city> — build (phone)` GitHub Actions run every single day since at l
   ("received a shutdown signal") a few minutes in. A national feed was never a workable `--static`
   for a single-city build at this tool's per-shape processing cost; fixing it would need a
   city/region-scoped OVapi extract, which was never set up, so the city was dropped instead.
+- `riga`'s `VEHICLE_POSITIONS_URL` above (`saraksti.rigassatiksme.lv`) has been completely
+  unreachable since 2026-08-16 (confirmed independently three ways: daily build failures since,
+  a direct `curl` from two networks timing out at the TCP level, and Transitland's own fetcher
+  hitting the identical `i/o timeout` against the same IP). The static side was fixed 2026-09-04
+  (`data.gov.lv`'s CKAN portal - see `easy-GTFS-RT` commit `98800a3`, and
+  `config/cities.json`'s now-unused `static_gtfs_ckan_url` mechanism), but a thorough search
+  (official Rīgas Satiksme channels, `saraksti.lv`'s closed `gpsdata.ashx` API, Transitland,
+  Mobility Database) found no live GTFS-RT replacement - the closest hit,
+  `stops.lt/rigatest/vehicle_positions.pb` (same provider as our working Vilnius feed), is a
+  frozen test fixture (byte-identical across fetches, header timestamp stuck at 2026-02-14; no
+  `stops.lt/riga/` production path exists, 404s). Recording a frozen feed would silently produce
+  fake-looking-but-stale data, worse than no data - so the city was dropped rather than wired up
+  to it. Re-add if either a real `stops.lt/riga/...` deployment appears or Rīgas Satiksme
+  publishes a live feed of their own.
 
 Notes from the spike:
 - **Prague (Golemio)** has historically required a free `X-Access-Token` for some endpoints; this
