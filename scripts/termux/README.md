@@ -212,6 +212,26 @@ healthcheck, and TX-7/TX-8's workflow half live in the `easy-GTFS-RT` repo
 | `sweep_and_upload.sh` | TX-3 (+TX-7, +TX-8) | every 15 min, all day, via `cronie` | Per configured city: uploads unsent recordings as a raw GitHub pre-release once that city's own local window has closed, then fires (and retries, if needed) a `repository_dispatch` event (carrying that city's id) to start its build immediately |
 | `record_custom.sh <city>` | TX-5 (+TX-8) | manually, on demand | `record_custom.sh <city_id> <duration_min> <interval_sec> <suffix>` - one-off recording outside the normal window |
 | `archive_monthly.sh` | TX-9 | once a day, via `cronie` | Per configured city, once its previous local month has ended: solid tar+xz's that month's raw recording directories, uploads to a `raw-snapshots-<YYYY-MM>` release, then deletes them locally - a no-op on all but the first few days of a new month |
+| `fetch_polish_trains_rt.sh` | TX-10 | once a day, via `cronie` | Fetches the mkuran.pl Polish national rail **TripUpdates** aggregate (`polish_trains/updates.pb`) for the settled previous service day, gzips it, uploads to a `polish-trains-tripupdates-raw-<YYYY-MM>` release. Not a recording loop - the feed already carries the whole previous day. The only realtime source for ŁKA; see `docs/reference/RT-3_realized-gtfs-notes.md` and `tools/family_b_realized/`. |
+
+### TX-10 - Polish rail TripUpdates daily fetch
+
+Standalone from everything above: no `cities/<id>.env`, no runit service, not tied to
+`config/cities.json`. ŁKA (and all Polish rail) publishes no VehiclePositions feed, only
+a national TripUpdates aggregate with ~2-day retention - so one cron fetch per day, before
+that window closes, is the whole job. A GitHub Actions workflow
+(`easy-GTFS-RT/.github/workflows/polish-trains-tripupdates-fetch.yml`) writes the same
+filename to the same monthly release as a backup; whichever runs first wins.
+
+One-time setup (after `fetch_polish_trains_rt.sh` is in `~/easy-gtfs-rt-termux/` and `chmod +x`):
+
+```
+(crontab -l 2>/dev/null; echo "30 3 * * * /data/data/com.termux/files/usr/bin/bash /data/data/com.termux/files/home/easy-gtfs-rt-termux/fetch_polish_trains_rt.sh >> /data/data/com.termux/files/home/easy-gtfs-rt-termux/logs/polish_trains_rt.log 2>&1") | crontab -
+```
+
+`crontab -l` should now show this line alongside TX-3's and TX-9's. Picked up on reboot by
+`boot/start-services.sh` via `crond`, same as the others - no boot-script change. Uses the
+shared `$GH_TOKEN` from `~/.easy-gtfs-rt-termux.env`; no new secret.
 
 ## One-time phone setup (how this was built)
 
