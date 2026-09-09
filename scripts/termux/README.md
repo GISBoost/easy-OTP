@@ -126,6 +126,16 @@ least 2026-08-28:
   to it. Re-add if either a real `stops.lt/riga/...` deployment appears or Rīgas Satiksme
   publishes a live feed of their own.
 
+**`lka` (Łódzka Kolej Aglomeracyjna) VehiclePositions recording was decommissioned
+2026-09-09** — for a different reason than the three above: the feed worked, but it was the
+**wrong network**. The `lka` key's `VEHICLE_POSITIONS_URL` (a `zbiorkom.live` replacement-bus
+feed) has nothing to do with the ŁKA rail network — see
+`easy-R5/docs/notes/lka-gtfs-audit.md`. ŁKA rail has no VehiclePositions feed at all; its
+realized GTFS is now built from the national **TripUpdates** aggregate by TX-10 above
+(`fetch_polish_trains_rt.sh`) → `easy-OTP/tools/family_b_realized/`. Removed from
+`config/cities.json` (`easy-GTFS-RT`), and phone-side `service/family-a-record-lka/` +
+`cities/lka.env` removed directly via SSH, same as helsinki/amsterdam/riga.
+
 Notes from the spike:
 - **Prague (Golemio)** has historically required a free `X-Access-Token` for some endpoints; this
   one returned HTTP 200 with no key in the 2026-07-15 spike test - re-check if it starts failing.
