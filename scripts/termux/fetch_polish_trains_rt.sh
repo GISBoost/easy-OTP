@@ -54,7 +54,15 @@ OUT_PATH="${WORK_DIR}/polish_trains_rt/${ASSET_NAME}"
 
 echo "$(date -Iseconds) fetching ${FEED_URL} for service day ${DAY}"
 
-if ! curl -fsSL --max-time 180 "$FEED_URL" | gzip -9 > "$OUT_PATH"; then
+# gzip is not always on PATH under cron: it's a Termux package (pkg install gzip; lands in
+# $PREFIX/bin, always on PATH) that may not be installed, and Android's own /system/bin/gzip
+# - while it exists on most devices - is only reachable from an interactive login shell's
+# wider PATH, not cron's. Resolve explicitly instead of assuming either is on PATH; without
+# this, a missing $PREFIX/bin/gzip fails every run silently under cron (confirmed 2026-09-10
+# .. 2026-09-13: 100% failure rate here while the GitHub Actions backup carried every day).
+GZIP_BIN="$(command -v gzip || echo /system/bin/gzip)"
+
+if ! curl -fsSL --max-time 180 "$FEED_URL" | "$GZIP_BIN" -9 > "$OUT_PATH"; then
   echo "$(date -Iseconds) WARNING: fetch/compress failed - will retry next run" >&2
   rm -f "$OUT_PATH"
   exit 1
