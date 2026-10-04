@@ -6,7 +6,7 @@ potrafi też zbudować dane od zera z nagrania GTFS-RT. Działa na Twoim kompute
 jest wysyłane w sieć poza pobieraniem danych z katalogu online (patrz [§ 8](#8-skąd-wziąć-dane-gtfs-dashboard)).
 
 > English version: [README.en.md](README.en.md).
-> Przykłady analiz z gotowymi wykresami: [PRZYKLADY.md](PRZYKLADY.md).
+> Przykłady analiz z gotowymi wykresami: [EXAMPLES.md](EXAMPLES.md).
 > Opis techniczny i decyzje projektowe: `docs/prd/PR_easy-OTP_chart_lab_v02.md` (lokalnie).
 
 ## 1. Uruchomienie

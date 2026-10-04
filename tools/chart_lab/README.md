@@ -30,16 +30,16 @@ way. `analysis/*` scripts are not covered either.
   `manifest.json` on GitHub Pages — never the GitHub REST API — then downloaded and cached
   locally on first use).
 
-**Dokumentacja:** pełna instrukcja użytkownika — [`manual/INSTRUKCJA.md`](manual/INSTRUKCJA.md); przykłady analiz
-na danych z gtfs-dashboard (bunching, D15, porównanie miast) — [`manual/PRZYKLADY.md`](manual/PRZYKLADY.md). English user guide — [`manual/README.en.md`](manual/README.en.md).
+**Documentation:** full user guide — [`manual/README.en.md`](manual/README.en.md) (Polish version:
+[`manual/README.md`](manual/README.md)); worked analyses on gtfs-dashboard data (bunching, D15,
+city comparison) — [`manual/EXAMPLES.md`](manual/EXAMPLES.md) (Polish).
 
-## Uruchomienie
+## Running
 
-**Gotowy plik Windows** (najprostsza opcja, bez instalowania Pythona): pobierz z zakładki
-Releases tego repo (tag `chart_lab-v*`), rozpakuj, uruchom `chart_lab.exe`. W przeglądarce
-otworzy się strona aplikacji.
+**Ready-made Windows build** (simplest, no Python needed): download it from this repo's Releases
+(tag `chart_lab-v*`), unzip, run `chart_lab.exe`. The app opens in your browser.
 
-**Ze źródeł** (do developmentu):
+**From source** (for development):
 ```bat
 cd tools\chart_lab
 py -m venv .venv
@@ -48,59 +48,38 @@ pip install -r requirements.txt
 py -m chart_lab.app
 ```
 
-## Instrukcja obsługi (krok po kroku)
+## Quick guide
 
-Po uruchomieniu w przeglądarce otwiera się jedna strona, od góry w dół:
+The app is a single page, top to bottom:
 
-1. **Sekcja "Data"** — skąd biorą się dane do wykresów:
-   - Po lewej: pole do wgrania własnej tabeli tidy (plik `.csv`/`.csv.gz`/`.parquet`
-     wygenerowany przez `transit_charts extract`) — przeciągnij plik albo kliknij, żeby
-     wybrać z dysku.
-   - Po prawej: **"Active tables"** — checkboxy wszystkich wczytanych tabel. Domyślnie
-     zaznaczona jest dołączona przykładowa tabela (Łódź, 2026-07-23). Możesz mieć
-     zaznaczonych kilka naraz — wykresy liczą się wtedy ze wszystkich razem (to wymagane
-     dla niektórych wykresów, patrz punkt 5).
-2. **"Online catalogue"** (zwinięty panel, kliknij żeby rozwinąć) — dane już nagrane dla
-   innych miast, publikowane przez `gtfs-dashboard`:
-   - Kliknij **"1. Fetch available cities"**, żeby pobrać listę dostępnych miast.
-   - Zawęź wybór trzema rozwijanymi listami z rzędu: **City** → **Month** → **Day** (każda
-     kolejna pokazuje tylko to, co pasuje do wcześniejszego wyboru — żadna z nich nie jest
-     jedną wielką listą wszystkich miast/dni naraz).
-   - Kliknij **"2. Download and add to active tables"** — plik się pobierze (i zapisze w
-     lokalnym cache, więc drugi raz nie czeka), wejdzie do listy "Active tables" i od razu
-     zostanie zaznaczony.
-3. **"Chart"** — rozwijana lista wszystkich 16 wykresów `transit_charts`, opisana kodem i
-   nazwą (np. "C9 — dot-and-whisker delay per stop"). Pod listą pojawia się jedno zdanie
-   wyjaśniające, co dany wykres właściwie pokazuje. Wybór wykresu automatycznie pokazuje
-   tylko te parametry, których ten konkretny wykres używa — reszta jest ukryta.
-4. **Parametry** (widoczne zależnie od wykresu) — trasa i wykluczone trasy (**Route(s)** /
-   **Exclude route(s)**) wybiera się klikając w siatkę przycisków, nie z rozwijanej listy;
-   dla większości wykresów trzeba wybrać dokładnie jedną trasę. Kierunek to również klikane
-   przyciski. Reszta (szerokość kubełka czasowego, próg `min n`, próg pokrycia kursu, próg
-   bunching itd.) to suwaki. Każda zmiana od razu przerysowuje wykres — nie ma osobnego
-   przycisku "generuj". Najedź na etykietę dowolnego pola, żeby zobaczyć krótkie
-   wyjaśnienie, co ono robi.
-5. Niektóre wykresy (D15, E20, J39) wymagają kilku tabel naraz (D15 — co najmniej 3 dni;
-   E20/J39 — co najmniej 2 różne miasta). Jeśli aktywnych tabel jest za mało, zamiast
-   wykresu pojawia się czytelny komunikat (⚠️) mówiący, czego brakuje — dodaj kolejne
-   tabele przez upload albo katalog online i wybór zniknie sam.
-6. Wygenerowany wykres pojawia się poniżej, a pod nim — **"Downloads"**: PNG wykresu, CSV
-   z policzonymi liczbami i JSON z parametrami/źródłem (plus HTML, jeśli zaznaczono "Also
-   write interactive HTML" dla wykresów, które to obsługują — C9/C10/B6).
+1. **Data** — upload your own tidy table (`.csv`/`.csv.gz`/`.parquet` from `transit_charts
+   extract`) and tick the tables to use under **Active tables**. The bundled example (Łódź,
+   2026-07-23) is ticked by default; several tables can be active at once.
+2. **Online catalogue** (collapsed panel) — already-recorded city-days from `gtfs-dashboard`:
+   *1. Fetch available cities* → **City** → **Month** → **Day** → *2. Download and add to active
+   tables* (cached locally after the first download).
+3. **Chart** — pick one of the 16 charts; a one-line description appears below, and only the
+   parameters that chart uses are shown.
+4. **Parameters** — routes and direction are picked with buttons, the rest are sliders. Any
+   change redraws the chart immediately; hover a label for its description.
+5. D15 needs ≥ 3 tables from different days; E20/J39 need ≥ 2 different cities. Otherwise a ⚠️
+   message says what is missing.
+6. **Downloads** under the chart: PNG, CSV with the plotted numbers, JSON with parameters (plus
+   HTML for C9/C10/B6 if "Also write interactive HTML" is ticked).
 
-## Zakładki z danymi (v0.2)
+## Data tabs (v0.2)
 
-- **Pipeline** — wpisz miasto, wskaż folder(y) z nagraniem (`snapshot_*.pb`) i statyczny GTFS
-  (przyciski *Browse…* otwierają okno systemowe; pliki nie są kopiowane). Folder roboczy jest
-  opcjonalny (domyślnie `~/Documents/chart_lab/<miasto>/`). Przyciski **Run match / build /
-  extract** uruchamiają pojedyncze kroki, **Run all** — wszystkie po kolei; wyjście kroku
-  jest wejściem następnego. Opcje każdego kroku są w zwiniętych panelach (pochodzą z CLI).
-  Po `extract` tabela tidy trafia do aktywnych tabel w zakładce **Charts**.
-  **Ostrzeżenia jakości (`WARNING (FA-15/FA-16)`) są wyświetlane nad logiem — przeczytaj je,
-  zanim zaufasz wynikowi** (np. statyczny GTFS z innej publikacji niż nagranie).
-- **Stop headway**, **Realized (TripUpdates)**, **Diagnose RT** — pojedyncza komenda: formularz,
-  *Run*, log; wynik (PNG H31 / ścieżki zip / werdykt) pod formularzem.
-- **Cancel** przerywa bieżące zadanie. Naraz działa jedno zadanie.
+- **Pipeline** — city, recording folder(s) (`snapshot_*.pb`) and static GTFS; optional work folder
+  (default `~/Documents/chart_lab/<city>/`). **Run match / build / extract** run single steps,
+  **Run all** runs them in order; each step's output feeds the next. The resulting tidy table is
+  added to the active tables in **Charts**. **Read the quality warnings
+  (`WARNING (FA-15/FA-16)`) shown above the log before trusting the output.**
+- **Stop headway**, **Realized (TripUpdates)**, **Diagnose RT** — one command each: form, *Run*,
+  log; the result is shown below the form.
+- **Cancel** stops the current job; only one job runs at a time.
+
+For the full details (data requirements, troubleshooting, the online catalogue) see the
+[user guide](manual/README.en.md).
 
 ## Building the Windows executable yourself
 

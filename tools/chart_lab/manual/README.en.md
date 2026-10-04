@@ -1,6 +1,6 @@
 # chart_lab — user guide
 
-English version of [INSTRUKCJA.md](INSTRUKCJA.md) (Polish). Keep the two in sync.
+English version of [README.md](README.md) (Polish). Keep the two in sync.
 
 `chart_lab` is a local app with a browser interface that replaces the terminal when working with
 the tools in `tools/`: it draws punctuality and regularity charts and, since version 0.2, it can
@@ -8,7 +8,7 @@ also build the data from scratch out of a GTFS-RT recording. It runs on your com
 sent over the network except downloads from the online catalogue (see
 [§ 8](#8-where-to-get-data-gtfs-dashboard)).
 
-> Worked analyses with ready-made charts: [PRZYKLADY.md](PRZYKLADY.md) (Polish).
+> Worked analyses with ready-made charts: [EXAMPLES.md](EXAMPLES.md) (Polish).
 > Technical write-up and design decisions: `docs/prd/PR_easy-OTP_chart_lab_v02.md` (kept locally).
 
 ## 1. Running it

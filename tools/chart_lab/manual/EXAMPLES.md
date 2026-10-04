@@ -3,7 +3,7 @@
 Cztery analizy zrobione na prawdziwych danych z katalogu
 <https://gisboost.github.io/gtfs-dashboard/> (manifest z 2026-10-03). Każdą powtórzysz w
 aplikacji (zakładka **Charts → Online catalogue**) albo jedną komendą CLI — oba sposoby dają ten
-sam wynik, bo GUI woła ten sam kod. Instrukcja obsługi: [INSTRUKCJA.md](INSTRUKCJA.md).
+sam wynik, bo GUI woła ten sam kod. Instrukcja obsługi: [README.md](README.md).
 
 **Użyte pliki** (wszystkie to tabele tidy, `…_tidy_<data>.csv.gz`, po 9–20 MB; dni `ok`):
 
