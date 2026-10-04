@@ -36,10 +36,9 @@ city comparison) — [`manual/EXAMPLES.md`](manual/EXAMPLES.md) (Polish).
 
 ## Running
 
-**Ready-made Windows build** (simplest, no Python needed): download it from this repo's Releases
-(tag `chart_lab-v*`), unzip, run `chart_lab.exe`. The app opens in your browser.
+**Option A — ready-made Windows build** (simplest, no Python needed): download `chart_lab-windows.zip` from the [Releases](https://github.com/GISBoost/easy-OTP/releases) page (latest `chart_lab-v*`), unzip the whole folder, run `chart_lab.exe`. The app opens in your browser at `http://127.0.0.1:7860`. The exe is unsigned, so SmartScreen may need *More info → Run anyway*.
 
-**From source** (for development):
+**Option B — from source.** Needs Python 3.10+ and the **whole repository** (`git clone https://github.com/GISBoost/easy-OTP.git` or *Download ZIP*), because the app imports the sibling `tools/` folders. Then double-click `run_chart_lab.bat` in `tools\chart_lab` (creates a venv on first run), or by hand:
 ```bat
 cd tools\chart_lab
 py -m venv .venv

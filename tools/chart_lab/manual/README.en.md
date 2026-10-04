@@ -13,11 +13,27 @@ sent over the network except downloads from the online catalogue (see
 
 ## 1. Running it
 
-**Ready-made Windows build** (no Python needed): download `chart_lab-windows.zip` from the
-repository's *Releases* tab (tag `chart_lab-v*`), unzip it and run `chart_lab.exe`. A console
-window opens (leave it open — it is the app's "server") together with a browser tab.
+**Option A — ready-made Windows build (recommended, no Python):**
 
-**From source:**
+1. Open the repository's *Releases* page <https://github.com/GISBoost/easy-OTP/releases>, pick
+   the latest `chart_lab-v*` release and download `chart_lab-windows.zip`.
+2. Unzip the **whole** folder (do not run it from inside the ZIP preview).
+3. Run `chart_lab.exe`. A console window opens (leave it open — it is the app's "server")
+   together with a browser tab; if it does not, go to `http://127.0.0.1:7860`.
+
+The file is not code-signed, so Windows SmartScreen may show "Windows protected your PC": click
+*More info* → *Run anyway*.
+
+**Option B — from source (Python):**
+
+1. Install [Python 3.10+](https://www.python.org/downloads/) (tick "py launcher") and, if you
+   prefer, [Git](https://git-scm.com/download/win).
+2. Get the **whole repository**, not just the `chart_lab` folder (the app uses the sibling
+   `tools/transit_charts` and `tools/family_a_reconstruction`):
+   `git clone https://github.com/GISBoost/easy-OTP.git`, or *Code → Download ZIP* on GitHub and
+   unzip it.
+3. In `tools\chart_lab`, double-click **`run_chart_lab.bat`** — on first run it creates the
+   environment and installs the dependencies (a few minutes), then starts the app. Or by hand:
 
 ```bat
 cd tools\chart_lab
@@ -192,6 +208,9 @@ pick a city and a day and download the files from the list.
 
 | Symptom | What to do |
 |---|---|
+| Windows: "Windows protected your PC" (SmartScreen), or antivirus blocks `chart_lab.exe` | *More info* → *Run anyway*; the file is not signed. Antivirus: add the folder to its exclusions |
+| `run_chart_lab.bat`: "Python not found" | install Python 3.10+ from python.org with the "py launcher" option and run it again |
+| `ModuleNotFoundError: transit_charts` when running from source | only the `chart_lab` folder was downloaded — you need the whole repository (§ 1, option B) |
 | The browser tab does not open | open `http://127.0.0.1:7860` by hand (if the port is busy Gradio picks the next one — the address is in the console) |
 | The tab "freezes" (e.g. after a very long log) | reload the page; the job's results are in the work folder anyway |
 | "Another job is already running" | one job runs at a time — wait or click **Cancel** |

@@ -11,11 +11,28 @@ jest wysyłane w sieć poza pobieraniem danych z katalogu online (patrz [§ 8](#
 
 ## 1. Uruchomienie
 
-**Gotowy plik Windows** (bez Pythona): pobierz z zakładki *Releases* repozytorium plik
-`chart_lab-windows.zip` (tag `chart_lab-v*`), rozpakuj, uruchom `chart_lab.exe`. Otworzy się okno
-konsoli (zostaw je — to ono jest „serwerem" aplikacji) i karta przeglądarki.
+**Wariant A — gotowy plik Windows (zalecany, bez Pythona):**
 
-**Ze źródeł:**
+1. Wejdź w *Releases* repozytorium <https://github.com/GISBoost/easy-OTP/releases>, wybierz
+   najnowsze wydanie `chart_lab-v*` i pobierz `chart_lab-windows.zip`.
+2. Rozpakuj **cały** folder (nie uruchamiaj z podglądu w ZIP-ie).
+3. Uruchom `chart_lab.exe`. Otworzy się okno konsoli (zostaw je — to ono jest „serwerem"
+   aplikacji) i karta przeglądarki; gdyby się nie otworzyła, wejdź na `http://127.0.0.1:7860`.
+
+Plik nie jest podpisany cyfrowo, więc Windows SmartScreen może pokazać „System Windows ochronił
+ten komputer": kliknij *Więcej informacji* → *Uruchom mimo to*.
+
+**Wariant B — ze źródeł (Python):**
+
+1. Zainstaluj [Python 3.10+](https://www.python.org/downloads/) (zaznacz „py launcher") i, jeśli
+   wolisz, [Git](https://git-scm.com/download/win).
+2. Pobierz **całe repozytorium**, nie sam folder `chart_lab` (aplikacja korzysta z sąsiednich
+   `tools/transit_charts` i `tools/family_a_reconstruction`):
+   `git clone https://github.com/GISBoost/easy-OTP.git` albo *Code → Download ZIP* na GitHubie
+   i rozpakowanie.
+3. W folderze `tools\chart_lab` kliknij dwukrotnie **`run_chart_lab.bat`** — przy pierwszym
+   uruchomieniu sam utworzy środowisko i zainstaluje zależności (kilka minut), potem uruchomi
+   aplikację. Albo ręcznie:
 
 ```bat
 cd tools\chart_lab
@@ -185,6 +202,9 @@ katalogu wybierz miasto i dzień i pobierz pliki z listy.
 
 | Objaw | Co robić |
 |---|---|
+| Windows: „System Windows ochronił ten komputer" (SmartScreen) albo antywirus blokuje `chart_lab.exe` | *Więcej informacji* → *Uruchom mimo to*; plik nie jest podpisany. Antywirus: dodaj folder do wyjątków |
+| `run_chart_lab.bat`: „Python not found" | zainstaluj Python 3.10+ z python.org z opcją „py launcher" i uruchom ponownie |
+| `ModuleNotFoundError: transit_charts` przy uruchomieniu ze źródeł | pobrano sam folder `chart_lab` — potrzebne jest całe repozytorium (§ 1, wariant B) |
 | Karta przeglądarki się nie otwiera | wejdź ręcznie na `http://127.0.0.1:7860` (jeśli port jest zajęty, Gradio wybierze kolejny — adres jest w konsoli) |
 | Karta „zamarza" (np. po bardzo długim logu) | odśwież stronę; wyniki zadania są i tak w folderze roboczym |
 | „Another job is already running" | naraz działa jedno zadanie — poczekaj albo kliknij **Cancel** |
