@@ -190,7 +190,7 @@ def _check_monotonic(zip_path: pathlib.Path) -> int:
     return violations
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--snapshots", required=True, type=pathlib.Path,
                     help="folder of polish_trains_updates_<day>.pb[.gz] snapshots")
@@ -202,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="restrict the static feed and output to this agency_id (blank = no filter)")
     ap.add_argument("--out-prefix", required=True, type=pathlib.Path,
                     help="writes <prefix>_p50.zip and <prefix>_p85.zip")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = build_parser()
     args = ap.parse_args(argv)
 
     snaps = sorted(

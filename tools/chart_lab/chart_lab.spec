@@ -20,6 +20,9 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 _HERE = Path.cwd().resolve()
 _TRANSIT_CHARTS = _HERE.parent / "transit_charts"
 _FAMILY_A = _HERE.parent / "family_a_reconstruction"
+_FAMILY_B = _HERE.parent / "family_b_realized"
+_RT_DIAGNOSE = _HERE.parent / "rt_diagnose"
+_REPO_ROOT = _HERE.parent.parent  # for easy_otp.core.gtfsrt_realizer (imports no QGIS)
 
 datas = [
     (str(_HERE / "example_data"), "example_data"),
@@ -47,11 +50,17 @@ hiddenimports = (
     + collect_submodules("family_a")
     + collect_submodules("gradio")
     + collect_submodules("gradio_client")
+    # GL-1..GL-4: jobs.py imports these lazily inside the spawned child, which the static
+    # scan can't always follow through a tool-name dispatch, so name them explicitly.
+    + collect_submodules("chart_lab")
+    + ["build_realized", "compare_rt_vs_static", "easy_otp.core.gtfsrt_realizer",
+       "easy_otp.core.gtfsrt_recorder", "google.transit.gtfs_realtime_pb2", "tkinter"]
 )
 
 a = Analysis(
     ["chart_lab/app.py"],
-    pathex=[str(_HERE), str(_TRANSIT_CHARTS), str(_FAMILY_A)],
+    pathex=[str(_HERE), str(_TRANSIT_CHARTS), str(_FAMILY_A), str(_FAMILY_B), str(_RT_DIAGNOSE),
+            str(_REPO_ROOT)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

@@ -1,8 +1,10 @@
-# tools/chart_lab — interactive GUI for transit_charts
+# tools/chart_lab — interactive GUI for transit_charts and the data pipeline
 
 > **Standalone tool.** Not part of the QGIS plugin easy-OTP and never imported by
 > `easy_otp/`. Imports [`tools/transit_charts`](../transit_charts/README.md) and, through it,
-> [`tools/family_a_reconstruction`](../family_a_reconstruction/README.md) by path.
+> [`tools/family_a_reconstruction`](../family_a_reconstruction/README.md) by path; the
+> extra tabs also load `tools/family_b_realized`, `tools/rt_diagnose` and
+> `easy_otp/core/gtfsrt_realizer.py` (imports no QGIS) the same way.
 
 A local, browser-based GUI for `transit_charts chart`, for people who don't want a
 terminal or to remember CLI flags: pick a chart, adjust its parameters, see the result. All
@@ -10,9 +12,16 @@ terminal or to remember CLI flags: pick a chart, adjust its parameters, see the 
 automatically (driven by `transit_charts/registry.py` — a new chart added there needs no
 change here to appear).
 
-**What this is not:** it does not run `extract`/`match`/`build`/`record`, and it does not
+**Tabs (v0.2):** *Charts* (the original chart GUI, below), *Pipeline* (`family_a match` →
+`family_a build` → `transit_charts extract` in one form), *Stop headway* (`transit_charts
+stop-headway`), *Realized (TripUpdates)* (`family_b_realized`) and *Diagnose RT*
+(`rt_diagnose`). The forms are generated from the CLI parsers, so a new CLI flag appears in the
+GUI without changes here. Each job runs in its own child process: it can be cancelled, and its
+memory is returned to the system when it ends.
+
+**What this is not:** it does not run `record` (the phone/Termux does that), and it does not
 touch the cloud pipeline (the Termux phone, `easy-GTFS-RT` Actions, `gtfs-dashboard`) in any
-way — it is a pure consumer of already-published tidy tables.
+way. `analysis/*` scripts are not covered either.
 
 **Data sources**, any combination active at once:
 - The bundled example (Łódź, 2026-07-23, 7 routes) — active by default, zero setup.
@@ -75,6 +84,20 @@ Po uruchomieniu w przeglądarce otwiera się jedna strona, od góry w dół:
 6. Wygenerowany wykres pojawia się poniżej, a pod nim — **"Downloads"**: PNG wykresu, CSV
    z policzonymi liczbami i JSON z parametrami/źródłem (plus HTML, jeśli zaznaczono "Also
    write interactive HTML" dla wykresów, które to obsługują — C9/C10/B6).
+
+## Zakładki z danymi (v0.2)
+
+- **Pipeline** — wpisz miasto, wskaż folder(y) z nagraniem (`snapshot_*.pb`) i statyczny GTFS
+  (przyciski *Browse…* otwierają okno systemowe; pliki nie są kopiowane). Folder roboczy jest
+  opcjonalny (domyślnie `~/Documents/chart_lab/<miasto>/`). Przyciski **Run match / build /
+  extract** uruchamiają pojedyncze kroki, **Run all** — wszystkie po kolei; wyjście kroku
+  jest wejściem następnego. Opcje każdego kroku są w zwiniętych panelach (pochodzą z CLI).
+  Po `extract` tabela tidy trafia do aktywnych tabel w zakładce **Charts**.
+  **Ostrzeżenia jakości (`WARNING (FA-15/FA-16)`) są wyświetlane nad logiem — przeczytaj je,
+  zanim zaufasz wynikowi** (np. statyczny GTFS z innej publikacji niż nagranie).
+- **Stop headway**, **Realized (TripUpdates)**, **Diagnose RT** — pojedyncza komenda: formularz,
+  *Run*, log; wynik (PNG H31 / ścieżki zip / werdykt) pod formularzem.
+- **Cancel** przerywa bieżące zadanie. Naraz działa jedno zadanie.
 
 ## Building the Windows executable yourself
 

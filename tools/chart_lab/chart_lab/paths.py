@@ -12,7 +12,7 @@ from pathlib import Path
 
 _TOOLS = Path(__file__).resolve().parents[2]
 
-for _name in ("transit_charts", "family_a_reconstruction"):
+for _name in ("transit_charts", "family_a_reconstruction", "family_b_realized", "rt_diagnose"):
     _path = _TOOLS / _name
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))

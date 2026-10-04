@@ -249,8 +249,13 @@ def render_chart(
     )
 
 
-def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.DataFrame]]) -> None:
+def build_chart_ui(
+    demo: gr.Blocks, get_active_tables: Callable[[], list[pd.DataFrame]], tab: gr.Tab | None = None,
+) -> None:
     """Render the chart picker + parameter widgets + output area inside `demo`.
+
+    `tab`, when the chart UI lives in a gr.Tab, makes entering that tab re-read the loaded
+    tables (another tab, e.g. Pipeline, may have registered one meanwhile).
 
     `get_active_tables` is called fresh on every render (and on data-source refresh), never
     cached here - CL-4/CL-5 will swap the CL-2 example-only lambda for one backed by real
@@ -472,6 +477,17 @@ def build_chart_ui(demo: gr.Blocks, get_active_tables: Callable[[], list[pd.Data
         ),
         inputs=param_inputs, outputs=render_outputs,
     )
+
+    if tab is not None:
+        tab.select(
+            lambda: gr.update(
+                choices=data_sources.loaded_table_choices(), value=data_sources.get_active_ids(),
+            ),
+            outputs=[active_tables_cbg],
+        ).then(
+            lambda r, e: refresh_route_choices(get_active_tables, r, e),
+            inputs=[route_dd, exclude_route_dd], outputs=[route_dd, exclude_route_dd],
+        )
 
     def _on_fetch_catalogue():
         try:
