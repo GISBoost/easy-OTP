@@ -30,6 +30,9 @@ way. `analysis/*` scripts are not covered either.
   `manifest.json` on GitHub Pages — never the GitHub REST API — then downloaded and cached
   locally on first use).
 
+**Dokumentacja:** pełna instrukcja użytkownika — [`manual/INSTRUKCJA.md`](manual/INSTRUKCJA.md); przykłady analiz
+na danych z gtfs-dashboard (bunching, D15, porównanie miast) — [`manual/PRZYKLADY.md`](manual/PRZYKLADY.md). English user guide — [`manual/README.en.md`](manual/README.en.md).
+
 ## Uruchomienie
 
 **Gotowy plik Windows** (najprostsza opcja, bez instalowania Pythona): pobierz z zakładki
