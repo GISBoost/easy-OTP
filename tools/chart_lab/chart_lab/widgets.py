@@ -19,7 +19,7 @@ from chart_lab import data_sources, paths  # noqa: F401 - paths import is a sys.
 
 import gradio as gr
 
-from chart_lab import manifest_client
+from chart_lab import image_view, manifest_client
 from transit_charts import sources
 from transit_charts.registry import ChartSpec, ResolvedChartInputs, build_registry
 
@@ -243,7 +243,7 @@ def render_chart(
     if result.html:
         files.append(str(result.html))
     return (
-        gr.update(value=str(result.png), visible=True),
+        gr.update(value=image_view.chart_html(result.png), visible=True),
         "",
         gr.update(value=files, visible=True),
     )
@@ -389,7 +389,8 @@ def build_chart_ui(
 
     gr.Markdown("## 4. Result")
     message_md = gr.Markdown(value="")
-    image = gr.Image(label="Chart", visible=False)
+    # gr.HTML, not gr.Image: bounded height, see image_view.py
+    image = gr.HTML(visible=False)
     downloads = gr.File(label="Downloads (PNG/CSV/JSON[/HTML])", file_count="multiple", visible=False)
     open_folder_btn = gr.Button(f"Open charts folder ({OUTPUT_DIR})")
     open_folder_message_md = gr.Markdown(value="")

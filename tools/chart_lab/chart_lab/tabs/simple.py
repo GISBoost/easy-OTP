@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from chart_lab import paths  # noqa: F401 - side effect: sys.path wiring
-from chart_lab import cli_form, jobs
+from chart_lab import cli_form, image_view, jobs
 
 # result_fn(values, code, log) -> (markdown, image path or None)
 ResultFn = Callable[[dict, int, str], "tuple[str, str | None]"]
@@ -36,7 +36,7 @@ def build_tab(tool: str, fields: list[cli_form.Field], sub: str | None, intro: s
         run_btn = gr.Button("Run", variant="primary")
         stop_btn = gr.Button("Cancel", variant="stop")
     status = gr.Markdown()
-    image = gr.Image(label="Result", visible=False, interactive=False)
+    image = gr.HTML(visible=False)  # bounded height, see image_view.py
     log = gr.Textbox(label="Log", lines=14, max_lines=14, autoscroll=True, interactive=False)
 
     def handler(*vals):
@@ -51,7 +51,7 @@ def build_tab(tool: str, fields: list[cli_form.Field], sub: str | None, intro: s
         warns = "".join(f"\n> ⚠️ {w}" for w in jobs.warnings_in(text))
         icon = ("⚠️" if warns else "✅") if code == 0 else ("⛔" if code < 0 else "❌")
         md, img = (result_fn(values, code, text) if result_fn and code == 0 else ("", None))
-        yield text, f"{icon} {jobs.describe_exit(code)}{warns}\n\n{md}", gr.update(value=img, visible=bool(img))
+        yield text, f"{icon} {jobs.describe_exit(code)}{warns}\n\n{md}", gr.update(value=image_view.chart_html(img) if img else None, visible=bool(img))
 
     run_btn.click(handler, inputs=comps, outputs=[log, status, image])
     stop_btn.click(lambda: jobs.cancel() and None)

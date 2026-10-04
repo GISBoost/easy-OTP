@@ -57,6 +57,8 @@ przekazywane do komendy — zachowanie jest takie samo jak w terminalu bez tej f
 4. **Downloads** pod wykresem: PNG, CSV z liczbami, JSON z parametrami (i HTML dla C9/C10/B6,
    jeśli zaznaczysz „Also write interactive HTML"). Pliki lądują w `%TEMP%\chart_lab_output`
    (przycisk obok otwiera ten folder).
+   Wykres zajmuje na stronie najwyżej 80% wysokości okna: szerokie mieści się w całości, a wysokie
+   (np. H29/H30 przy wielu liniach) przewija się wewnątrz własnego panelu, bez wydłużania strony.
 
 Wymagania danych:
 

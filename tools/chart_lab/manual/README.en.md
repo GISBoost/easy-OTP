@@ -61,6 +61,8 @@ that flag.
 4. **Downloads** below the chart: the PNG, a CSV with the plotted numbers and a JSON with the
    parameters (plus HTML for C9/C10/B6 if you tick "Also write interactive HTML"). Files are
    written to `%TEMP%\chart_lab_output` (the button next to it opens that folder).
+   A chart takes at most 80% of the window height on the page: wide ones fit whole, tall ones
+   (e.g. H29/H30 with many routes) scroll inside their own panel instead of lengthening the page.
 
 Data requirements:
 

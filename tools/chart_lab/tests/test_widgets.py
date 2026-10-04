@@ -178,8 +178,9 @@ def test_render_c9_route11_produces_a_real_png():
     assert message == ""
     assert image_update["visible"] is True
     from pathlib import Path
-    png_path = Path(image_update["value"])
+    png_path = Path(downloads_update["value"][0])
     assert png_path.exists() and png_path.stat().st_size > 0
+    assert image_update["value"].startswith("<img src=\"data:image/png;base64,")  # image_view fit mode
     assert downloads_update["visible"] is True
     assert len(downloads_update["value"]) == 3  # png, csv, json (no html requested)
 
