@@ -191,10 +191,14 @@ for CITY_ENV in "$WORK_DIR"/cities/*.env; do
   fi
 
   if [ -z "$EXISTING_ASSET" ]; then
+    # -T (not --data-binary @file): streams the file instead of buffering all of it in RAM - a
+    # 1.5GB archive buffered on this ~4GB phone pushed it into swap and got Termux killed by
+    # Android. --max-time/--speed-* abort a stalled transfer instead of hanging for hours.
     HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+      --max-time 5400 --speed-limit 20000 --speed-time 180 \
       -H "Authorization: token ${GH_TOKEN}" \
       -H "Content-Type: application/x-xz" \
-      --data-binary "@${ARCHIVE_PATH}" \
+      -T "${ARCHIVE_PATH}" \
       "${UPLOAD_URL}?name=${ARCHIVE_NAME}")
     if [ "$HTTP_CODE" != "201" ]; then
       echo "WARNING: upload of ${ARCHIVE_NAME} failed (HTTP ${HTTP_CODE}) - will retry next run, source directories left untouched" >&2
