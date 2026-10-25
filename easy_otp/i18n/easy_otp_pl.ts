@@ -1416,7 +1416,7 @@ Użyj tego do wstępnego wygenerowania siatki dla Uruchomienia temporalnej dost�
         <name>GenerateIsochrones</name>
         <message>
             <source>Generate isochrones</source>
-            <translation>Generuj isochrony</translation>
+            <translation>Generuj izochrony</translation>
         </message>
         <message>
             <source>3 · Analysis</source>
@@ -1433,7 +1433,7 @@ DIRECTION=TO: catchment that can reach the point.
 For non-transit modes (WALK/CAR/BICYCLE) GTFS is optional — OTP will build a street-only graph from the OSM extract.
 
 Requires user-provided Java 8 and otp-1.5.0-shaded.jar.</source>
-            <translation>Generuje poligony isochron czasowych podróży z jednego lub wielu punktów początkowych za pomocą OpenTripPlanner 1.5.0.
+            <translation>Generuje poligony izochron czasowych podróży z jednego lub wielu punktów początkowych za pomocą OpenTripPlanner 1.5.0.
 
 Dla każdego punktu początkowego wysyłany jest jeden żądanie GET /isochrone z skonfigurowanymi progami odcięcia. Wszystkie powstałe poligony są łączone w jedną warstwę wyjściową z atrybutami: point_id, name, cutoff_min, mode, date, time, direction.
 
@@ -1482,7 +1482,7 @@ Wymaga podanego przez użytkownika Java 8 i otp-1.5.0-shaded.jar.</translation>
         </message>
         <message>
             <source>Output isochrones (polygon layer)</source>
-            <translation>Isochrony wyjściowe (warstwa poligonu)</translation>
+            <translation>Izochrony wyjściowe (warstwa poligonu)</translation>
         </message>
         <message>
             <source>Maximum walk distance (m)</source>
@@ -1674,7 +1674,7 @@ Wymaga podanego przez użytkownika Java 8 i otp-1.5.0-shaded.jar.</translation>
         </message>
         <message>
             <source>{gtfs_path.name}: no services active on {date_str}. OTP may return all-unreachable isochrones for this date.</source>
-            <translation>{gtfs_path.name}: brak usług aktywnych w dniu {date_str}. OTP może zwrócić isochrone całkowicie niedostępne dla tej daty.</translation>
+            <translation>{gtfs_path.name}: brak usług aktywnych w dniu {date_str}. OTP może zwrócić izochrone całkowicie niedostępne dla tej daty.</translation>
         </message>
         <message>
             <source>{gtfs_path.name}: {active} service(s) active on {date_str}.</source>
@@ -1697,7 +1697,7 @@ Wymaga podanego przez użytkownika Java 8 i otp-1.5.0-shaded.jar.</translation>
         <name>GenerateIsochronesOverTime</name>
         <message>
             <source>Generate isochrones over time</source>
-            <translation>Generuj isochrony w czasie</translation>
+            <translation>Generuj izochrony w czasie</translation>
         </message>
         <message>
             <source>3 · Analysis</source>
@@ -1717,9 +1717,9 @@ For non-transit modes (WALK/CAR/BICYCLE) GTFS is optional.
 Requires user-provided Java 8 and otp-1.5.0-shaded.jar.
 
 Complement to 'Generate isochrones' (N-1: many points, one time).</source>
-            <translation>Generuje wielokąty isochronowe czasu podróży dla jednego punktu początkowego przez cały dzień przy użyciu OpenTripPlanner 1.5.0.
+            <translation>Generuje wielokąty izochronowe czasu podróży dla jednego punktu początkowego przez cały dzień przy użyciu OpenTripPlanner 1.5.0.
 
-Dla każdego znacznika czasu w skonfigurowanym oknie wysyłany jest jeden żądanie GET /isochrone. Wszystkie powstałe wielokąty są łączone w jedną warstwę wyjściową z polem 'time' (QDateTime) kompatybilnym z Kontrolerem Czasu QGIS — co umożliwia animację isochrony przez cały dzień.
+Dla każdego znacznika czasu w skonfigurowanym oknie wysyłany jest jeden żądanie GET /isochrone. Wszystkie powstałe wielokąty są łączone w jedną warstwę wyjściową z polem 'time' (QDateTime) kompatybilnym z Kontrolerem Czasu QGIS — co umożliwia animację izochrony przez cały dzień.
 
 Liczba wielokątów = znaczniki czasu × progi. Utrzymuj progi na poziomie 1–2, aby uniknąć bardzo dużych warstw wyjściowych.
 
@@ -1765,7 +1765,7 @@ Uzupełnienie do 'Generate isochrones' (N-1: wiele punktów, jeden czas).</trans
         </message>
         <message>
             <source>Time interval between isochrones (minutes)</source>
-            <translation>Interwał czasowy między isochronami (minuty)</translation>
+            <translation>Interwał czasowy między izochronami (minuty)</translation>
         </message>
         <message>
             <source>Analysis date</source>
@@ -1777,7 +1777,7 @@ Uzupełnienie do 'Generate isochrones' (N-1: wiele punktów, jeden czas).</trans
         </message>
         <message>
             <source>Output isochrones (polygon layer)</source>
-            <translation>Isochrony wyjściowe (warstwa wielokątów)</translation>
+            <translation>Izochrony wyjściowe (warstwa wielokątów)</translation>
         </message>
         <message>
             <source>Area-over-time CSV (optional)</source>
@@ -1993,7 +1993,7 @@ Uzupełnienie do 'Generate isochrones' (N-1: wiele punktów, jeden czas).</trans
         </message>
         <message>
             <source>{}: no services active on {}. OTP may return all-unreachable isochrones for this date.</source>
-            <translation>{}: brak usług aktywnych w {}. OTP może zwrócić isochrony całkowicie niedostępne dla tej daty.</translation>
+            <translation>{}: brak usług aktywnych w {}. OTP może zwrócić izochrony całkowicie niedostępne dla tej daty.</translation>
         </message>
         <message>
             <source>{}: {} service(s) active on {}.</source>

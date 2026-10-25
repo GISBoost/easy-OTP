@@ -264,15 +264,11 @@ class DownloadJre(QgsProcessingAlgorithm):
             ))
 
     def _check_writable(self, dest: Path) -> None:
-        if not dest.is_dir():
-            raise QgsProcessingException(self.tr(
-                f"Destination folder '{dest}' does not exist. "
-                "Create it first or choose an existing folder."
-            ))
         # os.access(W_OK) is unreliable on Windows (UAC virtualization can
         # return True for folders that require admin rights). Try a real write.
         test = dest / ".easy_otp_write_test"
         try:
+            dest.mkdir(parents=True, exist_ok=True)
             test.touch()
             test.unlink()
         except PermissionError:

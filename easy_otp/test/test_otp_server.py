@@ -42,3 +42,22 @@ def test_non_windows_returns_empty() -> None:
         pytest.skip("covered by the Windows-specific tests")
     assert _popen_kwargs() == {}
     assert _popen_kwargs(show_window=True) == {}
+
+
+def test_server_passes_distinct_secure_port(tmp_path, monkeypatch) -> None:
+    """Two servers on different --port must not share OTP's default securePort 8081."""
+    from unittest.mock import MagicMock
+
+    from easy_otp.core import otp_server
+
+    cmds = []
+    monkeypatch.setattr(otp_server.subprocess, "Popen", lambda cmd, **kw: cmds.append(cmd))
+    for port in (8801, 8802):
+        otp_server.start_server(
+            tmp_path / "java", tmp_path / "otp.jar", "1G", tmp_path, "r", port,
+            tmp_path, MagicMock(),
+        )
+    secure = [int(c[c.index("--securePort") + 1]) for c in cmds]
+    used = {8801, 8802, *secure}
+    assert len(used) == 4 and 8081 not in used
+    assert all(1 <= p <= 65535 for p in (otp_server.secure_port_for(1), otp_server.secure_port_for(65535)))

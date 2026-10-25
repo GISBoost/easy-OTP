@@ -394,6 +394,7 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
                 self.tr("OpenTripPlanner 1.5.0 jar (otp-1.5.0-shaded.jar)"),
                 behavior=QgsProcessingParameterFile.File,
                 extension="jar",
+                defaultValue=QSettings().value("easy_otp/otp_jar_path", ""),
                 optional=True,
             )
         )
@@ -519,9 +520,8 @@ class RunRealtimeAccessibility(QgsProcessingAlgorithm):
         jar = self._require_file(
             parameters, context, self.OTP_JAR_PATH, "OTP 1.5.0 jar",
             fix_hint=self.tr(
-                "Download otp-1.5.0-shaded.jar from Maven Central "
-                "(groupId=org.opentripplanner, artifactId=otp, version=1.5.0, "
-                "classifier=shaded) and set the 'OpenTripPlanner 1.5.0 jar' parameter."
+                "Run 'Download Java 8 JRE and OpenTripPlanner Jar' (Setup), which saves "
+                "the jar path, or set the 'OpenTripPlanner 1.5.0 jar' parameter."
             ),
         )
         pbf = self._require_file(parameters, context, self.OSM_PBF, "OSM .pbf extract")

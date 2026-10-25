@@ -336,6 +336,11 @@ def build_graph(
     feedback.pushInfo(f"Graph build finished in {int(time.monotonic() - start)}s.")
 
 
+def secure_port_for(port: int) -> int:
+    """HTTPS port passed to OTP for a given HTTP port (kept apart from neighbours)."""
+    return port + 10000 if port <= 55535 else port - 10000
+
+
 def start_server(
     java_path: Path,
     jar_path: Path,
@@ -371,6 +376,11 @@ def start_server(
         router_id,
         "--port",
         str(port),
+        # OTP 1.5 also binds an HTTPS port (default 8081) even when unused, so a
+        # second server on another --port would fail with "port 8081 is not
+        # available". Derive a per-instance secure port instead.
+        "--securePort",
+        str(secure_port_for(port)),
         "--analyst",
         "--pointSets",
         str(pointsets_dir),

@@ -73,6 +73,8 @@ class TestOtpServer(QgsProcessingAlgorithm):
                 self.tr("OpenTripPlanner 1.5.0 jar (otp-1.5.0-shaded.jar)"),
                 behavior=QgsProcessingParameterFile.File,
                 extension="jar",
+                defaultValue=QSettings().value("easy_otp/otp_jar_path", ""),
+                optional=True,
             )
         )
         self.addParameter(
@@ -136,13 +138,15 @@ class TestOtpServer(QgsProcessingAlgorithm):
 
     def _check_jar(self, jar: Path, feedback) -> bool:
         if not jar.name:
-            feedback.reportError(self.tr("OTP_JAR_PATH is empty."))
+            feedback.reportError(self.tr(
+                "OTP_JAR_PATH is empty. Run 'Download Java 8 JRE and "
+                "OpenTripPlanner Jar' (Setup) first, or provide the path to the jar."
+            ))
             return False
         if not jar.is_file():
             feedback.reportError(self.tr(
-                f"OTP jar not found: {jar}. Download "
-                f"otp-1.5.0-shaded.jar from Maven Central "
-                f"(org.opentripplanner:otp:1.5.0, classifier 'shaded')."
+                f"OTP jar not found: {jar}. Run 'Download Java 8 JRE and "
+                f"OpenTripPlanner Jar' (Setup) again, or provide the path to the jar."
             ))
             return False
         if jar.suffix.lower() != ".jar":
