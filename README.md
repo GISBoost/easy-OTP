@@ -83,15 +83,15 @@ Download the latest release ZIP from GitHub:
 
 **[easy-OTP Releases → https://github.com/GISBoost/easy-OTP/releases/latest](https://github.com/GISBoost/easy-OTP/releases/latest)**
 
-Download `easy_otp-0.7.0.zip` from the Assets section. This is the correctly
+Download `easy_otp-0.7.1.zip` from the Assets section. This is the correctly
 structured plugin ZIP — do **not** use the auto-generated "Source code" archives
 on the same page, as those have the wrong directory layout for QGIS.
 
 ### Plugin Installation
 
-1. Download `easy_otp-0.7.0.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
+1. Download `easy_otp-0.7.1.zip` from the [Releases page](https://github.com/GISBoost/easy-OTP/releases/latest).
 2. In QGIS: **Plugins → Manage and Install Plugins → Install from ZIP**.
-3. Select the downloaded `easy_otp-0.7.0.zip` and click **Install Plugin**.
+3. Select the downloaded `easy_otp-0.7.1.zip` and click **Install Plugin**.
 4. After installation, **Plugins → easy-OTP → Enable** (if not enabled
    automatically).
 5. The algorithms appear in **Processing Toolbox** under the **easy-OTP** group.

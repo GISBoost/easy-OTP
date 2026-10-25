@@ -33,7 +33,7 @@ about=Automates temporal accessibility analysis for public transport using
     Setup: DownloadJre (Eclipse Temurin 8 + OTP 1.5.0 jar, SHA-256
     verified), DownloadTransitData (Geofabrik OSM + Transitland GTFS),
     TestOtpServer.
-version=0.7.0
+version=0.7.1
 author=Michal Kaczorowski
 email=michal.kaczorowsx@gmail.com
 license=GPL-3.0-or-later
@@ -47,7 +47,15 @@ tags=accessibility,otp,opentripplanner,transit,gtfs,isochrone,public transport,t
 homepage=https://github.com/GISBoost/easy-OTP
 repository=https://github.com/GISBoost/easy-OTP
 tracker=https://github.com/GISBoost/easy-OTP/issues
-changelog=0.7.0
+changelog=0.7.1
+    * fix: all algorithms default the OTP jar to the path saved by Setup
+      (Download Java 8 JRE and OpenTripPlanner Jar); Test OTP server no longer
+      requires picking the jar by hand.
+    * fix: Setup creates the destination folder if it does not exist.
+    * fix: a second OTP server on another port no longer fails with
+      "port 8081 is not available" (--securePort is now passed).
+    * i18n: Polish "isochrony" -> "izochrony".
+    0.7.0
     * Analysis — RouteViaPoints (N-6):
       - feat(analysis): RouteViaPoints — city tour planner: supply a START point,
         an END point, and an optional layer of via-points (landmarks) in any order;
